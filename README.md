@@ -18,10 +18,11 @@ The paper script:
 1. installs paper dependencies;
 2. auto-downloads LiRA through the public Figshare API;
 3. preprocesses/alines the car and VIAFRIK data;
-4. performs Optuna tuning of **SafeGrip only** on train/calibration/validation (the test split is not consulted);
-5. runs all cited direct baselines on a common open-sensor protocol;
-6. runs the controlled proposal ablation using the same selected hyperparameters;
-7. exports metrics, predictions, citation manifests and tuning records.
+4. tunes **SafeGrip and every literature comparator** on train/calibration/validation with the same trial budget (test is locked);
+5. keeps recoverable source architecture/preprocessing constraints while allowing model-specific temporal context;
+6. runs the final paper table over five independent seeds and reports mean/std;
+7. exports supplementary same-physics-projection parity controls without relabelling them as published methods;
+8. runs the controlled SafeGrip ablation and exports provenance/tuning records.
 
 Use fewer tuning trials during development:
 
@@ -49,11 +50,11 @@ The `paper` preset contains only methods tied to actual tire/friction papers:
 
 | ID | Paper method | DOI | Reproduction level |
 |---|---|---|---|
-| `todorovic2022_cnn` | temporal CNN friction-potential estimator | `10.1088/1742-6596/2234/1/012005` | methodology-level |
-| `lampe2023_lstm` | two-layer LSTM estimator | `10.1016/j.ifacol.2023.12.056` | architecture-level on common available sensors |
-| `lampe2023_gru` | two-layer GRU estimator | `10.1016/j.ifacol.2023.12.056` | architecture-level on common available sensors |
-| `schaefke2023_transformer` | onboard-sensor Transformer | `10.1109/CDC49753.2023.10384175` | methodology-level |
-| `chen2025_svdkl` | spatio-temporal CNN + stochastic variational deep-kernel learning | `10.1109/TIE.2024.3440510` | methodology-level |
+| `todorovic2022_cnn` | temporal CNN friction-potential estimator | `10.1088/1742-6596/2234/1/012005` | architecture-faithful adaptation (100 samples; Conv 128/128/256; Dense 400) |
+| `lampe2023_lstm` | two-layer LSTM estimator | `10.1016/j.ifacol.2023.12.056` | architecture/preprocessing-faithful adaptation; source training defaults included |
+| `lampe2023_gru` | two-layer GRU estimator | `10.1016/j.ifacol.2023.12.056` | architecture/preprocessing-faithful adaptation; source training defaults included |
+| `schaefke2023_transformer` | onboard-sensor Transformer | `10.1109/CDC49753.2023.10384175` | explicitly methodology-level adapted implementation |
+| `chen2025_svdkl` | spatio-temporal + stochastic variational deep-kernel learning | `10.1109/TIE.2024.3440510` | explicitly adapted SV-DKL; source category-selection stage is not claimed reproduced |
 
 The original papers do not all expose the same sensors or public training data. Therefore the code explicitly exports `fidelity` in `baseline_manifest.csv`; it does **not** claim exact reproduction where that would be false.
 
@@ -91,11 +92,21 @@ safegrip ablation --dataset lira --preset paper \
   --proposal-hparams results/lira_tuning/best_hparams.yaml
 ```
 
-## Proposal hyperparameter tuning
+## Fair validation tuning
+
+Proposal:
 
 ```bash
-safegrip tune --dataset lira --trials 30 --epochs 40 --no-test
+safegrip tune --dataset lira --trials 30 --no-test
 ```
+
+Literature comparators (same trial budget):
+
+```bash
+safegrip tune-baselines --dataset lira --trials 30
+```
+
+The primary selection objective for both is **validation RMSE**. Each baseline may use its own temporal context and source-appropriate train-only scaler; a common warm-up makes validation/test endpoints identical across methods.
 
 Tuned parameters:
 
@@ -186,11 +197,16 @@ Main benchmark:
 results/lira_paper/
   baseline_manifest.csv
   literature_only.json
-  metrics.csv
+  metrics.csv                 # mean across final seeds
+  metrics_by_seed.csv         # individual final runs
   predictions.csv
   features.json
   calibration.json
   proposal_hparams.json
+  baseline_selected_hparams.json
+  evaluation_protocol.json
+  projection_control_metrics.csv
+  projection_control_metrics_by_seed.csv
   *.png
 ```
 
@@ -212,6 +228,13 @@ results/lira_tuning/
   param_importance.json
   tuning_summary.json
   optuna.sqlite3
+
+results/lira_baseline_tuning/
+  best_hparams.yaml
+  tuning_summary.json
+  <baseline-id>/trials.csv
+  <baseline-id>/best_hparams.yaml
+  <baseline-id>/optuna.sqlite3
 ```
 
 ## Documentation

@@ -7,7 +7,9 @@ import matplotlib.pyplot as plt
 def _bar(df,col,path,ylabel):
     if col not in df: return
     fig,ax=plt.subplots(figsize=(10,5)); z=df.sort_values(col)
-    ax.bar(z.model,z[col]); ax.set_ylabel(ylabel); ax.tick_params(axis="x",rotation=45); fig.tight_layout(); fig.savefig(path,dpi=180); plt.close(fig)
+    err=z[col+"_std"] if col+"_std" in z else None
+    ax.bar(z.model,z[col],yerr=err,capsize=3 if err is not None else 0)
+    ax.set_ylabel(ylabel); ax.tick_params(axis="x",rotation=45); fig.tight_layout(); fig.savefig(path,dpi=180); plt.close(fig)
 
 
 def make_plots(results_dir):

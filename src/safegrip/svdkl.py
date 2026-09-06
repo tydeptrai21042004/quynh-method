@@ -16,7 +16,7 @@ def require_gpytorch():
 
 def fit_svdkl(Xtr, ytr, Xv, yv, *, hidden=64, dropout=.1, feature_dim=16,
               inducing=128, lr=1e-3, weight_decay=1e-4, batch_size=256,
-              epochs=40, patience=8, device=None):
+              epochs=40, patience=8, device=None, optimizer="adamw"):
     gpytorch = require_gpytorch()
     from .models import SpatioTemporalCNN
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -47,7 +47,8 @@ def fit_svdkl(Xtr, ytr, Xv, yv, *, hidden=64, dropout=.1, feature_dim=16,
 
     model = SVDKL(Xtr.shape[-1]).to(device)
     likelihood = model.likelihood.to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    opt_cls = torch.optim.Adam if str(optimizer).lower() == "adam" else torch.optim.AdamW
+    opt = opt_cls(model.parameters(), lr=lr, weight_decay=weight_decay)
     mll = gpytorch.mlls.VariationalELBO(likelihood, model.gp, num_data=len(Xtr))
     dl = DataLoader(TensorDataset(torch.from_numpy(Xtr), torch.from_numpy(ytr)), batch_size=batch_size, shuffle=True)
     xv = torch.from_numpy(Xv).to(device); yv_t = torch.from_numpy(yv).to(device)

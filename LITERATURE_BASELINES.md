@@ -1,8 +1,20 @@
 # Literature-backed baseline policy
 
-The **direct numerical baseline table contains no ad-hoc generic models**. A runnable baseline must have a paper title and DOI in `src/safegrip/literature.py`.
+The direct numerical table contains only methods tied to published tire/road-friction work. All reported numbers are **our retrained results on the same LiRA target/split**, never copied paper numbers.
 
-The point is not to pretend we reproduced proprietary experiments exactly. All methods are retrained on the same open-data feature/target/split protocol, and `baseline_manifest.csv` states the reproduction fidelity.
+Because the source papers use different vehicles, sensors and targets, the benchmark uses one common LiRA sensor set and scalar road-friction reference. Fidelity is stated explicitly rather than calling every implementation an exact reproduction.
+
+## Fair-comparison rules
+
+- Same LiRA train/calibration/validation/test partition.
+- Same available model input information; GPS remains matching/splitting metadata only.
+- Model-specific temporal context is allowed.
+- Validation/test **endpoints remain identical** across context lengths via a common warm-up.
+- Train-only preprocessing follows the source paper where recoverable.
+- Proposal and literature comparators receive the same Optuna trial budget.
+- Primary validation selection metric is RMSE for every method.
+- Final paper table uses five independent seeds and reports mean/std.
+- Same-physics projection of baseline outputs is exported only as a supplementary parity control, never relabelled as the published method.
 
 ## Direct runnable baselines
 
@@ -13,21 +25,44 @@ The point is not to pretend we reproduced proprietary experiments exactly. All m
 Journal of Physics: Conference Series 2234, 012005.  
 DOI: `10.1088/1742-6596/2234/1/012005`
 
-The source work estimates friction potential under longitudinal and lateral excitation with a neural regression approach. The repository implements a temporal CNN in this paper family on the harmonized open production-sensor window.
+Paper-mode implementation preserves the recoverable source architecture:
 
-**Fidelity:** methodology-level, not claimed as bit-for-bit reproduction.
+```text
+100-sample temporal input
+-> Conv1D 128, k=14 -> MaxPool(2)
+-> Conv1D 128, k=10 -> MaxPool(2)
+-> Conv1D 256, k=10 -> MaxPool(2)
+-> Flatten (3072 values at L=100)
+-> Dense 400
+-> scalar output
+```
 
-### Lampe, Kortmann & Westerkamp 2023 — LSTM
+The source predicts longitudinal/lateral friction potentials and uses its own channel set. LiRA therefore changes the input-channel count and final output to the common scalar reference.
+
+**Fidelity:** architecture-faithful adaptation; source training details not claimed exact where not recoverable.
+
+### Lampe, Kortmann & Westerkamp 2023 — LSTM / GRU
 
 *Neural Network based Tire-Road Friction Estimation Using Experimental Data.*  
 IFAC-PapersOnLine 56(3), 397–402.  
 DOI: `10.1016/j.ifacol.2023.12.056`
 
-The code reproduces the selected recurrent architecture at architecture level: two recurrent LSTM layers with 256 hidden units and the documented dense hidden stage. Inputs are restricted to the common open-sensor protocol.
+Recoverable source details used in paper mode:
 
-### Lampe, Kortmann & Westerkamp 2023 — GRU
+- LSTM: two recurrent layers with 256 units plus a 256-unit `tanh` dense layer.
+- GRU: two recurrent layers with 256 units.
+- Adam, initial learning rate `1e-3`.
+- batch size `64`.
+- `500` epochs as source default.
+- L2 regularization `1e-4`.
+- train-only min-max normalization.
+- orthogonal recurrent-weight initialization.
+- Glorot input/dense initialization.
+- original study trained each network structure five times and selected using validation RMSE.
 
-Same paper/DOI. The paper evaluates recurrent alternatives; the repository includes the two-layer 256-unit GRU variant as a separately reported baseline.
+LiRA does not provide the full original sensor set or maneuver segmentation. We preserve the architecture/initialization/preprocessing and tune the fixed-window history on validation under the harmonized benchmark.
+
+**Fidelity:** architecture/preprocessing-faithful adaptation with source training defaults available in config.
 
 ### Schäfke, Lampe & Kortmann 2023 — Transformer
 
@@ -35,33 +70,32 @@ Same paper/DOI. The paper evaluates recurrent alternatives; the repository inclu
 IEEE CDC 2023, pp. 5331–5338.  
 DOI: `10.1109/CDC49753.2023.10384175`
 
-The paper applies a Transformer to onboard-sensor time series and reports comparison with UKF and prior recurrent estimators. The open benchmark implements the Transformer method family on the common feature window.
+The paper establishes the onboard-sensor Transformer method family, but the exact architecture used by the source is not treated here as publicly recoverable. The repository therefore tunes the adapted Transformer's hidden size/layers/heads/feed-forward multiplier only on validation.
 
-**Fidelity:** methodology-level because the exact original simulated/experimental sensor protocol is not the LiRA protocol.
+**Fidelity:** methodology-level adapted Transformer; exact reproduction is not claimed.
 
-### Chen et al. 2025 — SV-DKL uncertainty baseline
+### Chen et al. 2025 — adapted SV-DKL uncertainty comparator
 
 **Liang Chen, Zhaobo Qin, Yougang Bian, Manjiang Hu, Xiaoyan Peng.**  
 *Data-Driven Tire-Road Friction Estimation for Electric-Wheel Vehicle With Data Category Selection and Uncertainty Evaluation.*  
 IEEE Transactions on Industrial Electronics 72(3), 3048–3060.  
 DOI: `10.1109/TIE.2024.3440510`
 
-The source method constructs spatio-temporal features and uses stochastic variational deep-kernel learning for friction estimation and uncertainty evaluation. The repository provides a spatio-temporal CNN feature extractor plus sparse variational GP (`gpytorch`).
+The source method includes both:
 
-**Fidelity:** methodology-level common-sensor reimplementation.
+1. a vehicle-state/parameter based data-category-selection scheme for stationary/nonstationary longitudinal maneuvers; and
+2. stochastic variational deep-kernel learning for spatial-temporal feature mapping and uncertainty evaluation.
+
+The common LiRA input protocol cannot reproduce the original electric-wheel-vehicle category-selection variables exactly. The runnable comparator therefore implements the spatio-temporal feature + SV-DKL part and states that limitation in `baseline_manifest.csv`.
+
+**Fidelity:** methodology-level adapted SV-DKL; the full Chen method is not claimed reproduced.
 
 ## Literature-only references
 
-Some important methods should be discussed but not placed in the direct table when their inputs/model parameters cannot be faithfully recovered from the open benchmark:
+Some important methods are discussed but excluded from the direct table when their inputs/model setup cannot be reproduced from the common benchmark:
 
-- Du et al. 2023 multimodal LiRA-related vehicle-dynamics + vision method, DOI `10.1177/03611981231165029`.
+- Du et al. 2023 multimodal vehicle-dynamics + vision method, DOI `10.1177/03611981231165029`.
 - Wang et al. 2025 EKFNet/model-based learning framework, DOI `10.1109/TVT.2024.3464524`.
-
-Their published numbers are not copied into `metrics.csv`.
-
-## Why generic Ridge/RF/XGBoost/MLP are absent
-
-They can be useful software sanity checks, but the user requested paper-backed scientific baselines only. They are therefore not part of the paper preset and not named as competing methods in the result table.
 
 ## Machine-readable provenance
 
@@ -69,7 +103,8 @@ Each paper run writes:
 
 ```text
 results/lira_paper/baseline_manifest.csv
-results/lira_paper/literature_only.json
+results/lira_paper/baseline_selected_hparams.json
+results/lira_paper/evaluation_protocol.json
+results/lira_paper/metrics_by_seed.csv
+results/lira_paper/projection_control_metrics.csv
 ```
-
-The manifest contains title, authors, year, venue, DOI, method family and reproduction fidelity for every direct baseline.

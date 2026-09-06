@@ -37,13 +37,13 @@ safegrip ablation --dataset lira --preset paper \
 
 ## Hyperparameter search
 
-SafeGrip uses Optuna TPE. The objective is validation Gaussian NLL, so both point prediction and predicted scale are evaluated. The held-out test partition is not queried by the objective.
+The main benchmark uses **validation RMSE for every method** so model selection is aligned with the primary point-estimation comparison. Test data are never queried by either proposal or baseline tuning.
 
-Default search space (`configs/default.yaml`):
+SafeGrip search space (`configs/default.yaml`) includes:
 
 | Parameter | Search |
 |---|---|
-| `sequence_length` | {16, 32, 64, 128} |
+| `sequence_length` | {16, 32, 64, 100, 128} |
 | `hidden` | {32, 64, 96, 128} |
 | `tcn_blocks` | integer 2–5 |
 | `kernel_size` | {2, 3, 5} |
@@ -54,24 +54,29 @@ Default search space (`configs/default.yaml`):
 | `lambda_mse` | log-uniform 0.05–0.50 |
 | `lambda_physics` | log-uniform 1e-3–0.30 |
 
+Literature baselines receive the **same number of Optuna trials**. Recoverable source architecture/preprocessing remains fixed; model-specific LiRA adaptation parameters are selected on validation. For the explicitly adapted Transformer and SV-DKL comparators, unknown architecture details are also validation-selected rather than presented as source parameters.
+
+```bash
+safegrip tune --dataset lira --trials 30 --no-test
+safegrip tune-baselines --dataset lira --trials 30
+```
+
 ### Intentionally fixed
 
-`mu_upper` and `alpha` are **not tuned**. They define physical/safety/calibration assumptions; tuning them to validation error would weaken the interpretation of the guarantee.
+`mu_upper` and `alpha` are **not tuned**. They define physical/safety/calibration assumptions; tuning them to validation error would weaken their interpretation.
 
 ## No-test-leakage sequence
 
-Paper script:
-
 ```text
 train + calibration + validation
-        -> Optuna selection (--no-test)
-        -> best_hparams.yaml
-        -> freeze configuration
-        -> common final baseline/proposal test
-        -> ablation with same selected hyperparameters
+        -> proposal tuning + equal-budget baseline tuning
+        -> freeze one configuration per method
+        -> five independent final seeds
+        -> common held-out test endpoints
+        -> report mean +/- std
 ```
 
-The selected sequence length is applied as the common evidence-window length for the direct benchmark so all methods are evaluated on the same test endpoints.
+Methods may use different temporal context lengths. `benchmark.common_warmup_samples` forces every validation/test prediction to correspond to the same endpoint set, so history length does not silently change the evaluation population.
 
 ## Outputs
 
@@ -82,6 +87,13 @@ results/lira_tuning/
   best_hparams.yaml
   param_importance.json
   tuning_summary.json
+
+results/lira_baseline_tuning/
+  best_hparams.yaml
+  tuning_summary.json
+  <baseline-id>/trials.csv
+  <baseline-id>/best_hparams.yaml
+  <baseline-id>/optuna.sqlite3
 ```
 
-`tuning_summary.json` explicitly records `test_used_during_search: false` and the fixed safety parameters.
+Both tuning summaries record that test data are not used during search.

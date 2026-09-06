@@ -17,7 +17,8 @@ LITERATURE_BASELINES = {
         "venue": "Journal of Physics: Conference Series",
         "doi": "10.1088/1742-6596/2234/1/012005",
         "family": "temporal_cnn",
-        "fidelity": "methodology-level common-sensor reimplementation",
+        "fidelity": "architecture-faithful adaptation; common LiRA inputs and scalar target",
+        "source_constraints": "100-sample input; Conv1D 128/128/256 + MaxPool; Dense 400; scalar-output adaptation",
         "runnable": True,
     },
     "lampe2023_lstm": {
@@ -29,7 +30,8 @@ LITERATURE_BASELINES = {
         "family": "lstm",
         # The paper's selected LSTM uses two recurrent layers and a dense layer,
         # each with 256 neurons. We reproduce that architecture in paper mode.
-        "fidelity": "architecture-level; common available sensor subset",
+        "fidelity": "architecture/training-faithful adaptation; common available sensor subset",
+        "source_constraints": "2xLSTM(256)+Dense(256,tanh); Adam lr=1e-3; batch=64; 500 epochs; L2=1e-4; train-only MinMax; orthogonal recurrent/Glorot input-dense init",
         "runnable": True,
     },
     "lampe2023_gru": {
@@ -40,7 +42,8 @@ LITERATURE_BASELINES = {
         "doi": "10.1016/j.ifacol.2023.12.056",
         "family": "gru",
         # The paper's selected GRU uses two recurrent layers with 256 units.
-        "fidelity": "architecture-level; common available sensor subset",
+        "fidelity": "architecture/training-faithful adaptation; common available sensor subset",
+        "source_constraints": "2xGRU(256); Adam lr=1e-3; batch=64; 500 epochs; L2=1e-4; train-only MinMax; orthogonal recurrent/Glorot input-dense init",
         "runnable": True,
     },
     "schaefke2023_transformer": {
@@ -50,7 +53,8 @@ LITERATURE_BASELINES = {
         "venue": "IEEE Conference on Decision and Control",
         "doi": "10.1109/CDC49753.2023.10384175",
         "family": "transformer",
-        "fidelity": "methodology-level common-sensor reimplementation",
+        "fidelity": "methodology-level adapted Transformer; exact source architecture not claimed",
+        "source_constraints": "onboard-sensor Transformer family; unknown public architectural details selected only on validation",
         "runnable": True,
     },
     "chen2025_svdkl": {
@@ -60,7 +64,8 @@ LITERATURE_BASELINES = {
         "venue": "IEEE Transactions on Industrial Electronics",
         "doi": "10.1109/TIE.2024.3440510",
         "family": "spatiotemporal_cnn_sparse_variational_gp",
-        "fidelity": "methodology-level common-sensor reimplementation",
+        "fidelity": "methodology-level adapted SV-DKL; source data-category-selection stage not reproduced",
+        "source_constraints": "spatio-temporal feature learning + stochastic variational DKL + uncertainty; electric-wheel data-category selection unavailable under common LiRA inputs",
         "runnable": True,
     },
 }

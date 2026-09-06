@@ -3,6 +3,18 @@ sequence_length: 64
 stride: 4
 mu_upper: 1.30
 alpha: 0.05
+
+benchmark:
+  # All methods may use different temporal context, but validation/test labels
+  # start at the same endpoint. 128 covers the largest default search window.
+  common_warmup_samples: 128
+
+evaluation:
+  # Final paper table: independent repeats, reported as mean +/- std.
+  seeds: [0, 1, 2, 3, 4]
+  # Supplementary parity control only; never relabelled as the published method.
+  projection_parity_controls: true
+
 vehicle:
   mass_kg: 1500.0
   gravity: 9.81
@@ -12,6 +24,7 @@ vehicle:
   accel_error_ms2: 0.15
   external_force_margin_n: 250.0
   vertical_force_margin_n: 250.0
+
 training:
   epochs_quick: 3
   epochs_paper: 60
@@ -21,6 +34,7 @@ training:
   patience: 10
   hidden: 64
   dropout: 0.10
+
 proposal:
   hidden: 64
   dropout: 0.10
@@ -31,16 +45,103 @@ proposal:
   batch_size: 256
   lambda_mse: 0.20
   lambda_physics: 0.05
+
 baseline:
+  todorovic2022_cnn:
+    sequence_length: 100
+    scaler: standard
+    optimizer: adam
+    lr: 0.001
+    weight_decay: 0.0001
+    batch_size: 128
+    dropout: 0.0
+    patience: 20
+    epochs: 60
+  lampe2023_lstm:
+    sequence_length: 100
+    scaler: minmax
+    optimizer: adam
+    lr: 0.001
+    weight_decay: 0.0001
+    batch_size: 64
+    dropout: 0.0
+    patience: 500
+    epochs: 500
+  lampe2023_gru:
+    sequence_length: 100
+    scaler: minmax
+    optimizer: adam
+    lr: 0.001
+    weight_decay: 0.0001
+    batch_size: 64
+    dropout: 0.0
+    patience: 500
+    epochs: 500
+  schaefke2023_transformer:
+    sequence_length: 64
+    scaler: standard
+    optimizer: adamw
+    lr: 0.001
+    weight_decay: 0.0001
+    batch_size: 256
+    dropout: 0.10
+    patience: 10
+    epochs: 60
+    hidden: 64
+    layers: 2
+    heads: 4
+    ff_mult: 2
   chen2025_svdkl:
+    sequence_length: 64
+    scaler: standard
+    optimizer: adamw
+    lr: 0.001
+    weight_decay: 0.0001
+    batch_size: 256
+    dropout: 0.10
+    patience: 10
+    epochs: 60
     hidden: 64
     feature_dim: 16
     inducing: 128
+
+# Same validation-trial budget for every literature comparator. Recoverable core
+# architecture/preprocessing stays fixed; dataset-dependent settings are tuned.
+baseline_tuning:
+  trials: 30
+  sequence_length: [16, 32, 64, 100, 128]
+  lr: [0.0001, 0.003]
+  weight_decay: [0.000001, 0.001]
+  batch_size: [64, 128, 256]
+  space:
+    todorovic2022_cnn:
+      sequence_length: [100]
+      dropout: [0.0, 0.20]
+    lampe2023_lstm:
+      sequence_length: [16, 32, 64, 100, 128]
+      batch_size: [64, 128]
+    lampe2023_gru:
+      sequence_length: [16, 32, 64, 100, 128]
+      batch_size: [64, 128]
+    schaefke2023_transformer:
+      sequence_length: [16, 32, 64, 100, 128]
+      hidden: [64, 128]
+      layers: [1, 3]
+      heads: [2, 4, 8]
+      ff_mult: [2, 4]
+      dropout: [0.0, 0.30]
+    chen2025_svdkl:
+      sequence_length: [16, 32, 64, 100, 128]
+      hidden: [32, 64, 128]
+      feature_dim: [8, 16, 32]
+      inducing: [64, 128, 256]
+      dropout: [0.0, 0.30]
+
 tuning:
   trials: 30
   epochs: 40
   space:
-    sequence_length: [16, 32, 64, 128]
+    sequence_length: [16, 32, 64, 100, 128]
     hidden: [32, 64, 96, 128]
     tcn_blocks: [2, 5]
     kernel_size: [2, 3, 5]
@@ -50,6 +151,7 @@ tuning:
     batch_size: [128, 256, 512]
     lambda_mse: [0.05, 0.50]
     lambda_physics: [0.001, 0.30]
+
 split:
   train: 0.60
   calibration: 0.10

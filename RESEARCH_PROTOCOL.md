@@ -52,7 +52,9 @@ Only paper-backed friction estimators are admitted to the direct paper table:
 - Schäfke et al. 2023 Transformer (`10.1109/CDC49753.2023.10384175`)
 - Chen et al. 2025 SV-DKL uncertainty method (`10.1109/TIE.2024.3440510`)
 
-Where original private sensors/protocols differ, the result must be called a common-open-protocol reimplementation, not exact reproduction.
+Where original private sensors/protocols differ, the result must be called an **adapted common-sensor reimplementation**, not exact reproduction. Todorovic is architecture-faithful after adapting input/output dimensions; Lampe LSTM/GRU preserve the recoverable architecture, initialization and train-only MinMax preprocessing; Schäfke and Chen remain explicitly methodology-level adaptations.
+
+All methods use the same LiRA feature information and split. They may use different temporal context lengths, but a common warm-up forces identical validation/test prediction endpoints. Source-specific preprocessing is fitted on training data only.
 
 Generic Ridge/RandomForest/XGBoost/MLP baselines are intentionally excluded from the paper table.
 
@@ -70,11 +72,13 @@ Required variants:
 
 ## Hyperparameter selection
 
-Tune the proposal only on train/calibration/validation. Never query test metrics from the Optuna objective.
+Tune the proposal **and every literature comparator** on train/calibration/validation only. Give each direct comparator the same Optuna trial budget and never query test metrics from any tuning objective.
 
-Search network/training parameters only. `mu_upper` and `alpha` stay fixed by protocol.
+Use validation RMSE as the primary configuration-selection metric for both proposal and baselines. Search network/training parameters only; `mu_upper` and `alpha` stay fixed by protocol.
 
-After selecting the proposal configuration, use the selected sequence length as the common evidence window for the direct baseline table and reuse the same proposal hyperparameters across all ablations.
+Recoverable source architecture/preprocessing constraints remain fixed. Model-specific temporal context is allowed, with a common evaluation warm-up so all methods are scored on the same validation/test endpoints. Reuse the selected proposal hyperparameters across all ablations.
+
+The final direct table uses five independently reseeded runs per method and reports mean and standard deviation. Baseline outputs additionally receive the same SafeGrip projection as a **supplementary post-processing parity control**, never as a replacement for the raw literature baseline.
 
 ## Required metrics
 

@@ -80,31 +80,61 @@ class SafeGripNoTemporal(nn.Module):
 
 
 class Todorovic2022CNN(nn.Module):
-    """Methodology-level temporal CNN baseline based on Todorovic et al. (2022).
+    """Architecture-faithful adaptation of Todorovic et al. (2022).
 
-    The original paper uses a CNN over longitudinal/lateral vehicle signals. The
-    exact proprietary channel set is not present in every open benchmark; this
-    implementation deliberately uses the same common production-sensor subset as
-    every other direct baseline.
+    The source architecture uses a 100-sample temporal input, three Conv1D +
+    MaxPool stages (128/128/256 channels) and a 400-unit dense layer. The
+    original paper predicts longitudinal and lateral friction potentials; the
+    common LiRA benchmark changes only the input channel count and final output
+    to the shared scalar road-friction reference.
     """
-    def __init__(self, d, hidden=64, dropout=.1):
+    def __init__(self, d: int, sequence_length: int = 100, dropout: float = 0.0,
+                 debug_scale: bool = False):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv1d(d, hidden, 5, padding=2), nn.ReLU(), nn.BatchNorm1d(hidden),
-            nn.Conv1d(hidden, hidden, 3, padding=1), nn.ReLU(), nn.Dropout(dropout),
-            nn.Conv1d(hidden, hidden * 2, 3, padding=1), nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1),
+        c1, c2, c3, dense = ((32, 32, 64, 64) if debug_scale else (128, 128, 256, 400))
+        # padding='same' preserves the source temporal length before each pool;
+        # for L=100: 100 -> 50 -> 25 -> 12, hence 12*256=3072 features.
+        self.features = nn.Sequential(
+            nn.Conv1d(d, c1, kernel_size=14, padding="same"), nn.ReLU(), nn.MaxPool1d(2),
+            nn.Conv1d(c1, c2, kernel_size=10, padding="same"), nn.ReLU(), nn.MaxPool1d(2),
+            nn.Conv1d(c2, c3, kernel_size=10, padding="same"), nn.ReLU(), nn.MaxPool1d(2),
         )
-        self.head = nn.Linear(hidden * 2, 1)
+        if int(sequence_length) < 8:
+            raise ValueError("Todorovic2022CNN requires sequence_length >= 8")
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(dropout),
+            # LazyLinear preserves the source Flatten->Dense(400) design while
+            # allowing quick tests to use a shorter synthetic input. In paper
+            # mode L=100 materializes exactly 12*256=3072 input features.
+            nn.LazyLinear(dense), nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dense, 1),
+        )
 
     def forward(self, x):
-        z = self.net(x.transpose(1, 2)).squeeze(-1)
-        return self.head(z).squeeze(-1)
+        return self.head(self.features(x.transpose(1, 2))).squeeze(-1)
+
+
+def _init_lampe(module: nn.Module) -> None:
+    """Lampe et al.: orthogonal recurrent weights, Glorot input/dense weights."""
+    if isinstance(module, (nn.LSTM, nn.GRU)):
+        for name, param in module.named_parameters():
+            if "weight_hh" in name:
+                nn.init.orthogonal_(param)
+            elif "weight_ih" in name:
+                nn.init.xavier_uniform_(param)
+            elif "bias" in name:
+                nn.init.zeros_(param)
+    elif isinstance(module, nn.Linear):
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
 
 
 class Lampe2023RNN(nn.Module):
-    """Architecture-level LSTM/GRU baseline from Lampe et al. (2023)."""
-    def __init__(self, d, kind="gru", hidden=256, dropout=.1):
+    """Architecture-faithful LSTM/GRU adaptation from Lampe et al. (2023)."""
+    def __init__(self, d, kind="gru", hidden=256, dropout=0.0):
         super().__init__()
         cls = nn.LSTM if kind == "lstm" else nn.GRU
         self.kind = kind
@@ -113,6 +143,7 @@ class Lampe2023RNN(nn.Module):
             self.head = nn.Sequential(nn.Linear(hidden, 256), nn.Tanh(), nn.Linear(256, 1))
         else:
             self.head = nn.Linear(hidden, 1)
+        self.apply(_init_lampe)
 
     def forward(self, x):
         y, _ = self.rnn(x)
@@ -134,15 +165,15 @@ class PositionalEncoding(nn.Module):
 
 
 class Schaefke2023Transformer(nn.Module):
-    """Methodology-level onboard-sensor Transformer baseline (Schäfke et al., 2023)."""
-    def __init__(self, d, hidden=64, dropout=.1, layers=2, heads=4):
+    """Methodology-level common-sensor Transformer adaptation (Schäfke et al., 2023)."""
+    def __init__(self, d, hidden=64, dropout=.1, layers=2, heads=4, ff_mult=2):
         super().__init__()
         if hidden % heads:
-            heads = 1
+            raise ValueError("Transformer hidden size must be divisible by number of heads")
         self.inp = nn.Linear(d, hidden)
         self.pos = PositionalEncoding(hidden)
         layer = nn.TransformerEncoderLayer(
-            hidden, nhead=heads, dim_feedforward=hidden * 2, dropout=dropout,
+            hidden, nhead=heads, dim_feedforward=hidden * ff_mult, dropout=dropout,
             batch_first=True, activation="gelu"
         )
         self.enc = nn.TransformerEncoder(layer, num_layers=layers)
@@ -154,7 +185,13 @@ class Schaefke2023Transformer(nn.Module):
 
 
 class SpatioTemporalCNN(nn.Module):
-    """Feature extractor used by the Chen et al. (2025) SV-DKL baseline."""
+    """Feature extractor for the adapted Chen et al. (2025) SV-DKL comparator.
+
+    The public paper includes a data-category-selection stage that cannot be
+    reproduced from LiRA with the same electric-wheel-vehicle state variables.
+    This class therefore implements only the spatio-temporal feature + SV-DKL
+    portion and is explicitly labelled as an adapted comparator in provenance.
+    """
     def __init__(self, d, hidden=64, feature_dim=16, dropout=.1):
         super().__init__()
         self.temporal = nn.Sequential(
@@ -171,15 +208,19 @@ class SpatioTemporalCNN(nn.Module):
         return self.fuse(torch.cat([a, b], dim=-1))
 
 
-def make_literature_baseline(name: str, d: int, *, debug_scale: bool = False, dropout: float = .1):
-    """Build a cited baseline. debug_scale is never used by paper mode."""
+def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
+                             debug_scale: bool = False, dropout: float = .1,
+                             hidden: int | None = None, layers: int = 2,
+                             heads: int = 4, ff_mult: int = 2):
+    """Build a literature comparator; paper mode never uses debug_scale."""
     if name == "todorovic2022_cnn":
-        return Todorovic2022CNN(d, hidden=32 if debug_scale else 64, dropout=dropout)
+        return Todorovic2022CNN(d, sequence_length=sequence_length, dropout=dropout, debug_scale=debug_scale)
     if name == "lampe2023_lstm":
         return Lampe2023RNN(d, "lstm", hidden=32 if debug_scale else 256, dropout=dropout)
     if name == "lampe2023_gru":
         return Lampe2023RNN(d, "gru", hidden=32 if debug_scale else 256, dropout=dropout)
     if name == "schaefke2023_transformer":
-        return Schaefke2023Transformer(d, hidden=32 if debug_scale else 64, dropout=dropout,
-                                       layers=1 if debug_scale else 2, heads=4)
+        h = 32 if debug_scale else int(hidden or 64)
+        return Schaefke2023Transformer(d, hidden=h, dropout=dropout,
+                                       layers=1 if debug_scale else int(layers), heads=int(heads), ff_mult=int(ff_mult))
     raise ValueError(name)

@@ -7,13 +7,13 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from joblib import dump
 
 from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, PAPER_BASELINES, QUICK_BASELINES, validate_paper_baselines
 from .models import make_literature_baseline, SafeGripNet, SafeGripNoTemporal, DeterministicTCN
-from .physics import project_torch, conformal_lower_correction, apply_lower_correction
+from .physics import project_torch, project_numpy, conformal_lower_correction, apply_lower_correction
 from .utils import ensure_dir, seed_everything, device
 
 META={"distance","lat","lon","match_distance_m","mu_ref","physics_lower_raw","split","source_file"}
@@ -31,7 +31,10 @@ PROPOSAL_VARIANTS=(
 @dataclass
 class Bundle:
     features: list[str]
-    scaler: StandardScaler
+    scaler: object
+    scaler_kind: str
+    sequence_length: int
+    eval_start: int
     q: float
     Xtr: np.ndarray; ytr: np.ndarray; lotr: np.ndarray; raw_lotr: np.ndarray
     Xc: np.ndarray; yc: np.ndarray; loc: np.ndarray; raw_loc: np.ndarray
@@ -39,28 +42,48 @@ class Bundle:
     Xt: np.ndarray; yt: np.ndarray; lot: np.ndarray; raw_lot: np.ndarray
 
 
-def windows_for_split(df,features,split,L,stride):
+def common_eval_start(cfg) -> int:
+    """Return a common endpoint warm-up so different history lengths share labels."""
+    b=cfg.get("benchmark",{})
+    if "common_warmup_samples" in b:
+        return max(0,int(b["common_warmup_samples"])-1)
+    values=[int(cfg.get("sequence_length",64)),100]
+    values.extend(int(x) for x in cfg.get("tuning",{}).get("space",{}).get("sequence_length",[]))
+    for x in cfg.get("baseline_tuning",{}).get("sequence_length",[]):
+        values.append(int(x))
+    return max(values)-1
+
+
+def windows_for_split(df,features,split,L,stride,eval_start=None):
     z=df[df.split==split].reset_index(drop=True)
     X=z[features].to_numpy(np.float32); y=z.mu_ref.to_numpy(np.float32); lo=z.physics_lower_raw.to_numpy(np.float32)
     xs=[]; ys=[]; ls=[]
-    for end in range(L-1,len(z),stride):
+    first=max(L-1,int(eval_start) if eval_start is not None else L-1)
+    for end in range(first,len(z),stride):
         xs.append(X[end-L+1:end+1]); ys.append(y[end]); ls.append(lo[end])
     if not xs:
         return np.empty((0,L,len(features)),np.float32),np.empty(0,np.float32),np.empty(0,np.float32)
     return np.stack(xs),np.asarray(ys,np.float32),np.asarray(ls,np.float32)
 
 
-def make_bundle(csv_path, cfg, sequence_length=None):
+def _make_scaler(kind: str):
+    if kind=="standard": return StandardScaler()
+    if kind=="minmax": return MinMaxScaler()
+    raise ValueError(f"Unknown scaler: {kind}")
+
+
+def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eval_start=None):
     df=pd.read_csv(csv_path)
     features=[c for c in df.columns if c not in META and pd.api.types.is_numeric_dtype(df[c])]
     features=[c for c in features if c not in ("mu_ref","physics_lower_raw")]
     L=int(sequence_length or cfg["sequence_length"]); stride=int(cfg["stride"])
-    splits={s:windows_for_split(df,features,s,L,stride) for s in ("train","calibration","validation","test")}
+    start=common_eval_start(cfg) if eval_start is None else int(eval_start)
+    splits={s:windows_for_split(df,features,s,L,stride,start) for s in ("train","calibration","validation","test")}
     Xtr,ytr,raw_lotr=splits["train"]; Xc,yc,raw_loc=splits["calibration"]
     Xv,yv,raw_lov=splits["validation"]; Xt,yt,raw_lot=splits["test"]
     if min(len(Xtr),len(Xv),len(Xt))==0:
-        raise RuntimeError("One split has no windows; lower sequence_length or inspect prepared data")
-    scaler=StandardScaler().fit(Xtr.reshape(-1,len(features)))
+        raise RuntimeError("One split has no common-evaluation windows; lower benchmark.common_warmup_samples or inspect prepared data")
+    scaler=_make_scaler(scaler_kind).fit(Xtr.reshape(-1,len(features)))
     def sc(X): return scaler.transform(X.reshape(-1,len(features))).reshape(X.shape).astype(np.float32)
     Xtr,Xc,Xv,Xt=map(sc,(Xtr,Xc,Xv,Xt))
     q=conformal_lower_correction(raw_loc,yc,cfg["alpha"]) if len(yc) else 0.0
@@ -68,7 +91,7 @@ def make_bundle(csv_path, cfg, sequence_length=None):
     loc=apply_lower_correction(raw_loc,q).astype(np.float32)
     lov=apply_lower_correction(raw_lov,q).astype(np.float32)
     lot=apply_lower_correction(raw_lot,q).astype(np.float32)
-    return Bundle(features,scaler,q,Xtr,ytr,lotr,raw_lotr,Xc,yc,loc,raw_loc,Xv,yv,lov,raw_lov,Xt,yt,lot,raw_lot)
+    return Bundle(features,scaler,scaler_kind,L,start,q,Xtr,ytr,lotr,raw_lotr,Xc,yc,loc,raw_loc,Xv,yv,lov,raw_lov,Xt,yt,lot,raw_lot)
 
 
 def regression_metrics(y,p,lo=None,mu_upper=1.3,sigma=None):
@@ -101,13 +124,21 @@ def _deep_loader(X,y,lo,batch):
     return DataLoader(TensorDataset(torch.from_numpy(X),torch.from_numpy(y),torch.from_numpy(lo)),batch_size=batch,shuffle=True)
 
 
-def _fit_deterministic(model,Xtr,ytr,Xv,yv,cfg,epochs):
-    dev=device(); model=model.to(dev); tr=cfg["training"]
-    opt=torch.optim.AdamW(model.parameters(),lr=tr["lr"],weight_decay=tr["weight_decay"])
-    dl=DataLoader(TensorDataset(torch.from_numpy(Xtr),torch.from_numpy(ytr)),batch_size=tr["batch_size"],shuffle=True)
+def _optimizer(name, params, lr, weight_decay):
+    if str(name).lower()=="adam":
+        return torch.optim.Adam(params,lr=lr,weight_decay=weight_decay)
+    if str(name).lower()=="adamw":
+        return torch.optim.AdamW(params,lr=lr,weight_decay=weight_decay)
+    raise ValueError(f"Unsupported optimizer: {name}")
+
+
+def _fit_deterministic(model,Xtr,ytr,Xv,yv,hp,epochs):
+    dev=device(); model=model.to(dev)
+    opt=_optimizer(hp.get("optimizer","adamw"),model.parameters(),float(hp["lr"]),float(hp["weight_decay"]))
+    dl=DataLoader(TensorDataset(torch.from_numpy(Xtr),torch.from_numpy(ytr)),batch_size=int(hp["batch_size"]),shuffle=True)
     xv=torch.from_numpy(Xv).to(dev); yv_t=torch.from_numpy(yv).to(dev)
-    best=None; bestloss=float("inf"); bad=0
-    for _ in range(epochs):
+    best=None; bestloss=float("inf"); bad=0; patience=int(hp.get("patience",10))
+    for _ in range(int(epochs)):
         model.train()
         for xb,yb in dl:
             xb=xb.to(dev); yb=yb.to(dev); opt.zero_grad(); pred=model(xb)
@@ -117,21 +148,42 @@ def _fit_deterministic(model,Xtr,ytr,Xv,yv,cfg,epochs):
         if vl<bestloss-1e-7:
             bestloss=vl; best={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}; bad=0
         else: bad+=1
-        if bad>=tr["patience"]: break
+        if bad>=patience: break
     if best: model.load_state_dict(best)
     return model
 
 
-def fit_literature(name,b:Bundle,cfg,epochs,preset="paper"):
+def literature_hparams(name,cfg,overrides=None,preset="paper"):
+    tr=cfg["training"]
+    base={
+        "sequence_length":int(cfg.get("sequence_length",64)), "scaler":"standard",
+        "optimizer":"adamw", "lr":float(tr["lr"]), "weight_decay":float(tr["weight_decay"]),
+        "batch_size":int(tr["batch_size"]), "dropout":float(tr.get("dropout",.1)),
+        "patience":int(tr.get("patience",10)),
+        "epochs":int(tr["epochs_quick" if preset=="quick" else "epochs_paper"]),
+    }
+    if preset=="paper": base.update(cfg.get("baseline",{}).get(name,{}))
+    elif name=="todorovic2022_cnn":
+        # Quick mode stays lightweight while preserving the published layer pattern.
+        base["sequence_length"]=max(16,min(100,int(cfg.get("sequence_length",64))))
+    if overrides: base.update(overrides)
+    return base
+
+
+def fit_literature(name,b:Bundle,cfg,epochs=None,preset="paper",hp_overrides=None):
+    hp=literature_hparams(name,cfg,hp_overrides,preset)
+    epochs=int(epochs or hp["epochs"])
     if name=="chen2025_svdkl":
         from .svdkl import fit_svdkl
-        tr=cfg["training"]; gp=cfg.get("baseline",{}).get("chen2025_svdkl",{})
-        return fit_svdkl(b.Xtr,b.ytr,b.Xv,b.yv,hidden=gp.get("hidden",64),feature_dim=gp.get("feature_dim",16),
-                         inducing=gp.get("inducing",128),dropout=tr["dropout"],lr=tr["lr"],
-                         weight_decay=tr["weight_decay"],batch_size=tr["batch_size"],epochs=epochs,
-                         patience=tr["patience"],device=device())
-    model=make_literature_baseline(name,len(b.features),debug_scale=(preset=="quick"),dropout=cfg["training"]["dropout"])
-    return _fit_deterministic(model,b.Xtr,b.ytr,b.Xv,b.yv,cfg,epochs)
+        return fit_svdkl(b.Xtr,b.ytr,b.Xv,b.yv,hidden=int(hp.get("hidden",64)),feature_dim=int(hp.get("feature_dim",16)),
+                         inducing=int(hp.get("inducing",128)),dropout=float(hp["dropout"]),lr=float(hp["lr"]),
+                         weight_decay=float(hp["weight_decay"]),batch_size=int(hp["batch_size"]),epochs=epochs,
+                         patience=int(hp["patience"]),device=device(),optimizer=hp.get("optimizer","adamw"))
+    model=make_literature_baseline(name,len(b.features),sequence_length=b.sequence_length,
+                                   debug_scale=(preset=="quick"),dropout=float(hp["dropout"]),
+                                   hidden=hp.get("hidden"),layers=int(hp.get("layers",2)),heads=int(hp.get("heads",4)),
+                                   ff_mult=int(hp.get("ff_mult",2)))
+    return _fit_deterministic(model,b.Xtr,b.ytr,b.Xv,b.yv,hp,epochs)
 
 
 def predict_literature(model,name,X,batch=1024):
@@ -227,37 +279,98 @@ def _export_literature_manifest(out:Path,names):
 def _save_bundle_meta(out,b,cfg):
     dump(b.scaler,out/"scaler.joblib")
     (out/"features.json").write_text(json.dumps(b.features,indent=2),encoding="utf-8")
-    (out/"calibration.json").write_text(json.dumps({"one_sided_q":b.q,"alpha":cfg["alpha"],"test_used_for_calibration":False},indent=2),encoding="utf-8")
+    (out/"calibration.json").write_text(json.dumps({"one_sided_q":b.q,"alpha":cfg["alpha"],"test_used_for_calibration":False,
+                                                     "sequence_length":b.sequence_length,"eval_start":b.eval_start,
+                                                     "scaler":b.scaler_kind},indent=2),encoding="utf-8")
 
 
-def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=None):
-    seed_everything(cfg["seed"]); out=ensure_dir(out_dir)
-    seq=(hp_overrides or {}).get("sequence_length")
-    b=make_bundle(csv_path,cfg,sequence_length=seq); _save_bundle_meta(out,b,cfg)
+def _assert_same_targets(reference: Bundle, candidate: Bundle, name: str):
+    if reference.yt.shape!=candidate.yt.shape or not np.allclose(reference.yt,candidate.yt,equal_nan=True):
+        raise RuntimeError(f"{name} is not evaluated on the same test endpoints; check common warm-up/stride")
+    if reference.yv.shape!=candidate.yv.shape or not np.allclose(reference.yv,candidate.yv,equal_nan=True):
+        raise RuntimeError(f"{name} is not evaluated on the same validation endpoints; check common warm-up/stride")
+
+
+def _aggregate_seed_metrics(rows):
+    df=pd.DataFrame(rows)
+    out=[]
+    id_cols=[c for c in ("model","kind","doi") if c in df]
+    for keys,g in df.groupby(id_cols,dropna=False,sort=False):
+        if not isinstance(keys,tuple): keys=(keys,)
+        row=dict(zip(id_cols,keys)); row["n_seeds"]=int(g["seed"].nunique()) if "seed" in g else len(g)
+        for c in g.columns:
+            if c in id_cols or c=="seed" or not pd.api.types.is_numeric_dtype(g[c]): continue
+            row[c]=float(g[c].mean())
+            row[c+"_std"]=float(g[c].std(ddof=1)) if len(g)>1 else 0.0
+        out.append(row)
+    return pd.DataFrame(out)
+
+
+def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=None,baseline_hparams=None):
+    out=ensure_dir(out_dir)
     baseline_names=list(models) if models else list(QUICK_BASELINES if preset=="quick" else PAPER_BASELINES)
     validate_paper_baselines(baseline_names); _export_literature_manifest(out,baseline_names)
-    epochs=int(cfg["training"]["epochs_quick" if preset=="quick" else "epochs_paper"])
-    results=[]; preds=pd.DataFrame({"y_true":b.yt,"physics_lower":b.lot,"physics_lower_raw":b.raw_lot})
+    start=common_eval_start(cfg)
+    proposal_seq=int((hp_overrides or {}).get("sequence_length",cfg["sequence_length"]))
+    proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind="standard",eval_start=start)
+    _save_bundle_meta(out,proposal_bundle,cfg)
+    seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]])) if preset=="paper" else [int(cfg["seed"])]
+    include_projection=bool(cfg.get("evaluation",{}).get("projection_parity_controls",True)) and preset=="paper"
+    epochs_proposal=int(cfg["training"]["epochs_quick" if preset=="quick" else "epochs_paper"])
+
+    per_seed=[]; control_rows=[]
+    preds=pd.DataFrame({"y_true":proposal_bundle.yt,"physics_lower":proposal_bundle.lot,"physics_lower_raw":proposal_bundle.raw_lot})
+    control_preds=pd.DataFrame({"y_true":proposal_bundle.yt,"physics_lower":proposal_bundle.lot})
+    selected={}; scaler_dir=ensure_dir(out/"baseline_scalers")
+
     for name in baseline_names:
-        print(f"[baseline/cited] {name} DOI={LITERATURE_BASELINES[name]['doi']}"); t0=time.time()
-        model=fit_literature(name,b,cfg,epochs,preset); p,s=predict_literature(model,name,b.Xt)
-        row={"model":name,"kind":"published_baseline","doi":LITERATURE_BASELINES[name]["doi"],**regression_metrics(b.yt,p,b.lot,cfg["mu_upper"],s),"seconds":time.time()-t0}
-        results.append(row); preds[name]=p
-        if s is not None: preds[name+"_sigma"]=s
-    # Full proposal is always appended; it is not a baseline.
-    name="safegrip"; print("[proposal] safegrip"); t0=time.time(); model,hp=fit_proposal(name,b,cfg,epochs,hp_overrides)
-    p,s,bound=predict_proposal(model,name,b.Xt,b.lot,b.raw_lot,cfg["mu_upper"])
-    results.append({"model":name,"kind":"proposal","doi":"",**regression_metrics(b.yt,p,bound,cfg["mu_upper"],s),"seconds":time.time()-t0})
-    preds[name]=p; preds[name+"_sigma"]=s
-    pd.DataFrame(results).to_csv(out/"metrics.csv",index=False); preds.to_csv(out/"predictions.csv",index=False)
-    (out/"proposal_hparams.json").write_text(json.dumps(hp,indent=2),encoding="utf-8")
-    return pd.DataFrame(results)
+        override=(baseline_hparams or {}).get(name,{})
+        hp=literature_hparams(name,cfg,override,preset); selected[name]=hp
+        b=make_bundle(csv_path,cfg,sequence_length=int(hp["sequence_length"]),scaler_kind=str(hp["scaler"]),eval_start=start)
+        _assert_same_targets(proposal_bundle,b,name); dump(b.scaler,scaler_dir/f"{name}.joblib")
+        print(f"[baseline/adapted] {name} DOI={LITERATURE_BASELINES[name]['doi']} L={b.sequence_length} scaler={b.scaler_kind}")
+        seed_preds=[]; seed_sigmas=[]; seed_control=[]
+        for seed in seed_list:
+            seed_everything(int(seed)); t0=time.time()
+            model=fit_literature(name,b,cfg,None,preset,hp); p,s=predict_literature(model,name,b.Xt)
+            per_seed.append({"model":name,"kind":"literature_adapted_baseline","doi":LITERATURE_BASELINES[name]["doi"],"seed":int(seed),
+                             **regression_metrics(b.yt,p,b.lot,cfg["mu_upper"],s),"seconds":time.time()-t0})
+            seed_preds.append(p)
+            if s is not None: seed_sigmas.append(s)
+            if include_projection:
+                pp=project_numpy(p,b.lot,float(cfg["mu_upper"])); seed_control.append(pp)
+                control_rows.append({"model":name+"__projection_control","source_model":name,"kind":"postprocessing_parity_control","doi":LITERATURE_BASELINES[name]["doi"],"seed":int(seed),
+                                     **regression_metrics(b.yt,pp,b.lot,cfg["mu_upper"],s)})
+        preds[name]=np.mean(np.stack(seed_preds),axis=0)
+        if seed_sigmas: preds[name+"_sigma"]=np.mean(np.stack(seed_sigmas),axis=0)
+        if seed_control: control_preds[name+"__projection_control"]=np.mean(np.stack(seed_control),axis=0)
+
+    name="safegrip"; print(f"[proposal] safegrip L={proposal_bundle.sequence_length}")
+    proposal_preds=[]; proposal_sigmas=[]; final_hp=None
+    for seed in seed_list:
+        seed_everything(int(seed)); t0=time.time(); model,final_hp=fit_proposal(name,proposal_bundle,cfg,epochs_proposal,hp_overrides)
+        p,s,bound=predict_proposal(model,name,proposal_bundle.Xt,proposal_bundle.lot,proposal_bundle.raw_lot,cfg["mu_upper"])
+        per_seed.append({"model":name,"kind":"proposal","doi":"","seed":int(seed),**regression_metrics(proposal_bundle.yt,p,bound,cfg["mu_upper"],s),"seconds":time.time()-t0})
+        proposal_preds.append(p); proposal_sigmas.append(s)
+    preds[name]=np.mean(np.stack(proposal_preds),axis=0); preds[name+"_sigma"]=np.mean(np.stack(proposal_sigmas),axis=0)
+
+    by_seed=pd.DataFrame(per_seed); metrics=_aggregate_seed_metrics(per_seed)
+    metrics.to_csv(out/"metrics.csv",index=False); by_seed.to_csv(out/"metrics_by_seed.csv",index=False); preds.to_csv(out/"predictions.csv",index=False)
+    (out/"proposal_hparams.json").write_text(json.dumps(final_hp,indent=2),encoding="utf-8")
+    (out/"baseline_selected_hparams.json").write_text(json.dumps(selected,indent=2),encoding="utf-8")
+    (out/"evaluation_protocol.json").write_text(json.dumps({"seeds":seed_list,"common_eval_start":start,"common_eval_warmup_samples":start+1,
+                                                               "same_validation_test_endpoints":True,"primary_selection_metric":"validation RMSE"},indent=2),encoding="utf-8")
+    if control_rows:
+        _aggregate_seed_metrics(control_rows).to_csv(out/"projection_control_metrics.csv",index=False)
+        pd.DataFrame(control_rows).to_csv(out/"projection_control_metrics_by_seed.csv",index=False)
+        control_preds.to_csv(out/"projection_control_predictions.csv",index=False)
+    return metrics
 
 
 def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=None):
     seed_everything(cfg["seed"]); out=ensure_dir(out_dir)
     seq=(hp_overrides or {}).get("sequence_length")
-    b=make_bundle(csv_path,cfg,sequence_length=seq); _save_bundle_meta(out,b,cfg)
+    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=common_eval_start(cfg)); _save_bundle_meta(out,b,cfg)
     variants=list(variants or PROPOSAL_VARIANTS); epochs=int(cfg["training"]["epochs_quick" if preset=="quick" else "epochs_paper"])
     results=[]; preds=pd.DataFrame({"y_true":b.yt,"physics_lower":b.lot,"physics_lower_raw":b.raw_lot})
     for v in variants:
