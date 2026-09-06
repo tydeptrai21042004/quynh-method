@@ -1,0 +1,223 @@
+# SafeGrip-Open v0.2
+
+Reproducible research code for **physics-guaranteed / partially identified tire-road friction estimation under limited excitation**.
+
+The repository follows two strict rules:
+
+1. **Direct baselines must correspond to published tire/friction-estimation papers.** Generic ML models are not inserted into the paper table simply because they are easy to code.
+2. **Each open dataset is used only for a target it actually measures.** LiRA's VIAFRIK value is treated as an external standardized road-friction reference, not silently relabeled as the Renault Zoe tire's exact peak friction.
+
+## One-command paper run
+
+```bash
+bash scripts/run_paper.sh
+```
+
+The paper script:
+
+1. installs paper dependencies;
+2. auto-downloads LiRA through the public Figshare API;
+3. preprocesses/alines the car and VIAFRIK data;
+4. performs Optuna tuning of **SafeGrip only** on train/calibration/validation (the test split is not consulted);
+5. runs all cited direct baselines on a common open-sensor protocol;
+6. runs the controlled proposal ablation using the same selected hyperparameters;
+7. exports metrics, predictions, citation manifests and tuning records.
+
+Use fewer tuning trials during development:
+
+```bash
+TRIALS=5 TUNE_EPOCHS=8 bash scripts/run_paper.sh
+```
+
+Skip tuning and use `configs/default.yaml`:
+
+```bash
+SKIP_TUNING=1 bash scripts/run_paper.sh
+```
+
+Download/prepare every supported auxiliary source too:
+
+```bash
+DOWNLOAD_AUX=1 bash scripts/run_paper.sh
+# or independently
+bash scripts/download_all_datasets.sh
+```
+
+## Literature-backed direct baselines
+
+The `paper` preset contains only methods tied to actual tire/friction papers:
+
+| ID | Paper method | DOI | Reproduction level |
+|---|---|---|---|
+| `todorovic2022_cnn` | temporal CNN friction-potential estimator | `10.1088/1742-6596/2234/1/012005` | methodology-level |
+| `lampe2023_lstm` | two-layer LSTM estimator | `10.1016/j.ifacol.2023.12.056` | architecture-level on common available sensors |
+| `lampe2023_gru` | two-layer GRU estimator | `10.1016/j.ifacol.2023.12.056` | architecture-level on common available sensors |
+| `schaefke2023_transformer` | onboard-sensor Transformer | `10.1109/CDC49753.2023.10384175` | methodology-level |
+| `chen2025_svdkl` | spatio-temporal CNN + stochastic variational deep-kernel learning | `10.1109/TIE.2024.3440510` | methodology-level |
+
+The original papers do not all expose the same sensors or public training data. Therefore the code explicitly exports `fidelity` in `baseline_manifest.csv`; it does **not** claim exact reproduction where that would be false.
+
+Paper-reported scores from non-matching protocols are stored as literature context only and are never merged into our direct numerical table.
+
+## Proposal and ablations
+
+Full SafeGrip:
+
+```text
+production-sensor time window
+        -> compact TCN
+        -> mean + aleatoric scale
+        -> soft physics loss
+        -> calibrated identified set [mu_lower, mu_upper]
+        -> hard projection
+```
+
+Controlled ablation:
+
+| Variant | What is removed? |
+|---|---|
+| `safegrip_data_only` | hard projection + soft physics loss |
+| `safegrip_no_projection` | hard identified-set projection |
+| `safegrip_no_uq` | heteroscedastic uncertainty head |
+| `safegrip_no_physics_loss` | soft physics penalty |
+| `safegrip_no_calibration` | one-sided external-reference calibration |
+| `safegrip_no_temporal` | TCN temporal encoder; uses last-state MLP |
+| `safegrip` | full proposal |
+
+Run separately:
+
+```bash
+safegrip ablation --dataset lira --preset paper \
+  --proposal-hparams results/lira_tuning/best_hparams.yaml
+```
+
+## Proposal hyperparameter tuning
+
+```bash
+safegrip tune --dataset lira --trials 30 --epochs 40 --no-test
+```
+
+Tuned parameters:
+
+- sequence length;
+- hidden width;
+- number of TCN blocks;
+- kernel size;
+- dropout;
+- learning rate;
+- weight decay;
+- batch size;
+- supervised MSE weight;
+- soft physics-loss weight.
+
+**Not tuned:** `mu_upper` and calibration coverage `alpha`. They are physical/safety assumptions, not validation-score knobs.
+
+Outputs:
+
+- `best_hparams.yaml`
+- `trials.csv`
+- `param_importance.json`
+- `tuning_summary.json`
+- Optuna SQLite study
+
+The test partition is locked during the search. A test result is produced only after a configuration has been selected, unless `--no-test` is used (the paper script uses `--no-test` and then evaluates the selected setup in the common benchmark).
+
+## Supported open data
+
+Eight sources are registered and auto-discover/download where upstream public access permits it:
+
+1. **LiRA-CD platoon friction test** — primary road-friction-reference benchmark.
+2. **KU Leuven LMSD Concept Car** — real wheel-force validation using Kistler RoaDyn WFTs.
+3. **KIT tire force-transmission dataset** — measured dry-asphalt tire mechanics.
+4. **Deep Dynamics / IAC** — high-dynamics auxiliary/domain-shift vehicle data.
+5. **comma2k19** — unlabeled CAN/IMU temporal/domain data; safe default downloads the repository/example, not the ~100 GB full archive.
+6. **Extreme Road Image Dataset** — six road-condition image classes for optional multimodal work.
+7. **Bicycle Tyre Data, Zenodo** — open lateral-force/self-aligning-torque mechanics data; auxiliary only.
+8. **Mendeley tire-pavement friction data** — friction coefficient across road/speed conditions.
+
+```bash
+safegrip datasets
+safegrip download --datasets all
+safegrip prepare --dataset kit
+```
+
+See `DATASETS.md` for targets, licenses and scientific roles.
+
+### Access-policy behavior
+
+The downloader never bypasses repository restrictions. For example, if KU Leuven requires a guestbook/terms acceptance, accept it on the dataset page and, if Dataverse requires it, provide:
+
+```bash
+export KULEUVEN_API_TOKEN="..."
+```
+
+The rest of the datasets continue even if one upstream host changes its API.
+
+## Leakage-safe LiRA protocol
+
+Adjacent GPS samples share road condition and must not be randomly scattered between train/test. Default blocks are:
+
+- 60% train
+- 10% physical-bound calibration
+- 10% validation
+- 20% test
+
+GPS is used for matching/splitting only and is excluded from model features.
+
+## Quick/offline verification
+
+```bash
+bash scripts/smoke_test.sh
+```
+
+or:
+
+```bash
+DATASET=synthetic bash scripts/run_all.sh
+```
+
+Synthetic data exists only to test software plumbing. It is **never** a paper baseline or evidence for the research claim.
+
+## Key outputs
+
+Main benchmark:
+
+```text
+results/lira_paper/
+  baseline_manifest.csv
+  literature_only.json
+  metrics.csv
+  predictions.csv
+  features.json
+  calibration.json
+  proposal_hparams.json
+  *.png
+```
+
+Ablation:
+
+```text
+results/lira_ablation_paper/
+  ablation_metrics.csv
+  ablation_predictions.csv
+  ablation_design.json
+```
+
+Tuning:
+
+```text
+results/lira_tuning/
+  best_hparams.yaml
+  trials.csv
+  param_importance.json
+  tuning_summary.json
+  optuna.sqlite3
+```
+
+## Documentation
+
+- `RESEARCH_PROTOCOL.md` — exact claim boundaries and evaluation protocol.
+- `LITERATURE_BASELINES.md` — why every direct baseline is included and what is *not* directly comparable.
+- `DATASETS.md` — open-data inventory and auto-download behavior.
+- `ABLATION_AND_TUNING.md` — controlled ablation and hyperparameter protocol.
+- `references.bib` — citations used by the benchmark registry.

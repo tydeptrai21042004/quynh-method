@@ -1,0 +1,57 @@
+seed: 20260905
+sequence_length: 64
+stride: 4
+mu_upper: 1.30
+alpha: 0.05
+vehicle:
+  mass_kg: 1500.0
+  gravity: 9.81
+  crr: 0.012
+  rho_air: 1.225
+  cdA_m2: 0.66
+  accel_error_ms2: 0.15
+  external_force_margin_n: 250.0
+  vertical_force_margin_n: 250.0
+training:
+  epochs_quick: 3
+  epochs_paper: 60
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.0001
+  patience: 10
+  hidden: 64
+  dropout: 0.10
+proposal:
+  hidden: 64
+  dropout: 0.10
+  tcn_blocks: 4
+  kernel_size: 3
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_size: 256
+  lambda_mse: 0.20
+  lambda_physics: 0.05
+baseline:
+  chen2025_svdkl:
+    hidden: 64
+    feature_dim: 16
+    inducing: 128
+tuning:
+  trials: 30
+  epochs: 40
+  space:
+    sequence_length: [16, 32, 64, 128]
+    hidden: [32, 64, 96, 128]
+    tcn_blocks: [2, 5]
+    kernel_size: [2, 3, 5]
+    dropout: [0.0, 0.30]
+    lr: [0.0001, 0.003]
+    weight_decay: [0.000001, 0.001]
+    batch_size: [128, 256, 512]
+    lambda_mse: [0.05, 0.50]
+    lambda_physics: [0.001, 0.30]
+split:
+  train: 0.60
+  calibration: 0.10
+  validation: 0.10
+  test: 0.20

@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+DATASET_REGISTRY = {
+    "lira": {
+        "title": "LiRA-CD platoon friction test",
+        "role": "primary real road-friction reference benchmark",
+        "target": "VIAFRIK standardized road-friction reference",
+        "doi": "10.11583/DTU.23096600.v1",
+        "license": "CC BY 4.0",
+        "auto_download": "yes",
+    },
+    "kuleuven": {
+        "title": "KU Leuven LMSD Concept Car",
+        "role": "real-vehicle wheel-force validation",
+        "target": "Kistler RoaDyn wheel forces",
+        "doi": "10.48804/PHMF9D",
+        "license": "CC BY-NC 4.0 (data)",
+        "auto_download": "yes; repository may require accepting guestbook/terms",
+    },
+    "kit": {
+        "title": "KIT tire force transmission characteristic dataset",
+        "role": "tire-mechanics/force-utilization validation",
+        "target": "measured Fx/Fy/Fz characteristics",
+        "doi": "10.35097/p0rr2jc5wmf0drf8",
+        "license": "CC BY-NC-SA 4.0",
+        "auto_download": "yes",
+    },
+    "deep_dynamics": {
+        "title": "Deep Dynamics / IAC and BayesRace data",
+        "role": "high-dynamics auxiliary/domain-shift data",
+        "target": "vehicle-dynamics signals; not direct friction ground truth",
+        "doi": "10.1109/LRA.2024.3388847",
+        "license": "repository GPL-3.0; verify bundled data terms",
+        "auto_download": "yes",
+    },
+    "comma2k19": {
+        "title": "comma2k19",
+        "role": "unlabeled production-sensor temporal pretraining/domain data",
+        "target": "none for friction",
+        "paper": "A Commute in Data: The comma2k19 Dataset",
+        "license": "MIT repository; dataset terms documented upstream",
+        "auto_download": "repository/example subset yes; full dataset intentionally opt-in because it is ~100 GB",
+    },
+    "extreme_road": {
+        "title": "Extreme Road Image Dataset",
+        "role": "optional road-condition/vision auxiliary benchmark",
+        "target": "six extreme road-condition classes",
+        "doi": "10.1016/j.ymssp.2024.112039",
+        "license": "BSD-3-Clause repository",
+        "auto_download": "yes",
+    },
+    "bicycle_tire": {
+        "title": "Bicycle Tyre Data",
+        "role": "open auxiliary tire-force mechanics validation only",
+        "target": "lateral force and self-aligning torque vs load/pressure/camber",
+        "doi": "10.5281/zenodo.7866646",
+        "license": "see Zenodo record",
+        "auto_download": "yes",
+    },
+    "mendeley_friction": {
+        "title": "Tire-pavement friction coefficient dataset",
+        "role": "external friction/speed/surface reference",
+        "target": "friction coefficient",
+        "doi": "10.17632/trrcrgzg75.1",
+        "license": "CC BY 4.0",
+        "auto_download": "yes when public-file endpoint is exposed by Mendeley; clear fallback message otherwise",
+    },
+}
