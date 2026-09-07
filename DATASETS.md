@@ -17,7 +17,7 @@ SafeGrip does not merge datasets with incompatible targets into one table. Each 
 
 The platoon test combines normal vehicle/AutoPi/CAN data from a Renault Zoe with a VIAFRIK reference vehicle driving the same wet road. The target in this repository is named `mu_ref` deliberately: it is a standardized external road reference, not the exact instantaneous peak coefficient of the ego tire.
 
-The downloader queries Figshare article metadata at runtime and downloads the current files. The preprocessor spatially aligns vehicle/reference measurements and keeps GPS out of learned inputs.
+The downloader queries Figshare article metadata at runtime and downloads the current files. The corrected preprocessor aligns each vehicle trip against a route/direction-consistent reference trace when those identifiers are explicit, then applies distance, heading and monotonic-progress checks. Spatial split assignment occurs before interpolation/resampling, and all filling is restricted to one `(trip_id, split)` block. GPS and route metadata remain excluded from learned inputs.
 
 ## KU Leuven LMSD Concept Car
 

@@ -1,6 +1,6 @@
-# SafeGrip-Open v0.2
+# SafeGrip-Open v0.3
 
-Reproducible research code for **physics-guaranteed / partially identified tire-road friction estimation under limited excitation**.
+Reproducible research code for **physics-constrained partial identification of tire-road friction under limited excitation**.
 
 The repository follows two strict rules:
 
@@ -17,12 +17,13 @@ The paper script:
 
 1. installs paper dependencies;
 2. auto-downloads LiRA through the public Figshare API;
-3. preprocesses/alines the car and VIAFRIK data;
+3. preprocesses/aligns LiRA with route-local matching, distance/heading constraints, contiguous spatial splits, split-local imputation and optional fixed-rate resampling;
 4. tunes **SafeGrip and every literature comparator** on train/calibration/validation with the same trial budget (test is locked);
 5. keeps recoverable source architecture/preprocessing constraints while allowing model-specific temporal context;
 6. runs the final paper table over five independent seeds and reports mean/std;
 7. exports supplementary same-physics-projection parity controls without relabelling them as published methods;
-8. runs the controlled SafeGrip ablation and exports provenance/tuning records.
+8. runs the controlled five-seed SafeGrip ablation and exports provenance/tuning records;
+9. exposes excitation, physical-assumption robustness, data-scarcity, cross-route and force-mechanics validation commands.
 
 Use fewer tuning trials during development:
 
@@ -166,14 +167,34 @@ The rest of the datasets continue even if one upstream host changes its API.
 
 ## Leakage-safe LiRA protocol
 
-Adjacent GPS samples share road condition and must not be randomly scattered between train/test. Default blocks are:
+Adjacent GPS samples share road condition and must not be randomly scattered between train/test. The corrected preprocessor performs per-trip alignment and split construction before any feature filling. Default blocks are:
 
-- 60% train
-- 10% physical-bound calibration
-- 10% validation
-- 20% test
+- 60% train;
+- 10% lower-bound calibration;
+- 10% validation;
+- 20% test.
 
-GPS is used for matching/splitting only and is excluded from model features.
+Reference matching uses explicit route/direction metadata when present, a configurable metric tolerance (10 m by default), heading consistency and monotonic reference progress. Interpolation and resampling are restricted to one `(trip_id, split)` block. Temporal windows are also built per trip, so a sequence can never bridge two independent drives. GPS/route/matching metadata are excluded from model features.
+
+The preprocessor writes `lira_alignment_report.csv` and `lira_preprocessing_report.json` so the retained matches and protocol settings are auditable.
+
+## Reviewer-oriented experiments
+
+After the main benchmark:
+
+```bash
+safegrip experiment --dataset lira --study excitation --results results/lira_paper
+safegrip experiment --dataset lira --study robustness --results results/lira_paper
+safegrip experiment --dataset lira --study scarcity --preset paper \
+  --proposal-hparams results/lira_tuning/best_hparams.yaml
+safegrip experiment --dataset lira --study cross-route --preset paper \
+  --proposal-hparams results/lira_tuning/best_hparams.yaml
+
+safegrip force-validate --dataset kit
+safegrip force-validate --dataset kuleuven
+```
+
+`excitation` and `robustness` use the frozen paper predictions. `scarcity` retrains SafeGrip and the data-only TCN+UQ backbone over 10/25/50/75/100% training fractions. `cross-route` only runs when at least two explicit route IDs are available; it does not infer route names from GPS.
 
 ## Quick/offline verification
 
@@ -199,7 +220,7 @@ results/lira_paper/
   literature_only.json
   metrics.csv                 # mean across final seeds
   metrics_by_seed.csv         # individual final runs
-  predictions.csv
+  predictions.csv              # includes SafeGrip raw mean, sigma and projected 95% interval
   features.json
   calibration.json
   proposal_hparams.json
@@ -214,7 +235,8 @@ Ablation:
 
 ```text
 results/lira_ablation_paper/
-  ablation_metrics.csv
+  ablation_metrics.csv          # mean/std across final seeds
+  ablation_metrics_by_seed.csv
   ablation_predictions.csv
   ablation_design.json
 ```
@@ -244,3 +266,5 @@ results/lira_baseline_tuning/
 - `DATASETS.md` — open-data inventory and auto-download behavior.
 - `ABLATION_AND_TUNING.md` — controlled ablation and hyperparameter protocol.
 - `references.bib` — citations used by the benchmark registry.
+- `VALIDATION.md` — commands executed on the packaged repository and current test status.
+- `IMPLEMENTED_IMPROVEMENTS.md` — concise map from the review issues to the implemented code changes.

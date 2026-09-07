@@ -6,10 +6,10 @@ Because the source papers use different vehicles, sensors and targets, the bench
 
 ## Fair-comparison rules
 
-- Same LiRA train/calibration/validation/test partition.
+- Same LiRA train/calibration/validation/test partition after leakage-safe trip-local preprocessing.
 - Same available model input information; GPS remains matching/splitting metadata only.
 - Model-specific temporal context is allowed.
-- Validation/test **endpoints remain identical** across context lengths via a common warm-up.
+- Validation/test **endpoints remain identical** across context lengths via a common warm-up and exact stable `sample_uid` checks.
 - Train-only preprocessing follows the source paper where recoverable.
 - Proposal and literature comparators receive the same Optuna trial budget.
 - Primary validation selection metric is RMSE for every method.

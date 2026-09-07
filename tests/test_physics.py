@@ -18,3 +18,20 @@ def test_conformal_only_relaxes_physical_lower():
     q=conformal_lower_correction(lo,y,.1)
     assert q>=0
     assert np.all(apply_lower_correction(lo,q)<=lo+1e-12)
+
+
+def test_projected_interval_never_widens_and_preserves_truth():
+    from safegrip.physics import project_interval_numpy
+    low=np.array([-.5,.2,.9]); high=np.array([2.0,1.0,1.5])
+    lo=np.array([.1,.3,.8]); hi=np.array([1.3,1.3,1.3])
+    pl,ph=project_interval_numpy(low,high,lo,hi)
+    assert np.all(ph-pl <= high-low+1e-12)
+    truth=np.array([.7,.8,1.0])
+    assert np.all((truth>=pl)&(truth<=ph))
+
+
+def test_nested_identified_lower_is_monotone():
+    from safegrip.physics import nested_identified_lower
+    x=nested_identified_lower([.1,.3,.2,.5,.4])
+    assert np.all(np.diff(x)>=0)
+    assert np.allclose(x,[.1,.3,.3,.5,.5])

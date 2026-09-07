@@ -22,3 +22,11 @@ def test_lira_like_alignment_core():
     })
     z=spatial_align(canonical_vehicle(car),canonical_friction(ref),max_m=5)
     assert len(z)==2 and "mu_ref" in z and abs(z.mu_ref.iloc[0]-.51)<1e-9
+
+
+def test_vehicle_units_from_column_names():
+    v=pd.DataFrame({"Vehicle Speed [km/h]":[36.0],"Longitudinal Acceleration [g]":[1.0],"Lateral Acceleration [m/s2]":[2.0]})
+    c=canonical_vehicle(v)
+    assert abs(c.speed.iloc[0]-10.0)<1e-9
+    assert abs(c.ax.iloc[0]-9.80665)<1e-6
+    assert abs(c.ay.iloc[0]-2.0)<1e-9

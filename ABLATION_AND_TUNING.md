@@ -2,7 +2,7 @@
 
 ## Controlled ablation
 
-All variants use the same split, seed, feature list and selected hyperparameters unless a component being removed makes a parameter irrelevant.
+All variants use the same split, feature list, selected proposal hyperparameters and final seed list unless the removed component makes a parameter irrelevant.
 
 | Variant | Temporal TCN | UQ head | soft physics loss | calibrated lower set | hard projection |
 |---|---:|---:|---:|---:|---:|
@@ -14,13 +14,11 @@ All variants use the same split, seed, feature list and selected hyperparameters
 | `safegrip_no_temporal` | no (last-state MLP) | yes | yes | yes | yes |
 | `safegrip` | yes | yes | yes | yes | yes |
 
-This design isolates:
+The deterministic `safegrip_no_uq` objective is
 
-- the complete data-only backbone (`safegrip_data_only`);
-- soft-vs-hard physics contributions;
-- uncertainty modeling;
-- external-reference calibration;
-- temporal modeling.
+`MSE + lambda_physics * L_physics`,
+
+not `(1 + lambda_mse) * MSE`. This keeps removal of the heteroscedastic head controlled.
 
 Run:
 
@@ -35,9 +33,18 @@ safegrip ablation --dataset lira --preset paper \
   --proposal-hparams results/lira_tuning/best_hparams.yaml
 ```
 
+Paper mode uses the same five seeds as the main table and exports:
+
+```text
+ablation_metrics.csv          # mean/std
+ablation_metrics_by_seed.csv  # individual runs
+ablation_predictions.csv
+ablation_design.json
+```
+
 ## Hyperparameter search
 
-The main benchmark uses **validation RMSE for every method** so model selection is aligned with the primary point-estimation comparison. Test data are never queried by either proposal or baseline tuning.
+The main benchmark uses **validation RMSE for every method**. Test data are never queried by proposal or baseline tuning.
 
 SafeGrip search space (`configs/default.yaml`) includes:
 
@@ -54,46 +61,21 @@ SafeGrip search space (`configs/default.yaml`) includes:
 | `lambda_mse` | log-uniform 0.05–0.50 |
 | `lambda_physics` | log-uniform 1e-3–0.30 |
 
-Literature baselines receive the **same number of Optuna trials**. Recoverable source architecture/preprocessing remains fixed; model-specific LiRA adaptation parameters are selected on validation. For the explicitly adapted Transformer and SV-DKL comparators, unknown architecture details are also validation-selected rather than presented as source parameters.
+Literature baselines receive the **same number of Optuna trials**. Recoverable source architecture/preprocessing remains fixed; unknown details of explicitly adapted methods are selected on validation and disclosed as adaptations.
 
 ```bash
 safegrip tune --dataset lira --trials 30 --no-test
 safegrip tune-baselines --dataset lira --trials 30
 ```
 
-### Intentionally fixed
+### Intentionally fixed protocol assumptions
 
-`mu_upper` and `alpha` are **not tuned**. They define physical/safety/calibration assumptions; tuning them to validation error would weaken their interpretation.
+The following are not optimized against validation RMSE:
 
-## No-test-leakage sequence
+- `mu_upper`;
+- conformal `alpha`;
+- LiRA GPS match tolerance;
+- heading tolerance;
+- physical uncertainty margins.
 
-```text
-train + calibration + validation
-        -> proposal tuning + equal-budget baseline tuning
-        -> freeze one configuration per method
-        -> five independent final seeds
-        -> common held-out test endpoints
-        -> report mean +/- std
-```
-
-Methods may use different temporal context lengths. `benchmark.common_warmup_samples` forces every validation/test prediction to correspond to the same endpoint set, so history length does not silently change the evaluation population.
-
-## Outputs
-
-```text
-results/lira_tuning/
-  optuna.sqlite3
-  trials.csv
-  best_hparams.yaml
-  param_importance.json
-  tuning_summary.json
-
-results/lira_baseline_tuning/
-  best_hparams.yaml
-  tuning_summary.json
-  <baseline-id>/trials.csv
-  <baseline-id>/best_hparams.yaml
-  <baseline-id>/optuna.sqlite3
-```
-
-Both tuning summaries record that test data are not used during search.
+Sensitivity to important physical assumptions is evaluated separately by the robustness experiment.

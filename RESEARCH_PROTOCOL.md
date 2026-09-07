@@ -2,45 +2,83 @@
 
 ## Primary question
 
-Under limited tire excitation, can road/tire grip information be represented more honestly as a **partially identified physically admissible set** and then combined with a compact learned estimator, rather than forcing an overconfident unconstrained point prediction?
+Under limited tire excitation, can tire/road grip be represented more honestly as a **partially identified physically admissible set** and then combined with a learned temporal estimator, rather than forcing an overconfident unconstrained point prediction?
 
-## Mathematical object
+## Mathematical claim boundary
 
-For tangential tire force `F_t=[Fx,Fy]` and normal load `Fz`, minimal friction-cone physics implies
+SafeGrip separates three layers that must not be conflated:
 
-`rho = ||F_t||_2/Fz <= mu`.
+1. **Conditional mechanics lower bound.** Under explicitly bounded sensing/model error and an assumed upper admissible coefficient `mu_upper`, the production-sensor mechanics layer returns a conservative lower endpoint `L_phys`.
+2. **Statistical calibration.** A dedicated calibration split computes a one-sided relaxation `q`, giving `L_cal = max(0, L_phys - q)`. Coverage relies on the usual split-conformal calibration assumptions; it is not a deterministic physical guarantee under arbitrary spatial shift.
+3. **Learned estimator and projection.** The TCN predicts a mean and aleatoric scale. The final point estimate is projected onto `[L_cal, mu_upper]`, and the Gaussian interval is optionally projected endpoint-wise onto the same set.
 
-Over a time window `W`, a minimal model gives an admissible set
+Use the phrase **physics-constrained partial identification** in the paper. A guarantee should always be written conditionally on the stated bounded-error assumptions and on `mu* <= mu_upper`.
 
-`Theta_W = [max_t rho_t, mu_U]`.
+## Core propositions implemented by the code
 
-With bounded force/load error, SafeGrip computes a robust relaxed lower bound. For production-sensor LiRA data, the implementation uses a conservative whole-vehicle analogue and then performs a one-sided calibration on the dedicated calibration block because the target is an external VIAFRIK reference rather than the same ego tire.
+For a closed interval `Theta=[L,U]` containing the true value `mu*`, Euclidean projection satisfies
 
-## Claim boundary for LiRA
+`|Pi_Theta(z)-mu*| <= |z-mu*|`.
 
-Never write that VIAFRIK is an exact measurement of the Renault Zoe tire's instantaneous `mu_max`.
+For a predictive interval `C=[a,b]`, endpoint projection gives `Pi_Theta(C)` with width no larger than `C`; if `mu*` is in both `C` and `Theta`, projection preserves inclusion of `mu*`.
+
+For nested observation windows, the identified lower endpoint based on a maximum utilization is non-decreasing as observations are added, so the admissible set cannot widen solely because more observations are included.
+
+## LiRA target boundary
+
+Never write that VIAFRIK is an exact measurement of the Renault Zoe tire's instantaneous peak `mu_max`.
 
 Use LiRA for:
 
 - standardized road-friction-reference estimation;
-- low-cost production-sensor usefulness;
-- calibration/safety behavior under normal driving;
-- spatially held-out road generalization.
+- production-sensor usefulness;
+- calibrated admissible-set behavior under normal driving;
+- spatial/cross-route generalization when route metadata permit it.
 
 Use KIT/KU Leuven for force/mechanics validation.
 
-## Split and leakage control
+## Leakage-safe LiRA preprocessing
 
-No random row split of adjacent route samples.
+The corrected pipeline is:
 
-Default ordered/spatial blocks:
+```text
+vehicle/ref files
+ -> explicit route/direction metadata extraction when present
+ -> per-trip route-local reference candidate selection
+ -> GPS nearest-candidate matching
+      * maximum metric distance
+      * heading consistency
+      * monotone reference progress
+ -> contiguous spatial split inside each trip
+ -> interpolation only inside (trip, split)
+ -> optional fixed-rate resampling only inside (trip, split)
+ -> recompute physics lower bound
+ -> trip-safe temporal windows
+```
 
-- 60% train
-- 10% lower-bound calibration
-- 10% validation
-- 20% final test
+Default matching protocol in `configs/default.yaml`:
 
-GPS may be used for alignment and split construction only. It is excluded from learned input features.
+- maximum GPS match distance: 10 m;
+- heading tolerance: 45 degrees;
+- up to 8 nearest reference candidates;
+- monotonic reference progress enabled;
+- 20 Hz resampling when timestamps are usable;
+- no model feature may contain GPS, route ID, split position or matching metadata.
+
+If route/direction are not explicit in a path, the parser records `unknown`; it does not invent route labels.
+
+### Split and sequence rules
+
+Default contiguous blocks inside each trip:
+
+- 60% train;
+- 10% lower-bound calibration;
+- 10% validation;
+- 20% final test.
+
+Optional purge samples can be configured around split boundaries. Even with zero purge, windows and feature filling cannot cross a trip or split boundary because they are grouped explicitly in code.
+
+Different models may use different temporal context lengths, but a common warm-up and stable `sample_uid` endpoint IDs make validation/test endpoints exactly identical across methods. The benchmark aborts if endpoint IDs differ.
 
 ## Direct baselines
 
@@ -52,11 +90,9 @@ Only paper-backed friction estimators are admitted to the direct paper table:
 - Schäfke et al. 2023 Transformer (`10.1109/CDC49753.2023.10384175`)
 - Chen et al. 2025 SV-DKL uncertainty method (`10.1109/TIE.2024.3440510`)
 
-Where original private sensors/protocols differ, the result must be called an **adapted common-sensor reimplementation**, not exact reproduction. Todorovic is architecture-faithful after adapting input/output dimensions; Lampe LSTM/GRU preserve the recoverable architecture, initialization and train-only MinMax preprocessing; Schäfke and Chen remain explicitly methodology-level adaptations.
+Where private sensors/protocols differ, the result is an **adapted common-sensor reimplementation**, not an exact reproduction. Baseline provenance is exported in `baseline_manifest.csv`.
 
-All methods use the same LiRA feature information and split. They may use different temporal context lengths, but a common warm-up forces identical validation/test prediction endpoints. Source-specific preprocessing is fitted on training data only.
-
-Generic Ridge/RandomForest/XGBoost/MLP baselines are intentionally excluded from the paper table.
+All methods receive the same train/calibration/validation/test population, the same validation selection metric (RMSE), and the same hyperparameter trial budget. Model-specific history length and source-appropriate train-only scalers are allowed.
 
 ## Proposal ablation
 
@@ -70,47 +106,81 @@ Required variants:
 6. no temporal encoder;
 7. full SafeGrip.
 
+The deterministic no-UQ variant uses exactly one MSE term plus the optional physics penalty; it does not double-weight MSE. Paper-mode ablations use the same five final seeds as the main benchmark and report mean/std.
+
 ## Hyperparameter selection
 
-Tune the proposal **and every literature comparator** on train/calibration/validation only. Give each direct comparator the same Optuna trial budget and never query test metrics from any tuning objective.
+Tune the proposal **and every literature comparator** on train/calibration/validation only. Give each direct comparator the same Optuna trial budget and never query test metrics from a tuning objective.
 
-Use validation RMSE as the primary configuration-selection metric for both proposal and baselines. Search network/training parameters only; `mu_upper` and `alpha` stay fixed by protocol.
-
-Recoverable source architecture/preprocessing constraints remain fixed. Model-specific temporal context is allowed, with a common evaluation warm-up so all methods are scored on the same validation/test endpoints. Reuse the selected proposal hyperparameters across all ablations.
-
-The final direct table uses five independently reseeded runs per method and reports mean and standard deviation. Baseline outputs additionally receive the same SafeGrip projection as a **supplementary post-processing parity control**, never as a replacement for the raw literature baseline.
+Use validation RMSE as the primary selection metric. `mu_upper`, `alpha`, GPS matching thresholds and physical uncertainty margins are protocol assumptions, not validation-error knobs.
 
 ## Required metrics
 
 Point prediction:
 
-- MAE
-- RMSE
-- R2
+- MAE;
+- RMSE;
+- R2.
 
 Safety/physics:
 
-- positive overestimation magnitude
-- unsafe overestimation rate above +0.05
-- physical lower-bound violation rate
-- identified-set width
-- point outside physical set rate
+- positive overestimation magnitude;
+- unsafe overestimation rate above +0.05;
+- physical lower-bound violation rate;
+- identified-set width;
+- point outside physical set rate;
+- projection correction rate.
 
 Probabilistic:
 
-- Gaussian NLL
-- 95% PICP
-- 95% mean prediction interval width
+- Gaussian NLL;
+- raw 95% PICP / MPIW;
+- physics-truncated 95% PICP / MPIW for SafeGrip;
+- interval-outside-physics-set rate.
 
-## Recommended paper experiments
+## Reviewer-oriented experiments implemented
 
-1. Main direct LiRA table with cited baselines only.
-2. Full proposal ablation.
-3. Hyperparameter study/importance with test locked.
-4. Excitation-stratified performance and identified-set width.
-5. Training-data scarcity sweep.
-6. Sensor noise/bias, mass and effective-radius mismatch.
-7. KU Leuven wheel-force auxiliary validation.
-8. KIT tire-force/utilization validation.
-9. External road/speed sanity check with Mendeley friction data.
-10. Downstream conservative braking/planning demonstration.
+### Excitation stratification
+
+```bash
+safegrip experiment --dataset lira --study excitation \
+  --results results/lira_paper
+```
+
+Uses `sqrt(ax^2+ay^2)/g` and test-set quantiles. Report RMSE, safety metrics and identified-set width by excitation level.
+
+### Physics-layer robustness
+
+```bash
+safegrip experiment --dataset lira --study robustness \
+  --results results/lira_paper
+```
+
+Freezes the neural predictor and recomputes the physics/calibration/projection layer under mass, acceleration-error and `mu_upper` perturbations. This isolates assumption sensitivity rather than mixing it with retraining variance.
+
+### Training-data scarcity
+
+```bash
+safegrip experiment --dataset lira --study scarcity --preset paper \
+  --proposal-hparams results/lira_tuning/best_hparams.yaml
+```
+
+Compares full SafeGrip against the data-only TCN+UQ backbone at 10/25/50/75/100% of training windows over the final seeds.
+
+### Cross-route holdout
+
+```bash
+safegrip experiment --dataset lira --study cross-route --preset paper \
+  --proposal-hparams results/lira_tuning/best_hparams.yaml
+```
+
+Runs leave-one-explicit-route-out evaluation when at least two route IDs can be recovered from LiRA file metadata. The command fails transparently if route IDs are unavailable rather than fabricating them from GPS.
+
+### Wheel-force mechanics validation
+
+```bash
+safegrip force-validate --dataset kit
+safegrip force-validate --dataset kuleuven
+```
+
+These experiments validate the conservative utilization calculation on measured force channels. They do not relabel force utilization as a direct peak-friction ground truth.
