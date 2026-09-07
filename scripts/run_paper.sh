@@ -29,6 +29,15 @@ safegrip benchmark --dataset lira --preset paper "${HP_ARGS[@]}" "${BASELINE_HP_
 # Reuse exactly the selected proposal hyperparameters for every ablation.
 safegrip ablation --dataset lira --preset paper "${HP_ARGS[@]}"
 
+# Low-cost reviewer analyses reuse the frozen final predictions.
+safegrip experiment --dataset lira --study excitation --results results/lira_paper
+safegrip experiment --dataset lira --study robustness --results results/lira_paper
+
+# Training-heavy scarcity/cross-route experiments are kept opt-in.
+if [[ "${RUN_EXTENDED:-0}" == "1" ]]; then
+  bash scripts/run_extended_experiments.sh
+fi
+
 if [[ "${DOWNLOAD_AUX:-0}" == "1" ]]; then
   bash scripts/download_all_datasets.sh
 fi
@@ -40,3 +49,6 @@ printf '  parity controls:  results/lira_paper/projection_control_metrics.csv\n'
 printf '  baseline tuning:  results/lira_baseline_tuning/\n'
 printf '  proposal tuning:  results/lira_tuning/\n'
 printf '  ablation:         results/lira_ablation_paper/ablation_metrics.csv\n'
+printf '  excitation:       results/lira_excitation/excitation_metrics.csv\n'
+printf '  robustness:       results/lira_robustness/physics_robustness_metrics.csv\n'
+printf '  extended:         RUN_EXTENDED=1 bash scripts/run_paper.sh\n' 

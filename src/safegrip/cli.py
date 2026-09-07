@@ -10,6 +10,10 @@ from .data import prepare_dataset, make_synthetic
 from .benchmark import run_benchmark, run_ablation, PROPOSAL_VARIANTS
 from .tuning import tune_safegrip, tune_literature_baselines
 from .plots import make_plots, make_ablation_plots
+from .experiments import (
+    run_excitation_analysis, run_robustness_analysis, run_scarcity_analysis,
+    run_cross_route_analysis, run_force_validation,
+)
 
 
 def _primary_csv(name: str) -> str:
@@ -45,6 +49,17 @@ def main():
     a=sub.add_parser("ablation"); a.add_argument("--dataset",choices=["lira","synthetic"],required=True); a.add_argument("--preset",choices=["quick","paper"],default="paper"); a.add_argument("--variants",default=None,help="comma-separated proposal ablations"); a.add_argument("--proposal-hparams",default=None,help="YAML from safegrip tune; same hyperparameters are reused across ablations")
     t=sub.add_parser("tune"); t.add_argument("--dataset",choices=["lira","synthetic"],required=True); t.add_argument("--trials",type=int,default=None); t.add_argument("--epochs",type=int,default=None); t.add_argument("--no-test",action="store_true")
     tb=sub.add_parser("tune-baselines"); tb.add_argument("--dataset",choices=["lira","synthetic"],required=True); tb.add_argument("--models",default=None,help="comma-separated literature baselines; default is the full paper set"); tb.add_argument("--trials",type=int,default=None); tb.add_argument("--epochs",type=int,default=None,help="optional development cap; omit for each method's paper-mode epoch budget")
+    e=sub.add_parser("experiment",help="run reviewer-oriented SafeGrip analyses")
+    e.add_argument("--dataset",choices=["lira","synthetic"],required=True)
+    e.add_argument("--study",choices=["excitation","robustness","scarcity","cross-route"],required=True)
+    e.add_argument("--results",default=None,help="benchmark directory; defaults to results/<dataset>_paper")
+    e.add_argument("--preset",choices=["quick","paper"],default="paper")
+    e.add_argument("--proposal-hparams",default=None)
+    e.add_argument("--bins",type=int,default=4)
+    fv=sub.add_parser("force-validate",help="validate mechanics lower bound on prepared force datasets")
+    fv.add_argument("--dataset",choices=["kit","kuleuven"],required=True)
+    fv.add_argument("--eps-t",type=float,default=250.0)
+    fv.add_argument("--eps-z",type=float,default=250.0)
     pl=sub.add_parser("plots"); pl.add_argument("--results",required=True)
 
     args=ap.parse_args(); cfg=load_config(args.config)
@@ -78,6 +93,25 @@ def main():
         csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_baseline_tuning"
         models=args.models.split(",") if args.models else None
         print(json.dumps(tune_literature_baselines(csv,out,cfg,models,args.trials,args.epochs),indent=2)); return
+    if args.cmd=="experiment":
+        csv=_ensure_primary(args.dataset,cfg)
+        results=Path(args.results) if args.results else Path("results")/f"{args.dataset}_paper"
+        out=Path("results")/f"{args.dataset}_{args.study.replace('-', '_')}"
+        hp=_load_mapping(args.proposal_hparams,"proposal hyperparameter")
+        if args.study=="excitation":
+            print(run_excitation_analysis(csv,results,out,cfg,args.bins).to_string(index=False)); return
+        if args.study=="robustness":
+            print(run_robustness_analysis(csv,results,out,cfg).to_string(index=False)); return
+        if args.study=="scarcity":
+            print(run_scarcity_analysis(csv,out,cfg,preset=args.preset,hp_overrides=hp).to_string(index=False)); return
+        if args.study=="cross-route":
+            print(run_cross_route_analysis(csv,out,cfg,preset=args.preset,hp_overrides=hp).to_string(index=False)); return
+    if args.cmd=="force-validate":
+        proc=Path("data/processed")/args.dataset
+        prepared=proc/("kit_force.csv" if args.dataset=="kit" else "kuleuven_wft.csv")
+        if not prepared.exists():
+            prepare_dataset(args.dataset,Path("data/raw")/args.dataset,proc,cfg)
+        print(run_force_validation(prepared,Path("results")/f"{args.dataset}_force_validation",cfg,eps_t=args.eps_t,eps_z=args.eps_z).to_string(index=False)); return
     if args.cmd=="plots":
         r=Path(args.results)
         if (r/"metrics.csv").exists(): make_plots(r)

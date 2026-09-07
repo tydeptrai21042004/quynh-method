@@ -1,0 +1,348 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+import json
+import tempfile
+
+import numpy as np
+import pandas as pd
+
+from .benchmark import (
+    make_bundle,
+    common_eval_start,
+    regression_metrics,
+    fit_proposal,
+    predict_proposal_details,
+    run_benchmark,
+)
+from .physics import (
+    vehicle_level_lower_bound,
+    conformal_lower_correction,
+    apply_lower_correction,
+    project_numpy,
+    robust_force_utilization_lower,
+)
+from .utils import ensure_dir, seed_everything
+
+
+def _proposal_sequence_length(results_dir: str | Path, cfg: dict) -> int:
+    p = Path(results_dir) / "proposal_hparams.json"
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            return int(data.get("sequence_length", cfg.get("sequence_length", 64)))
+        except Exception:
+            pass
+    return int(cfg.get("sequence_length", 64))
+
+
+def _bundle_for_results(csv_path, results_dir, cfg):
+    return make_bundle(
+        csv_path,
+        cfg,
+        sequence_length=_proposal_sequence_length(results_dir, cfg),
+        scaler_kind="standard",
+        eval_start=common_eval_start(cfg),
+    )
+
+
+def _inverse_endpoint_features(bundle, split: str) -> pd.DataFrame:
+    mapping = {
+        "train": bundle.Xtr,
+        "calibration": bundle.Xc,
+        "validation": bundle.Xv,
+        "test": bundle.Xt,
+    }
+    X = mapping[split]
+    if len(X) == 0:
+        return pd.DataFrame(columns=bundle.features)
+    last = X[:, -1, :]
+    raw = bundle.scaler.inverse_transform(last)
+    return pd.DataFrame(raw, columns=bundle.features)
+
+
+def _prediction_model_columns(pred: pd.DataFrame) -> list[str]:
+    reserved = {
+        "endpoint_id", "y_true", "physics_lower", "physics_lower_raw",
+    }
+    suffixes = (
+        "_sigma", "_raw", "_pi95_low_physics", "_pi95_high_physics",
+        "_pi95_low_raw", "_pi95_high_raw",
+    )
+    return [c for c in pred.columns if c not in reserved and not c.endswith(suffixes)]
+
+
+def run_excitation_analysis(csv_path, results_dir, out_dir, cfg, bins: int = 4) -> pd.DataFrame:
+    """Stratify test performance by dynamic excitation.
+
+    This directly tests the partial-identification hypothesis: weak excitation
+    should generally leave a wider admissible set than stronger excitation.
+    """
+    out = ensure_dir(out_dir)
+    pred_path = Path(results_dir) / "predictions.csv"
+    if not pred_path.exists():
+        raise FileNotFoundError(f"Run benchmark first; missing {pred_path}")
+    pred = pd.read_csv(pred_path)
+    b = _bundle_for_results(csv_path, results_dir, cfg)
+    if "endpoint_id" in pred and not np.array_equal(pred.endpoint_id.astype(str).to_numpy(), b.idt.astype(str)):
+        raise RuntimeError("Benchmark predictions do not correspond to the current prepared test endpoints")
+    raw = _inverse_endpoint_features(b, "test")
+    if not {"ax", "ay"}.issubset(raw.columns):
+        raise RuntimeError("Excitation analysis requires ax and ay among model features")
+    excitation = np.hypot(raw.ax.to_numpy(float), raw.ay.to_numpy(float)) / float(cfg["vehicle"]["gravity"])
+    frame = pd.DataFrame({
+        "endpoint_id": b.idt,
+        "y_true": b.yt,
+        "physics_lower": b.lot,
+        "physics_lower_raw": b.raw_lot,
+        "excitation_g": excitation,
+    })
+    quant = min(max(2, int(bins)), max(2, len(np.unique(excitation))))
+    try:
+        frame["excitation_bin"] = pd.qcut(
+            frame.excitation_g,
+            q=quant,
+            labels=[f"Q{i+1}" for i in range(quant)],
+            duplicates="drop",
+        )
+    except ValueError:
+        frame["excitation_bin"] = "all"
+    for c in pred.columns:
+        if c not in frame and c != "endpoint_id":
+            frame[c] = pred[c].to_numpy()
+
+    rows = []
+    for model in _prediction_model_columns(pred):
+        sigma_col = model + "_sigma"
+        raw_col = model + "_raw"
+        for group, g in frame.groupby("excitation_bin", observed=True, sort=True):
+            sigma = g[sigma_col].to_numpy() if sigma_col in g else None
+            raw_mean = g[raw_col].to_numpy() if raw_col in g else g[model].to_numpy()
+            metrics = regression_metrics(
+                g.y_true.to_numpy(),
+                g[model].to_numpy(),
+                g.physics_lower.to_numpy(),
+                cfg["mu_upper"],
+                sigma,
+                raw_mean=raw_mean,
+                project_uncertainty=(model == "safegrip"),
+            )
+            rows.append({
+                "model": model,
+                "excitation_bin": str(group),
+                "n": int(len(g)),
+                "excitation_mean_g": float(g.excitation_g.mean()),
+                "excitation_min_g": float(g.excitation_g.min()),
+                "excitation_max_g": float(g.excitation_g.max()),
+                **metrics,
+            })
+    summary = pd.DataFrame(rows)
+    summary.to_csv(out / "excitation_metrics.csv", index=False)
+    frame.to_csv(out / "excitation_samples.csv", index=False)
+    (out / "excitation_protocol.json").write_text(json.dumps({
+        "score": "sqrt(ax^2 + ay^2) / g",
+        "bins": int(bins),
+        "test_only": True,
+        "hypothesis": "identified-set width should decrease as informative excitation increases",
+    }, indent=2), encoding="utf-8")
+    return summary
+
+
+def _recompute_bound(features: pd.DataFrame, cfg: dict, *, mass_scale=1.0, accel_error_scale=1.0):
+    v = cfg["vehicle"]
+    if not {"ax", "ay", "speed"}.issubset(features.columns):
+        raise RuntimeError("Physics sensitivity requires ax, ay and speed features")
+    return vehicle_level_lower_bound(
+        features.ax,
+        features.ay,
+        features.speed,
+        mass=float(v["mass_kg"]) * float(mass_scale),
+        g=v["gravity"],
+        crr=v["crr"],
+        rho_air=v["rho_air"],
+        cdA=v["cdA_m2"],
+        accel_error=float(v["accel_error_ms2"]) * float(accel_error_scale),
+        external_force_margin=v["external_force_margin_n"],
+        vertical_force_margin=v["vertical_force_margin_n"],
+    )
+
+
+def run_robustness_analysis(csv_path, results_dir, out_dir, cfg) -> pd.DataFrame:
+    """Post-hoc sensitivity of the physics/calibration/projection layer.
+
+    The neural estimator is frozen. Each scenario recomputes the calibration and
+    test lower bounds, then reapplies projection. This isolates sensitivity to
+    physical assumptions rather than conflating it with retraining variance.
+    """
+    out = ensure_dir(out_dir)
+    pred = pd.read_csv(Path(results_dir) / "predictions.csv")
+    if "safegrip_raw" not in pred:
+        raise RuntimeError("Run the corrected benchmark first; predictions.csv must contain safegrip_raw")
+    b = _bundle_for_results(csv_path, results_dir, cfg)
+    cal_raw = _inverse_endpoint_features(b, "calibration")
+    test_raw = _inverse_endpoint_features(b, "test")
+    raw_mean = pred.safegrip_raw.to_numpy(float)
+    sigma = pred.safegrip_sigma.to_numpy(float) if "safegrip_sigma" in pred else None
+
+    scenarios = [{"scenario": "nominal", "mass_scale": 1.0, "accel_error_scale": 1.0, "mu_upper": float(cfg["mu_upper"])}]
+    for scale in (0.90, 0.95, 1.05, 1.10):
+        scenarios.append({"scenario": f"mass_{scale:.2f}x", "mass_scale": scale, "accel_error_scale": 1.0, "mu_upper": float(cfg["mu_upper"])})
+    for scale in (0.5, 1.5, 2.0):
+        scenarios.append({"scenario": f"accel_error_{scale:.1f}x", "mass_scale": 1.0, "accel_error_scale": scale, "mu_upper": float(cfg["mu_upper"])})
+    for mu_u in (1.10, 1.30, 1.50):
+        scenarios.append({"scenario": f"mu_upper_{mu_u:.2f}", "mass_scale": 1.0, "accel_error_scale": 1.0, "mu_upper": mu_u})
+
+    rows = []
+    sample_rows = []
+    for sc in scenarios:
+        lo_cal_raw = _recompute_bound(cal_raw, cfg, mass_scale=sc["mass_scale"], accel_error_scale=sc["accel_error_scale"])
+        lo_test_raw = _recompute_bound(test_raw, cfg, mass_scale=sc["mass_scale"], accel_error_scale=sc["accel_error_scale"])
+        q = conformal_lower_correction(lo_cal_raw, b.yc, cfg["alpha"]) if len(b.yc) else 0.0
+        lo = apply_lower_correction(lo_test_raw, q)
+        mu_u = float(sc["mu_upper"])
+        p = project_numpy(raw_mean, np.minimum(lo, mu_u), mu_u)
+        metrics = regression_metrics(
+            b.yt, p, np.minimum(lo, mu_u), mu_u, sigma,
+            raw_mean=raw_mean, project_uncertainty=True,
+        )
+        rows.append({**sc, "calibration_q": float(q), **metrics})
+        sample_rows.append(pd.DataFrame({
+            "scenario": sc["scenario"], "endpoint_id": b.idt, "y_true": b.yt,
+            "raw_mean": raw_mean, "physics_lower": np.minimum(lo, mu_u), "prediction": p,
+        }))
+    summary = pd.DataFrame(rows)
+    summary.to_csv(out / "physics_robustness_metrics.csv", index=False)
+    pd.concat(sample_rows, ignore_index=True).to_csv(out / "physics_robustness_samples.csv", index=False)
+    (out / "physics_robustness_protocol.json").write_text(json.dumps({
+        "network_retrained": False,
+        "purpose": "isolate sensitivity of physics lower bound, conformal relaxation and projection",
+        "mass_scales": [0.90, 0.95, 1.0, 1.05, 1.10],
+        "accel_error_scales": [0.5, 1.0, 1.5, 2.0],
+        "mu_upper_values": [1.10, 1.30, 1.50],
+    }, indent=2), encoding="utf-8")
+    return summary
+
+
+def _subset_training_bundle(bundle, fraction: float, seed: int):
+    n = len(bundle.Xtr)
+    keep = max(1, int(round(float(fraction) * n)))
+    rng = np.random.default_rng(seed)
+    idx = np.sort(rng.choice(n, size=keep, replace=False)) if keep < n else np.arange(n)
+    return replace(
+        bundle,
+        Xtr=bundle.Xtr[idx],
+        ytr=bundle.ytr[idx],
+        lotr=bundle.lotr[idx],
+        raw_lotr=bundle.raw_lotr[idx],
+        idtr=bundle.idtr[idx],
+    )
+
+
+def run_scarcity_analysis(csv_path, out_dir, cfg, *, preset="paper", hp_overrides=None, fractions=None) -> pd.DataFrame:
+    """Compare SafeGrip with its data-only backbone as training data decrease."""
+    out = ensure_dir(out_dir)
+    fractions = list(fractions or [0.10, 0.25, 0.50, 0.75, 1.00])
+    seq = int((hp_overrides or {}).get("sequence_length", cfg["sequence_length"]))
+    b = make_bundle(csv_path, cfg, sequence_length=seq, scaler_kind="standard", eval_start=common_eval_start(cfg))
+    seeds = list(cfg.get("evaluation", {}).get("seeds", [cfg["seed"]])) if preset == "paper" else [int(cfg["seed"])]
+    epochs = int(cfg["training"]["epochs_quick" if preset == "quick" else "epochs_paper"])
+    rows = []
+    for fraction in fractions:
+        for seed in seeds:
+            sb = _subset_training_bundle(b, fraction, int(seed) + 773)
+            for variant in ("safegrip_data_only", "safegrip"):
+                seed_everything(int(seed))
+                model, _ = fit_proposal(variant, sb, cfg, epochs, hp_overrides)
+                d = predict_proposal_details(model, variant, sb.Xt, sb.lot, sb.raw_lot, cfg["mu_upper"])
+                rows.append({
+                    "training_fraction": float(fraction),
+                    "training_windows": int(len(sb.Xtr)),
+                    "model": variant,
+                    "seed": int(seed),
+                    **regression_metrics(
+                        sb.yt, d["prediction"], d["bound"], cfg["mu_upper"], d["sigma"],
+                        raw_mean=d["raw_mean"], project_uncertainty=(variant == "safegrip"),
+                    ),
+                })
+    by_seed = pd.DataFrame(rows)
+    numeric = [c for c in by_seed.columns if pd.api.types.is_numeric_dtype(by_seed[c]) and c not in ("seed", "training_fraction", "training_windows")]
+    summary_rows = []
+    for (fraction, model), g in by_seed.groupby(["training_fraction", "model"], sort=True):
+        row = {"training_fraction": float(fraction), "model": model, "n_seeds": int(g.seed.nunique()), "training_windows": int(round(g.training_windows.mean()))}
+        for c in numeric:
+            row[c] = float(g[c].mean())
+            row[c + "_std"] = float(g[c].std(ddof=1)) if len(g) > 1 else 0.0
+        summary_rows.append(row)
+    summary = pd.DataFrame(summary_rows)
+    by_seed.to_csv(out / "scarcity_metrics_by_seed.csv", index=False)
+    summary.to_csv(out / "scarcity_metrics.csv", index=False)
+    return summary
+
+
+def run_cross_route_analysis(csv_path, out_dir, cfg, *, preset="quick", hp_overrides=None) -> pd.DataFrame:
+    """Leave one explicit route out for the final test while keeping calibration/validation on other routes."""
+    out = ensure_dir(out_dir)
+    df = pd.read_csv(csv_path)
+    if "route_id" not in df:
+        raise RuntimeError("Prepared data have no route_id column")
+    routes = [r for r in sorted(df.route_id.dropna().astype(str).unique()) if r.lower() != "unknown"]
+    if len(routes) < 2:
+        raise RuntimeError("Cross-route evaluation requires at least two explicitly identified routes")
+    rows = []
+    for route in routes:
+        z = df.copy()
+        held = z.route_id.astype(str) == route
+        # Held route is test only. Existing test rows on training routes are not
+        # recycled into training; they are purged to preserve the original
+        # calibration/validation chronology on those routes.
+        z.loc[~held & (z.split == "test"), "split"] = "purged"
+        z.loc[held, "split"] = "test"
+        if not {"train", "calibration", "validation", "test"}.issubset(set(z.split.astype(str))):
+            continue
+        route_dir = ensure_dir(out / f"heldout_{route}")
+        temp_csv = route_dir / "cross_route.csv"
+        z.to_csv(temp_csv, index=False)
+        metrics = run_benchmark(temp_csv, route_dir, cfg, preset=preset, models=[], hp_overrides=hp_overrides)
+        safe = metrics[metrics.model == "safegrip"].copy()
+        if len(safe):
+            row = safe.iloc[0].to_dict()
+            row["heldout_route"] = route
+            rows.append(row)
+    summary = pd.DataFrame(rows)
+    summary.to_csv(out / "cross_route_metrics.csv", index=False)
+    return summary
+
+
+def run_force_validation(prepared_csv, out_dir, cfg, *, eps_t=250.0, eps_z=250.0) -> pd.DataFrame:
+    """Validate the mechanics lower-bound calculation on prepared wheel-force data."""
+    out = ensure_dir(out_dir)
+    df = pd.read_csv(prepared_csv)
+    if {"fx", "fy", "fz"}.issubset(df.columns):
+        fx = df.fx.to_numpy(float); fy = df.fy.to_numpy(float); fz = df.fz.to_numpy(float)
+    else:
+        fx_cols = [c for c in df if c.startswith("fx_")]
+        fy_cols = [c for c in df if c.startswith("fy_")]
+        fz_cols = [c for c in df if c.startswith("fz_")]
+        if not fz_cols or (not fx_cols and not fy_cols):
+            raise RuntimeError("Prepared force data do not contain resolvable fx/fy/fz columns")
+        fx = df[fx_cols].fillna(0.0).sum(axis=1).to_numpy(float) if fx_cols else np.zeros(len(df))
+        fy = df[fy_cols].fillna(0.0).sum(axis=1).to_numpy(float) if fy_cols else np.zeros(len(df))
+        fz = df[fz_cols].fillna(0.0).sum(axis=1).to_numpy(float)
+    mask = np.isfinite(fx) & np.isfinite(fy) & np.isfinite(fz) & (np.abs(fz) > 1e-6)
+    fx, fy, fz = fx[mask], fy[mask], fz[mask]
+    nominal = np.hypot(fx, fy) / np.abs(fz)
+    robust = robust_force_utilization_lower(fx, fy, fz, eps_t=eps_t, eps_z=eps_z)
+    samples = pd.DataFrame({"fx": fx, "fy": fy, "fz": fz, "utilization_nominal": nominal, "utilization_robust_lower": robust})
+    samples.to_csv(out / "force_validation_samples.csv", index=False)
+    summary = pd.DataFrame([{
+        "n": int(len(samples)),
+        "eps_t_n": float(eps_t),
+        "eps_z_n": float(eps_z),
+        "robust_not_above_nominal_rate": float(np.mean(robust <= nominal + 1e-12)),
+        "nominal_utilization_mean": float(np.mean(nominal)) if len(nominal) else np.nan,
+        "robust_lower_mean": float(np.mean(robust)) if len(robust) else np.nan,
+        "mean_relaxation": float(np.mean(nominal - robust)) if len(robust) else np.nan,
+    }])
+    summary.to_csv(out / "force_validation_metrics.csv", index=False)
+    return summary

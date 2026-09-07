@@ -4,6 +4,23 @@ stride: 4
 mu_upper: 1.30
 alpha: 0.05
 
+
+lira:
+  # Route-local reference matching. These are protocol assumptions, not tuned
+  # against validation/test error.
+  match_max_m: 10.0
+  heading_tolerance_deg: 45.0
+  k_candidates: 8
+  enforce_monotonic: true
+  # Resampling is applied only inside an already assigned (trip, split) block.
+  resample_hz: 20.0
+  resample_max_gap_s: 0.25
+  interpolation_limit: 5
+  # Optional purge around spatial split boundaries. Increase for stricter road
+  # separation; zero is safe from window/imputation leakage because grouping is
+  # enforced independently in code.
+  split_guard_samples: 0
+
 benchmark:
   # All methods may use different temporal context, but validation/test labels
   # start at the same endpoint. 128 covers the largest default search window.
