@@ -1,11 +1,11 @@
 # Validation status
 
-Packaging validation performed on 2026-09-07.
+Packaging validation performed on 2026-09-08.
 
 ## Automated checks
 
 - `python -m compileall -q src scripts tests`: **PASS**
-- `pytest -q`: **22/22 PASS**
+- `pytest -q`: **23/23 PASS**
 - `bash -n scripts/*.sh`: **PASS**
 - `bash scripts/smoke_test.sh`: **PASS**
   - synthetic dataset preparation;
@@ -42,6 +42,7 @@ The suite now explicitly checks:
 
 - temporal windows cannot cross trip boundaries;
 - feature interpolation cannot cross split boundaries;
+- official LiRA `task_7505_*` asynchronous sensor streams are synchronized before GPS/reference alignment;
 - explicit LiRA route/direction parsing does not invent missing metadata;
 - monotonic reference matching;
 - source-column unit conversion (`km/h`, `[g]`);
@@ -53,7 +54,7 @@ The suite now explicitly checks:
 
 ## Real-data note
 
-The corrected LiRA pipeline writes `lira_alignment_report.csv` and `lira_preprocessing_report.json`. The packaged source was validated offline with synthetic plumbing data; a full LiRA paper run still requires downloading the public dataset and should be executed with:
+The corrected LiRA pipeline writes `lira_stream_assembly_report.json`, `lira_alignment_report.csv` and `lira_preprocessing_report.json`. The packaged source was validated offline with synthetic plumbing data; a full LiRA paper run still requires downloading the public dataset and should be executed with:
 
 ```bash
 bash scripts/run_paper.sh

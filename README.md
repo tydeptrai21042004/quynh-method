@@ -1,4 +1,4 @@
-# SafeGrip-Open v0.3
+# SafeGrip-Open v0.3.1
 
 Reproducible research code for **physics-constrained partial identification of tire-road friction under limited excitation**.
 
@@ -17,7 +17,7 @@ The paper script:
 
 1. installs paper dependencies;
 2. auto-downloads LiRA through the public Figshare API;
-3. preprocesses/aligns LiRA with route-local matching, distance/heading constraints, contiguous spatial splits, split-local imputation and optional fixed-rate resampling;
+3. groups the official asynchronous `task_7505_*` LiRA sensor files by task, synchronizes CAN/GPS streams, then aligns the assembled task to VIAFRIK traces with distance/heading/monotonic constraints before leakage-safe spatial splitting;
 4. tunes **SafeGrip and every literature comparator** on train/calibration/validation with the same trial budget (test is locked);
 5. keeps recoverable source architecture/preprocessing constraints while allowing model-specific temporal context;
 6. runs the final paper table over five independent seeds and reports mean/std;
@@ -30,6 +30,14 @@ Use fewer tuning trials during development:
 ```bash
 TRIALS=5 TUNE_EPOCHS=8 bash scripts/run_paper.sh
 ```
+
+For the smallest real-data Kaggle development run (SafeGrip + Todorovic CNN + Lampe GRU + the full SafeGrip ablation), use:
+
+```bash
+bash scripts/run_kaggle_small.sh
+```
+
+This uses `configs/kaggle_small.yaml` (10 Hz, 32-sample context, stride 16, one seed, three quick epochs) only as a plumbing/sanity run; it is not a final paper configuration.
 
 Skip tuning and use `configs/default.yaml`:
 
@@ -174,9 +182,9 @@ Adjacent GPS samples share road condition and must not be randomly scattered bet
 - 10% validation;
 - 20% test.
 
-Reference matching uses explicit route/direction metadata when present, a configurable metric tolerance (10 m by default), heading consistency and monotonic reference progress. Interpolation and resampling are restricted to one `(trip_id, split)` block. Temporal windows are also built per trip, so a sequence can never bridge two independent drives. GPS/route/matching metadata are excluded from model features.
+The platoon-test vehicle channels are distributed as separate asynchronous `task_7505_*` TXT streams. SafeGrip now synchronizes these streams first, interpolates the low-rate GPS signal onto the common task timeline with a bounded time gap, and only then performs reference matching. Candidate VIAFRIK traces/directions are aligned independently using a configurable metric tolerance (10 m by default), heading consistency and monotonic reference progress; the nearest valid trace match is retained per vehicle timestamp. Interpolation and resampling after split assignment are restricted to one `(trip_id, split)` block. Temporal windows are also built per trip, so a sequence can never bridge two independent drives. GPS/route/matching metadata are excluded from model features.
 
-The preprocessor writes `lira_alignment_report.csv` and `lira_preprocessing_report.json` so the retained matches and protocol settings are auditable.
+The preprocessor writes `lira_stream_assembly_report.json`, `lira_alignment_report.csv` and `lira_preprocessing_report.json` so raw-stream resolution, retained matches and protocol settings are auditable. See `KAGGLE_LIRA_FIX.md` for the regression that fixed the original Kaggle preparation failure.
 
 ## Reviewer-oriented experiments
 

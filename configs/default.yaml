@@ -14,6 +14,10 @@ lira:
   enforce_monotonic: true
   # Resampling is applied only inside an already assigned (trip, split) block.
   resample_hz: 20.0
+  # Official task_7505 vehicle channels are separate asynchronous TXT streams.
+  # These limits are used while synchronising them before VIAFRIK alignment.
+  sensor_merge_max_gap_s: 0.50
+  gps_interp_max_gap_s: 2.50
   resample_max_gap_s: 0.25
   interpolation_limit: 5
   # Optional purge around spatial split boundaries. Increase for stricter road

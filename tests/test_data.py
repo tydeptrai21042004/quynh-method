@@ -30,3 +30,61 @@ def test_vehicle_units_from_column_names():
     assert abs(c.speed.iloc[0]-10.0)<1e-9
     assert abs(c.ax.iloc[0]-9.80665)<1e-6
     assert abs(c.ay.iloc[0]-2.0)<1e-9
+
+
+def test_official_lira_task_streams_are_synchronised_before_alignment(tmp_path):
+    """Regression for the Kaggle failure on separate task_7505 sensor files."""
+    import numpy as np
+    import yaml
+    from safegrip.data import assemble_lira_task_streams, prepare_lira
+
+    raw = tmp_path / "raw"
+    out = tmp_path / "processed"
+    raw.mkdir()
+
+    # GPS is low-rate while CAN signals are higher-rate and live in separate
+    # files, matching the structure of the public platoon-test download.
+    tgps = np.arange(0.0, 20.1, 1.0)
+    lat_gps = 55.0 + tgps * 1e-5
+    lon_gps = np.full_like(tgps, 12.0)
+    pd.DataFrame({"timestamp": 1_000_000.0 + tgps, "lat": lat_gps, "lon": lon_gps}).to_csv(
+        raw / "task_7505_gps_raw.txt", index=False
+    )
+
+    ts = np.arange(0.0, 20.0, 0.1)
+    for name, value in {
+        "speed": np.full_like(ts, 36.0),       # official unit: km/h
+        "acc_lon": np.full_like(ts, 0.20),
+        "acc_trans": np.full_like(ts, 0.10),
+        "acc_yaw": np.full_like(ts, 0.01),
+    }.items():
+        pd.DataFrame({"timestamp": 1_000_000.0 + ts, "value": value}).to_csv(
+            raw / f"task_7505_{name}.txt", index=False
+        )
+
+    # High-resolution VIAFRIK trace along the same route.
+    tr = np.arange(0.0, 20.0, 0.1)
+    pd.DataFrame({
+        "Lat": 55.0 + tr * 1e-5,
+        "Lon": np.full_like(tr, 12.0),
+        "µ_V [-]": np.full_like(tr, 0.55),
+        "µ_H [-]": np.full_like(tr, 0.57),
+    }).to_csv(raw / "m3_custom_fric_hh.csv", index=False)
+
+    cfg = yaml.safe_load((Path(__file__).parents[1] / "configs" / "default.yaml").read_text())
+    cfg["lira"]["resample_hz"] = 10.0
+    cfg["lira"]["heading_tolerance_deg"] = 60.0
+
+    task_files = sorted(raw.glob("task_7505*.txt"))
+    assembled, report = assemble_lira_task_streams(task_files, cfg)
+    assert {"time", "lat", "lon", "speed", "ax", "ay"}.issubset(assembled.columns)
+    assert len(assembled) > 100
+    assert abs(float(assembled.speed.median()) - 10.0) < 1e-6
+    assert report["rows_after_sync"] == len(assembled)
+
+    result = prepare_lira(raw, out, cfg)
+    z = pd.read_csv(result)
+    assert len(z) > 50
+    assert {"mu_ref", "physics_lower_raw", "split", "sample_uid"}.issubset(z.columns)
+    assert {"train", "calibration", "validation", "test"}.issubset(set(z.split))
+    assert (out / "lira_stream_assembly_report.json").exists()

@@ -106,6 +106,42 @@ def _time_seconds(s: pd.Series) -> pd.Series:
     return num.astype(float)
 
 
+def _absolute_time_seconds(s: pd.Series) -> pd.Series:
+    """Convert a LiRA timestamp to seconds without resetting each file to zero.
+
+    ``task_7505_*.txt`` is distributed as separate asynchronous sensor files.
+    Synchronising those streams requires preserving a common timestamp origin;
+    using :func:`_time_seconds` on every file independently would erase the
+    offsets between streams.  This helper mirrors the numeric/datetime unit
+    detection used above but deliberately keeps the absolute/elapsed origin.
+    """
+    num = pd.to_numeric(s, errors="coerce")
+    if num.notna().sum() >= max(3, len(s) // 3):
+        x = num.astype(float).to_numpy()
+        finite = x[np.isfinite(x)]
+        if finite.size:
+            mag = float(np.nanmedian(np.abs(finite)))
+            dif = np.diff(finite)
+            dif = dif[np.isfinite(dif) & (dif > 0)]
+            md = float(np.nanmedian(dif)) if dif.size else 1.0
+            scale = 1.0
+            if mag > 1e17:
+                scale = 1e9
+            elif mag > 1e14:
+                scale = 1e6
+            elif mag > 1e11:
+                scale = 1e3
+            elif md > 5.0 and md <= 5000.0:
+                scale = 1e3
+            return pd.Series(x / scale, index=s.index, dtype=float)
+    dt = pd.to_datetime(s, errors="coerce", utc=True)
+    if dt.notna().sum() >= 3:
+        x = dt.astype("int64").astype(float) / 1e9
+        x[dt.isna().to_numpy()] = np.nan
+        return pd.Series(x, index=s.index, dtype=float)
+    return num.astype(float)
+
+
 def canonical_vehicle(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
     for key, pats in CANONICAL.items():
@@ -154,6 +190,345 @@ def canonical_friction(df: pd.DataFrame) -> pd.DataFrame:
     if mus:
         out["mu_ref"] = out[mus].mean(axis=1)
     return out
+
+
+# LiRA platoon-test vehicle signals are published as separate
+# ``task_<id>_<sensor>.txt`` streams.  The keys below map the official file
+# suffixes to the canonical model features used by SafeGrip.  Longest/specific
+# suffixes are matched before generic ones so ``rpm_fl`` is never mistaken for
+# ``rpm`` and ``brk_trq_req_*`` is not mistaken for ``brk_trq``.
+LIRA_TASK_FILE_FEATURES = {
+    "acc_lon": "ax",
+    "acc_trans": "ay",
+    "acc_yaw": "yaw_rate",
+    "strg_ang": "steer",
+    "strg_pos": "steer",
+    "rpm_fl": "wheel_fl",
+    "rpm_fr": "wheel_fr",
+    "rpm_rl": "wheel_rl",
+    "rpm_rr": "wheel_rr",
+    "whl_trq_est": "torque",
+    "brk_trq": "brake_torque",
+    "whl_prs_fl": "pressure_fl",
+    "whl_prs_fr": "pressure_fr",
+    "whl_prs_rl": "pressure_rl",
+    "whl_prs_rr": "pressure_rr",
+    "speed": "speed",
+    "odo": "distance",
+}
+
+
+def _task_id_from_name(path: Path) -> str:
+    m = re.search(r"task[_-]?(\d+)", path.stem, flags=re.IGNORECASE)
+    return m.group(1) if m else normalize_name(path.stem)
+
+
+def _lira_file_suffix(path: Path) -> str:
+    stem = path.stem.lower()
+    m = re.match(r"task[_-]?\d+[_-]?(.*)", stem)
+    return (m.group(1) if m else stem).strip("_-")
+
+
+def _find_time_column(df: pd.DataFrame) -> str | None:
+    c = find_col(df, CANONICAL["time"])
+    if c is not None:
+        return c
+    # Some exported task files use a terse first column without an informative
+    # header.  Accept it only when it is predominantly numeric/datetime-like and
+    # monotone, which avoids silently treating a sensor value as time.
+    for c in df.columns[:2]:
+        s = _absolute_time_seconds(df[c])
+        v = s.to_numpy(float)
+        finite = v[np.isfinite(v)]
+        if finite.size >= 3 and np.mean(np.diff(finite) >= 0) > 0.98 and np.nanmax(finite) > np.nanmin(finite):
+            return c
+    return None
+
+
+def _numeric_candidates(df: pd.DataFrame, exclude=()) -> list[str]:
+    out = []
+    excluded = set(exclude)
+    for c in df.columns:
+        if c in excluded:
+            continue
+        s = pd.to_numeric(df[c], errors="coerce")
+        if s.notna().sum() >= max(3, len(df) // 5):
+            out.append(c)
+    return out
+
+
+def _extract_lira_gps_stream(path: Path) -> pd.DataFrame:
+    """Parse ``task_*_gps_raw.txt`` into ``time, lat, lon``.
+
+    Named latitude/longitude columns are preferred.  A guarded numeric fallback
+    supports the published flat-file export when generic column names are used.
+    """
+    df = read_table(path)
+    time_col = _find_time_column(df)
+    if time_col is None:
+        raise RuntimeError(f"Could not identify timestamp column in LiRA GPS file: {path.name}")
+    lat_col = find_col(df, CANONICAL["lat"])
+    lon_col = find_col(df, CANONICAL["lon"])
+    candidates = _numeric_candidates(df, exclude=(time_col,))
+
+    if lat_col is None or lon_col is None:
+        # Prefer columns whose values fall in valid latitude/longitude ranges.
+        stats = []
+        for c in candidates:
+            s = pd.to_numeric(df[c], errors="coerce")
+            med = float(np.nanmedian(s)) if s.notna().any() else np.nan
+            stats.append((c, med))
+        if lat_col is None:
+            lat_like = [c for c, med in stats if np.isfinite(med) and -90 <= med <= 90]
+            # Denmark is around 55--57 N; prefer that range but keep the parser
+            # geographically generic for mirrored copies of the dataset.
+            preferred = [c for c in lat_like if 45 <= abs(float(np.nanmedian(pd.to_numeric(df[c], errors="coerce")))) <= 70]
+            lat_col = (preferred or lat_like or [None])[0]
+        if lon_col is None:
+            lon_like = [c for c, med in stats if c != lat_col and np.isfinite(med) and -180 <= med <= 180]
+            lon_col = (lon_like or [None])[0]
+
+    if lat_col is not None and lon_col is not None:
+        lat = pd.to_numeric(df[lat_col], errors="coerce")
+        lon = pd.to_numeric(df[lon_col], errors="coerce")
+    else:
+        # Last-resort support for flat exports that serialize GPS as a pair in
+        # one field (e.g. "[12.34, 55.67]").  We still validate geographic
+        # ranges and identify which component is latitude from the data rather
+        # than assuming an undocumented order.
+        pair = None
+        for c in df.columns:
+            if c == time_col:
+                continue
+            vals = []
+            for v in df[c].astype(str):
+                nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", v)
+                vals.append((float(nums[0]), float(nums[1])) if len(nums) >= 2 else (np.nan, np.nan))
+            arr = np.asarray(vals, dtype=float)
+            if np.isfinite(arr).all(axis=1).sum() >= 3:
+                pair = arr
+                break
+        if pair is None:
+            raise RuntimeError(
+                f"Could not identify latitude/longitude columns in LiRA GPS file {path.name}; columns={list(df.columns)}"
+            )
+        a, b = pair[:, 0], pair[:, 1]
+        med_a, med_b = float(np.nanmedian(a)), float(np.nanmedian(b))
+        # Prefer the component in a plausible latitude range around Denmark;
+        # otherwise use the component with the larger absolute median when both
+        # are valid latitude candidates (12E vs 55N in this dataset).
+        if 45 <= abs(med_a) <= 70 and abs(med_b) <= 180:
+            lat, lon = pd.Series(a), pd.Series(b)
+        elif 45 <= abs(med_b) <= 70 and abs(med_a) <= 180:
+            lat, lon = pd.Series(b), pd.Series(a)
+        elif abs(med_a) > abs(med_b) and abs(med_a) <= 90 and abs(med_b) <= 180:
+            lat, lon = pd.Series(a), pd.Series(b)
+        else:
+            lat, lon = pd.Series(b), pd.Series(a)
+
+    out = pd.DataFrame({
+        "time": _absolute_time_seconds(df[time_col]),
+        "lat": lat,
+        "lon": lon,
+    }).dropna(subset=["time", "lat", "lon"])
+    out = out[(out.lat.between(-90, 90)) & (out.lon.between(-180, 180))]
+    return out.sort_values("time").drop_duplicates("time").reset_index(drop=True)
+
+
+def _extract_lira_scalar_stream(path: Path, feature: str) -> pd.DataFrame:
+    """Parse one LiRA task sensor file into a timestamped canonical signal."""
+    df = read_table(path)
+    time_col = _find_time_column(df)
+    if time_col is None:
+        raise RuntimeError(f"Could not identify timestamp column in LiRA sensor file: {path.name}")
+
+    # First prefer the normal semantic alias resolver.  The task file name is a
+    # second source of truth because many official exports name the value column
+    # generically (e.g. ``value``).
+    canonical = canonical_vehicle(df)
+    used_filename_fallback = not (feature in canonical and len(canonical[feature]) == len(df))
+    if not used_filename_fallback:
+        value = canonical[feature]
+    else:
+        candidates = _numeric_candidates(df, exclude=(time_col,))
+        if not candidates:
+            raise RuntimeError(f"No numeric value column found in LiRA sensor file: {path.name}")
+        # Prefer non-index/id columns and the column with the largest finite count.
+        candidates = sorted(
+            candidates,
+            key=lambda c: (
+                any(tok in normalize_name(c) for tok in ("index", "id", "count")),
+                -pd.to_numeric(df[c], errors="coerce").notna().sum(),
+            ),
+        )
+        value = pd.to_numeric(df[candidates[0]], errors="coerce")
+
+    # Units documented for the public task_7505 export.  ``canonical_vehicle``
+    # already converts explicitly unit-labelled km/h columns, so only convert
+    # again when the header did not itself advertise km/h.  The official odometer
+    # is kilometres while canonical ``distance`` is metres.
+    cols_text = " ".join(str(c).lower().replace(" ", "") for c in df.columns)
+    if feature == "speed" and not any(tok in cols_text for tok in ("km/h", "kmh", "kph", "kmph")):
+        value = value / 3.6
+    elif feature == "distance":
+        value = value * 1000.0
+
+    out = pd.DataFrame({"time": _absolute_time_seconds(df[time_col]), feature: value})
+    out = out.dropna(subset=["time", feature]).sort_values("time").drop_duplicates("time")
+    return out.reset_index(drop=True)
+
+
+def _relative_if_needed(
+    streams: dict[str, pd.DataFrame],
+    gps: pd.DataFrame,
+    required: list[str] | None = None,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, bool]:
+    """Fall back to per-stream elapsed time only when timestamp origins differ.
+
+    The official files normally share a common timestamp domain.  Some mirrors
+    have been observed to rewrite individual files to elapsed time.  If the GPS
+    and essential streams have no temporal overlap at all, normalising every
+    stream to its first valid sample is safer than producing an empty merge and
+    is explicitly recorded in the preprocessing report.
+    """
+    ranges = []
+    checked = [streams[k] for k in (required or list(streams)) if k in streams]
+    for z in [gps, *checked]:
+        if len(z) and z.time.notna().any():
+            ranges.append((float(z.time.min()), float(z.time.max())))
+    if len(ranges) < 2:
+        return streams, gps, False
+    overlap_lo = max(a for a, _ in ranges)
+    overlap_hi = min(b for _, b in ranges)
+    if overlap_hi > overlap_lo:
+        return streams, gps, False
+
+    def rel(z):
+        z = z.copy()
+        if len(z):
+            z["time"] = z.time - float(z.time.min())
+        return z
+
+    return {k: rel(v) for k, v in streams.items()}, rel(gps), True
+
+
+def _interp_stream_to_grid(stream: pd.DataFrame, col: str, grid: np.ndarray, max_gap_s: float | None = None) -> np.ndarray:
+    t = stream.time.to_numpy(float)
+    v = stream[col].to_numpy(float)
+    good = np.isfinite(t) & np.isfinite(v)
+    t, v = t[good], v[good]
+    if len(t) < 2:
+        return np.full(len(grid), np.nan)
+    order = np.argsort(t, kind="stable")
+    t, v = t[order], v[order]
+    unique = np.r_[True, np.diff(t) > 0]
+    t, v = t[unique], v[unique]
+    y = np.interp(grid, t, v, left=np.nan, right=np.nan)
+    if max_gap_s is not None and np.isfinite(max_gap_s):
+        right = np.searchsorted(t, grid, side="left")
+        right = np.clip(right, 0, len(t) - 1)
+        left = np.clip(right - 1, 0, len(t) - 1)
+        gap = np.minimum(np.abs(grid - t[left]), np.abs(grid - t[right]))
+        y[gap > float(max_gap_s)] = np.nan
+    return y
+
+
+def assemble_lira_task_streams(files: list[Path], cfg: dict) -> tuple[pd.DataFrame, dict]:
+    """Synchronise the separate official ``task_7505_*`` files into one trip.
+
+    GPS is interpolated onto a common vehicle timeline *before* VIAFRIK
+    alignment, matching the preprocessing recommended by the LiRA-CD authors.
+    Model features remain production-sensor signals; GPS is used only for
+    reference alignment and is excluded later from the learned input set.
+    """
+    files = sorted(Path(p) for p in files)
+    gps_files = [p for p in files if "gps" in _lira_file_suffix(p)]
+    if not gps_files:
+        raise RuntimeError(f"LiRA task group has no GPS stream: {[p.name for p in files]}")
+    gps = _extract_lira_gps_stream(gps_files[0])
+    if len(gps) < 2:
+        raise RuntimeError(f"LiRA GPS stream contains too few valid rows: {gps_files[0].name}")
+
+    streams: dict[str, pd.DataFrame] = {}
+    source_files: dict[str, str] = {"gps": gps_files[0].name}
+    # Give steering-angle priority over steering-position if both are available.
+    feature_priority = {"strg_ang": 0, "strg_pos": 1}
+    selected_suffix: dict[str, tuple[int, str]] = {}
+    for p in files:
+        suffix = _lira_file_suffix(p)
+        if "gps" in suffix:
+            continue
+        feature = LIRA_TASK_FILE_FEATURES.get(suffix)
+        if feature is None:
+            continue
+        pri = feature_priority.get(suffix, 0)
+        if feature in selected_suffix and selected_suffix[feature][0] <= pri:
+            continue
+        try:
+            stream = _extract_lira_scalar_stream(p, feature)
+        except RuntimeError:
+            continue
+        if len(stream) >= 2:
+            streams[feature] = stream
+            selected_suffix[feature] = (pri, suffix)
+            source_files[feature] = p.name
+
+    essential = [x for x in ("speed", "ax", "ay") if x in streams]
+    if len(essential) < 3:
+        raise RuntimeError(
+            "LiRA task stream assembly could not resolve required speed/ax/ay files. "
+            f"Resolved={sorted(streams)}; files={[p.name for p in files]}"
+        )
+
+    streams, gps, used_relative_fallback = _relative_if_needed(streams, gps, required=essential)
+    lira_cfg = cfg.get("lira", {})
+    hz = float(lira_cfg.get("resample_hz", 20.0))
+    hz = hz if hz > 0 else 20.0
+    sensor_gap = float(lira_cfg.get("sensor_merge_max_gap_s", max(0.5, 5.0 / hz)))
+    gps_gap = float(lira_cfg.get("gps_interp_max_gap_s", 2.5))
+
+    # Restrict the grid to GPS + required sensors. Optional streams may start or
+    # stop later without discarding otherwise usable data.
+    required_ranges = [(float(gps.time.min()), float(gps.time.max()))]
+    for feature in essential:
+        s = streams[feature]
+        required_ranges.append((float(s.time.min()), float(s.time.max())))
+    lo = max(a for a, _ in required_ranges)
+    hi = min(b for _, b in required_ranges)
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        raise RuntimeError(
+            "LiRA task sensor/GPS timestamps do not overlap after parsing. "
+            "Inspect the raw timestamp columns; the parser did not fabricate row-index alignment."
+        )
+    step = 1.0 / hz
+    grid = np.arange(lo, hi + step * 0.25, step)
+    if len(grid) < 4:
+        raise RuntimeError("LiRA common task timeline contains fewer than four samples")
+
+    out = pd.DataFrame({"time": grid})
+    out["lat"] = _interp_stream_to_grid(gps, "lat", grid, max_gap_s=gps_gap)
+    out["lon"] = _interp_stream_to_grid(gps, "lon", grid, max_gap_s=gps_gap)
+    for feature, stream in streams.items():
+        out[feature] = _interp_stream_to_grid(stream, feature, grid, max_gap_s=sensor_gap)
+
+    out = out.dropna(subset=["lat", "lon", *essential]).reset_index(drop=True)
+    task_id = _task_id_from_name(files[0])
+    out["trip_id"] = f"task_{task_id}"
+    out["source_file"] = f"task_{task_id}_assembled"
+    out["route_id"] = "unknown"
+    out["direction"] = "unknown"
+    out["route_s_m"] = cumulative_route_distance(out.lat, out.lon)
+    report = {
+        "task_id": task_id,
+        "input_files": [p.name for p in files],
+        "resolved_streams": source_files,
+        "rows_after_sync": int(len(out)),
+        "resample_hz": hz,
+        "timestamp_relative_fallback": bool(used_relative_fallback),
+        "sensor_merge_max_gap_s": sensor_gap,
+        "gps_interp_max_gap_s": gps_gap,
+    }
+    return out, report
 
 
 def parse_lira_context(path: Path, root: Path | None = None) -> dict[str, str]:
@@ -376,6 +751,72 @@ def _select_reference_trace_by_geometry(car: pd.DataFrame, pool: pd.DataFrame) -
     return pool.reset_index(drop=True)
 
 
+def _align_to_reference_traces(
+    car: pd.DataFrame,
+    pool: pd.DataFrame,
+    *,
+    max_m: float,
+    heading_tolerance_deg: float | None,
+    enforce_monotonic: bool,
+    k_candidates: int,
+) -> pd.DataFrame:
+    """Align one assembled vehicle task against every candidate VIAFRIK trace.
+
+    The public task-7505 campaign can contain samples from both motorway
+    directions while the reference is supplied as separate ``*_hh``/``*_vh``
+    files.  Selecting a single reference file for the whole task can therefore
+    discard half the drive.  We align each trace independently, keep the nearest
+    valid match per vehicle timestamp, and never combine reference rows before
+    the route/heading/monotonic safeguards are applied.
+    """
+    if car.empty or pool.empty:
+        return pd.DataFrame()
+    c = car.copy().reset_index(drop=True)
+    c["_vehicle_row_id"] = np.arange(len(c), dtype=int)
+    if "ref_source_file" in pool:
+        traces = list(pool.groupby("ref_source_file", sort=False))
+    else:
+        traces = [("reference", pool)]
+    matches = []
+    for source, trace in traces:
+        trace = trace.reset_index(drop=True)
+        orientations = [("forward", trace)]
+        if enforce_monotonic and len(trace) > 1:
+            orientations.append(("reverse", trace.iloc[::-1].reset_index(drop=True)))
+        best = None
+        best_score = None
+        for orientation, rr in orientations:
+            z = spatial_align(
+                c,
+                rr,
+                max_m=max_m,
+                heading_tolerance_deg=heading_tolerance_deg,
+                enforce_monotonic=enforce_monotonic,
+                k_candidates=k_candidates,
+            )
+            if z.empty:
+                continue
+            med = float(z.match_distance_m.median()) if "match_distance_m" in z else np.inf
+            score = (len(z), -med)
+            if best_score is None or score > best_score:
+                best_score = score
+                best = z
+                best["reference_orientation"] = orientation
+        if best is not None and not best.empty:
+            best["reference_trace"] = str(source)
+            matches.append(best)
+    if not matches:
+        return pd.DataFrame()
+    z = pd.concat(matches, ignore_index=True)
+    if "match_distance_m" in z:
+        z = z.sort_values(["_vehicle_row_id", "match_distance_m"], kind="stable")
+    z = z.drop_duplicates("_vehicle_row_id", keep="first")
+    sort_cols = [c for c in ("time", "_vehicle_row_id") if c in z]
+    if sort_cols:
+        z = z.sort_values(sort_cols, kind="stable")
+    return z.drop(columns=["_vehicle_row_id"], errors="ignore").reset_index(drop=True)
+
+
 def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Assign contiguous train/calibration/validation/test blocks per trip.
 
@@ -529,27 +970,43 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         refs.append(r)
     ref = pd.concat(refs, ignore_index=True)
 
+    # The official platoon-test download stores each vehicle signal in a
+    # separate task_<id>_<sensor>.txt file. Assemble/synchronise all streams for
+    # a task first; treating each file as a complete trip is invalid because
+    # only the GPS stream contains coordinates.
+    car_groups: dict[str, list[Path]] = {}
+    for p in car:
+        car_groups.setdefault(_task_id_from_name(p), []).append(p)
+
     aligned = []
     alignment_rows = []
-    for p in car:
-        x = canonical_vehicle(read_table(p))
-        ctx = parse_lira_context(p, raw)
+    assembly_rows = []
+    for task_id, task_files in sorted(car_groups.items()):
+        x, assembly_report = assemble_lira_task_streams(task_files, cfg)
+        contexts = [parse_lira_context(p, raw) for p in task_files]
+        known_routes = [c["route_id"] for c in contexts if c["route_id"] != "unknown"]
+        known_dirs = [c["direction"] for c in contexts if c["direction"] != "unknown"]
+        ctx = {
+            "route_id": known_routes[0] if known_routes and len(set(known_routes)) == 1 else "unknown",
+            "direction": known_dirs[0] if known_dirs and len(set(known_dirs)) == 1 else "unknown",
+            "trip_id": f"task_{task_id}",
+        }
         for k, v in ctx.items():
             x[k] = v
-        x["source_file"] = str(p.relative_to(raw))
-        if all(c in x for c in ("lat", "lon")):
-            x["route_s_m"] = cumulative_route_distance(x.lat, x.lon)
+        x["source_file"] = f"task_{task_id}_assembled"
         pool = _select_reference_pool(ref, ctx["route_id"], ctx["direction"])
-        pool = _select_reference_trace_by_geometry(x, pool)
-        use_monotonic = enforce_monotonic and len(pool) > 1
-        z = spatial_align(
+        z = _align_to_reference_traces(
             x,
             pool,
             max_m=max_m,
             heading_tolerance_deg=heading_tol,
-            enforce_monotonic=use_monotonic,
+            enforce_monotonic=enforce_monotonic,
             k_candidates=k_candidates,
         )
+        assembly_rows.append(assembly_report)
+        traces = []
+        if not z.empty and "reference_trace" in z:
+            traces = sorted(str(v) for v in z.reference_trace.dropna().unique())
         alignment_rows.append(
             {
                 "trip_id": ctx["trip_id"],
@@ -557,7 +1014,7 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
                 "direction": ctx["direction"],
                 "vehicle_rows": int(len(x)),
                 "candidate_reference_rows": int(len(pool)),
-                "reference_trace": str(pool.ref_source_file.iloc[0]) if len(pool) and "ref_source_file" in pool else "unknown",
+                "reference_trace": ";".join(traces) if traces else "unknown",
                 "matched_rows": int(len(z)),
                 "retention": float(len(z) / max(len(x), 1)),
             }
@@ -566,8 +1023,9 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
             # Keep the vehicle trip metadata authoritative after reference copy.
             for k, v in ctx.items():
                 z[k] = v
-            z["source_file"] = str(p.relative_to(raw))
+            z["source_file"] = f"task_{task_id}_assembled"
             aligned.append(z)
+    (out / "lira_stream_assembly_report.json").write_text(json.dumps(assembly_rows, indent=2), encoding="utf-8")
     pd.DataFrame(alignment_rows).to_csv(out / "lira_alignment_report.csv", index=False)
     if not aligned:
         raise RuntimeError(

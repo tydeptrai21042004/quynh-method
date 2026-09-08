@@ -43,13 +43,16 @@ The corrected pipeline is:
 
 ```text
 vehicle/ref files
+ -> group official task_<id>_<sensor>.txt files by task ID
+ -> preserve common timestamps and synchronize asynchronous CAN streams
+ -> interpolate low-rate GPS onto the common vehicle timeline
  -> explicit route/direction metadata extraction when present
- -> per-trip route-local reference candidate selection
- -> GPS nearest-candidate matching
+ -> align each candidate VIAFRIK trace independently
       * maximum metric distance
       * heading consistency
       * monotone reference progress
- -> contiguous spatial split inside each trip
+      * nearest valid trace kept per vehicle timestamp
+ -> contiguous spatial split inside each task/trip
  -> interpolation only inside (trip, split)
  -> optional fixed-rate resampling only inside (trip, split)
  -> recompute physics lower bound
@@ -62,7 +65,8 @@ Default matching protocol in `configs/default.yaml`:
 - heading tolerance: 45 degrees;
 - up to 8 nearest reference candidates;
 - monotonic reference progress enabled;
-- 20 Hz resampling when timestamps are usable;
+- 20 Hz task-stream synchronization/resampling when timestamps are usable;
+- maximum 0.50 s nearest-sensor gap and 2.50 s GPS interpolation gap by default;
 - no model feature may contain GPS, route ID, split position or matching metadata.
 
 If route/direction are not explicit in a path, the parser records `unknown`; it does not invent route labels.

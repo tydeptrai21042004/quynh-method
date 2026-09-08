@@ -4,13 +4,15 @@ This version keeps the existing SafeGrip proposal and literature baseline set, b
 
 ## Data protocol
 
-- Replaced one global LiRA reference join with per-trip route-local candidate selection.
+- Replaced the invalid per-file LiRA treatment with task-level synchronization of the official asynchronous `task_7505_*` GPS/CAN sensor streams before reference alignment.
+- Replaced one global LiRA reference join with per-task route-local candidate selection.
 - Uses explicit route/direction tokens only when they exist; missing metadata remain `unknown`.
-- When several reference files share a route/direction, selects the closest reference trace by geometry before alignment.
+- When several VIAFRIK traces/directions are candidates, aligns each trace independently with distance/heading/monotonic safeguards and keeps the nearest valid match per vehicle timestamp.
 - Added configurable maximum match distance, heading consistency and monotonic reference progress.
 - Added source-name-based speed/acceleration unit conversion instead of magnitude guessing.
 - Assigns spatial train/calibration/validation/test blocks before interpolation or resampling.
 - Interpolates/resamples only within one `(trip_id, split)` partition.
+- Interpolates the low-rate GPS stream onto the common task timeline, synchronizes required CAN streams with explicit maximum time gaps, and then applies fixed-rate processing.
 - Added 20 Hz fixed-rate resampling when timestamps are usable, with a maximum nearest-source time gap.
 - Recomputes the physics lower bound after signal preprocessing.
 - Adds stable `sample_uid` endpoint IDs.
@@ -38,6 +40,6 @@ This version keeps the existing SafeGrip proposal and literature baseline set, b
 
 ## Reproducibility
 
-- Test suite increased to 22 passing tests.
+- Test suite increased to 23 passing tests, including an end-to-end regression test reproducing the Kaggle `task_7505` preparation failure.
 - Added `scripts/run_extended_experiments.sh`.
 - `scripts/run_paper.sh` automatically runs the low-cost excitation and robustness analyses after the main benchmark; expensive extended experiments remain opt-in with `RUN_EXTENDED=1`.
