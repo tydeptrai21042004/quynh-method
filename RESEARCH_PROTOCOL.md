@@ -188,3 +188,11 @@ safegrip force-validate --dataset kuleuven
 ```
 
 These experiments validate the conservative utilization calculation on measured force channels. They do not relabel force utilization as a direct peak-friction ground truth.
+
+### Calibration isolation
+
+The training gradients use only the training split and the uncalibrated mechanics lower bound. The one-sided calibration correction is estimated from the calibration split and is applied only to validation/test inference-time admissible sets. This prevents the proposal from receiving calibration-label information through gradient training.
+
+### Fixed physics observation window
+
+The identified lower endpoint used at an evaluation endpoint is the maximum pointwise mechanics lower bound over a fixed trailing physics window (`physics.window_samples`). This window is independent of each baseline network's history length, so projection-parity controls use the same physical information at the same endpoint.

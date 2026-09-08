@@ -334,6 +334,125 @@ LIRA_TASK_FILE_FEATURES = {
     "odo": "distance",
 }
 
+# LiRA-CD Table 2 correction parameters.  The public dataset article states
+# that some CAN channels require a second translation to physical units:
+#
+#     s = ((s_LiRA-CD - b_star * r_star) - b) * r
+#
+# These values are data-source metadata, not fitted parameters.  We apply the
+# correction only to the corresponding official task-file suffix and only when
+# the observed numeric channel is in the encoded/raw domain; already-physical
+# synthetic/custom files are left unchanged.
+LIRA_TABLE2_CORRECTIONS = {
+    "acc_lon":      {"b_star": 198.0,   "r_star": 1.0,  "b": 198.0,   "r": 0.05, "unit": "m/s2"},
+    "acc_trans":    {"b_star": 32768.0, "r_star": 1.0,  "b": 32768.0, "r": 0.04, "unit": "m/s2"},
+    "acc_yaw":      {"b_star": 2047.0,  "r_star": 1.0,  "b": 2047.0,  "r": 0.10, "unit": "deg/s"},
+    "brk_trq":      {"b_star": 4096.0,  "r_star": -1.0, "b": 4098.0,  "r": -1.0, "unit": "Nm"},
+    "whl_trq_est":  {"b_star": 12800.0, "r_star": 0.5,  "b": 12700.0, "r": 1.0,  "unit": "Nm"},
+}
+
+
+def _lira_table2_decode(values: pd.Series, suffix: str) -> tuple[pd.Series, bool]:
+    """Translate one documented LiRA encoded CAN signal to physical units.
+
+    Detection is intentionally conservative.  A source is treated as encoded
+    only when its median lives near the encoded zero point (or, for the brake
+    channel whose encoded zero is 2, when the official suffix is present and
+    values are tightly concentrated around that point).  This prevents the
+    correction from being applied to tests or user files that already contain
+    physical values.
+    """
+    x = pd.to_numeric(values, errors="coerce").astype(float)
+    spec = LIRA_TABLE2_CORRECTIONS.get(str(suffix))
+    if spec is None or x.notna().sum() < 3:
+        return x, False
+    med = float(np.nanmedian(x))
+    zero = float(spec["b_star"] * spec["r_star"] + spec["b"])
+    scale = abs(float(spec["r"]))
+    # Physical acceleration/yaw/torque values should be far smaller than the
+    # large encoded offsets.  For brake torque the official encoded rest value
+    # is exactly 2, so a tight near-zero-point check is used instead.
+    if abs(zero) >= 50.0:
+        encoded = abs(med) >= 0.5 * abs(zero) and abs(med - zero) <= max(0.55 * abs(zero), 500.0 / max(scale, 1e-9))
+    else:
+        spread = float(np.nanpercentile(np.abs(x - med), 95))
+        encoded = abs(med - zero) <= 5.0 and spread <= 50.0
+    if not encoded:
+        return x, False
+    decoded = ((x - float(spec["b_star"]) * float(spec["r_star"])) - float(spec["b"])) * float(spec["r"])
+    return decoded, True
+
+
+def _feature_summary(series: pd.Series) -> dict:
+    x = pd.to_numeric(series, errors="coerce").to_numpy(float)
+    x = x[np.isfinite(x)]
+    if not len(x):
+        return {"n": 0}
+    return {
+        "n": int(len(x)),
+        "min": float(np.min(x)),
+        "p01": float(np.quantile(x, 0.01)),
+        "median": float(np.median(x)),
+        "p99": float(np.quantile(x, 0.99)),
+        "max": float(np.max(x)),
+        "std": float(np.std(x)),
+    }
+
+
+def _screen_lira_model_features(df: pd.DataFrame, features: list[str]) -> tuple[list[str], list[dict]]:
+    """Keep only physically interpretable, non-degenerate LiRA channels.
+
+    The mandatory physics channels (speed/ax/ay) fail loudly when implausible;
+    optional channels are dropped and documented instead of silently feeding
+    obviously encoded offsets (for example a 65k steering channel) to a model.
+    """
+    rules = {
+        "speed":       {"abs_p99": 80.0,  "mandatory": True},
+        "ax":          {"abs_p99": 15.0,  "mandatory": True},
+        "ay":          {"abs_p99": 15.0,  "mandatory": True},
+        "yaw_rate":    {"abs_med": 30.0,  "abs_p99": 90.0},
+        "steer":       {"abs_med": 720.0, "abs_p99": 1080.0},
+        "wheel_fl":    {"abs_p99": 5000.0},
+        "wheel_fr":    {"abs_p99": 5000.0},
+        "wheel_rl":    {"abs_p99": 5000.0},
+        "wheel_rr":    {"abs_p99": 5000.0},
+        "torque":      {"abs_p99": 5000.0},
+        "brake_torque":{"abs_p99": 10000.0},
+        "pressure_fl": {"abs_p99": 6000.0},
+        "pressure_fr": {"abs_p99": 6000.0},
+        "pressure_rl": {"abs_p99": 6000.0},
+        "pressure_rr": {"abs_p99": 6000.0},
+    }
+    kept, audit = [], []
+    for feature in features:
+        vals = pd.to_numeric(df[feature], errors="coerce").to_numpy(float)
+        finite = vals[np.isfinite(vals)]
+        row = {"feature": feature, "kept": True, "reason": "ok"}
+        if len(finite) < 10:
+            row.update(kept=False, reason="too_few_finite_values")
+        else:
+            med = float(np.median(finite)); p99abs = float(np.quantile(np.abs(finite), 0.99)); std = float(np.std(finite))
+            row.update(median=med, p99_abs=p99abs, std=std)
+            rule = rules.get(feature, {})
+            if std < 1e-8 and not rule.get("mandatory", False):
+                row.update(kept=False, reason="near_constant")
+            elif "abs_med" in rule and abs(med) > float(rule["abs_med"]):
+                row.update(kept=False, reason="implausible_median")
+            elif "abs_p99" in rule and p99abs > float(rule["abs_p99"]):
+                row.update(kept=False, reason="implausible_p99")
+        if row["kept"]:
+            kept.append(feature)
+        elif rules.get(feature, {}).get("mandatory", False):
+            raise RuntimeError(
+                f"LiRA mandatory signal {feature!r} is not in a plausible physical domain: {row}. "
+                "The run is stopped rather than allowing an invalid physics bound."
+            )
+        audit.append(row)
+    missing = [x for x in ("speed", "ax", "ay") if x not in kept]
+    if missing:
+        raise RuntimeError(f"LiRA preprocessing lost mandatory physical signals: {missing}")
+    return kept, audit
+
 
 def _task_id_from_name(path: Path) -> str:
     m = re.search(r"task[_-]?(\d+)", path.stem, flags=re.IGNORECASE)
@@ -453,47 +572,59 @@ def _extract_lira_gps_stream(path: Path) -> pd.DataFrame:
 
 
 def _extract_lira_scalar_stream(path: Path, feature: str) -> pd.DataFrame:
-    """Parse one LiRA task sensor file into a timestamped canonical signal."""
+    """Parse one official LiRA task sensor file into a physical signal.
+
+    For channels listed in LiRA-CD Table 2, the public flat files may contain
+    values that still require the documented offset/resolution correction.
+    Candidate selection therefore uses the known encoded zero point as an
+    additional schema cue instead of blindly taking the first numeric column.
+    """
     df = read_table(path)
     time_col = _find_time_column(df)
     if time_col is None:
         raise RuntimeError(f"Could not identify timestamp column in LiRA sensor file: {path.name}")
+    suffix = _lira_file_suffix(path)
 
-    # First prefer the normal semantic alias resolver.  The task file name is a
-    # second source of truth because many official exports name the value column
-    # generically (e.g. ``value``).
     canonical = canonical_vehicle(df)
     used_filename_fallback = not (feature in canonical and len(canonical[feature]) == len(df))
+    correction = LIRA_TABLE2_CORRECTIONS.get(suffix)
     if not used_filename_fallback:
-        value = canonical[feature]
+        value = pd.to_numeric(canonical[feature], errors="coerce")
     else:
         candidates = _numeric_candidates(df, exclude=(time_col,))
         if not candidates:
             raise RuntimeError(f"No numeric value column found in LiRA sensor file: {path.name}")
-        # Prefer non-index/id columns and the column with the largest finite count.
-        candidates = sorted(
-            candidates,
-            key=lambda c: (
-                any(tok in normalize_name(c) for tok in ("index", "id", "count")),
-                -pd.to_numeric(df[c], errors="coerce").notna().sum(),
-            ),
-        )
+        candidates = [c for c in candidates if not any(tok in normalize_name(c) for tok in ("index", "id", "count"))] or candidates
+        if correction is not None:
+            zero = float(correction["b_star"] * correction["r_star"] + correction["b"])
+            # If the file has multiple generic numeric channels, the actual CAN
+            # signal is normally the one whose median is closest to the encoded
+            # zero point specified by the LiRA data dictionary.
+            def score(c):
+                z = pd.to_numeric(df[c], errors="coerce")
+                med = float(np.nanmedian(z)) if z.notna().any() else np.inf
+                return (abs(med - zero), -z.notna().sum(), list(df.columns).index(c))
+            candidates = sorted(candidates, key=score)
+        else:
+            candidates = sorted(candidates, key=lambda c: (-pd.to_numeric(df[c], errors="coerce").notna().sum(), list(df.columns).index(c)))
         value = pd.to_numeric(df[candidates[0]], errors="coerce")
 
-    # Units documented for the public task_7505 export.  ``canonical_vehicle``
-    # already converts explicitly unit-labelled km/h columns, so only convert
-    # again when the header did not itself advertise km/h.  The official odometer
-    # is kilometres while canonical ``distance`` is metres.
+    # Apply the source-documented Table-2 correction only when values are in the
+    # encoded domain.  This is the key fix for task_7505_acc_lon/trans.
+    value, decoded = _lira_table2_decode(value, suffix)
+
     cols_text = " ".join(str(c).lower().replace(" ", "") for c in df.columns)
     if feature == "speed" and not any(tok in cols_text for tok in ("km/h", "kmh", "kph", "kmph")):
+        # The official task_7505 speed signal is documented in km/h.
         value = value / 3.6
     elif feature == "distance":
         value = value * 1000.0
 
     out = pd.DataFrame({"time": _absolute_time_seconds(df[time_col]), feature: value})
-    out = out.dropna(subset=["time", feature]).sort_values("time").drop_duplicates("time")
-    return out.reset_index(drop=True)
-
+    out = out.dropna(subset=["time", feature]).sort_values("time").drop_duplicates("time").reset_index(drop=True)
+    out.attrs["table2_decoded"] = bool(decoded)
+    out.attrs["source_suffix"] = suffix
+    return out
 
 def _relative_if_needed(
     streams: dict[str, pd.DataFrame],
@@ -644,6 +775,8 @@ def assemble_lira_task_streams(files: list[Path], cfg: dict) -> tuple[pd.DataFra
         "timestamp_relative_fallback": bool(used_relative_fallback),
         "sensor_merge_max_gap_s": sensor_gap,
         "gps_interp_max_gap_s": gps_gap,
+        "signal_statistics_after_translation": {k: _feature_summary(v[k]) for k, v in streams.items()},
+        "table2_translation_applied": {k: bool(v.attrs.get("table2_decoded", False)) for k, v in streams.items()},
     }
     return out, report
 
@@ -934,6 +1067,40 @@ def _align_to_reference_traces(
     return z.drop(columns=["_vehicle_row_id"], errors="ignore").reset_index(drop=True)
 
 
+def add_lira_trajectory_segments(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Create trajectory/segment IDs before splitting or interpolation.
+
+    LiRA task 7505 can match more than one VIAFRIK reference trace/direction,
+    and GPS matching may leave temporal gaps.  Treating the whole task as one
+    continuous series lets interpolation or temporal windows bridge physically
+    unrelated pieces.  ``trajectory_id`` separates reference traces while
+    ``segment_id`` additionally breaks a trajectory at configurable time gaps.
+    """
+    z = df.copy()
+    if z.empty:
+        z["trajectory_id"] = []
+        z["segment_id"] = []
+        return z
+    gap_s = float(cfg.get("lira", {}).get("segment_gap_s", 2.0))
+    trip = z["trip_id"].astype(str) if "trip_id" in z else pd.Series("trip", index=z.index)
+    trace_col = "ref_source_file" if "ref_source_file" in z else ("reference_trace" if "reference_trace" in z else None)
+    trace = z[trace_col].fillna("reference").astype(str) if trace_col else pd.Series("reference", index=z.index)
+    z["trajectory_id"] = trip + "::" + trace
+    z["segment_id"] = ""
+    for traj, g in z.groupby("trajectory_id", sort=False, dropna=False):
+        g = g.copy()
+        if "time" in g and g.time.notna().sum() >= 2:
+            g = g.sort_values("time", kind="stable")
+            t = g.time.to_numpy(float)
+            breaks = np.r_[True, (~np.isfinite(np.diff(t))) | (np.diff(t) <= 0) | (np.diff(t) > gap_s)]
+        else:
+            g = g.sort_index(kind="stable")
+            breaks = np.r_[True, np.zeros(max(0, len(g)-1), dtype=bool)]
+        seg_no = np.cumsum(breaks) - 1
+        z.loc[g.index, "segment_id"] = [f"{traj}::seg_{int(i)}" for i in seg_no]
+    return z
+
+
 def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Assign contiguous train/calibration/validation/test blocks per trip.
 
@@ -949,7 +1116,7 @@ def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     guard = max(0, int(lira_cfg.get("split_guard_samples", 0)))
     z["split"] = "purged"
     z["split_position"] = np.nan
-    group_col = "trip_id" if "trip_id" in z else None
+    group_col = "trajectory_id" if "trajectory_id" in z else ("trip_id" if "trip_id" in z else None)
     groups = z.groupby(group_col, sort=False, dropna=False) if group_col else [("all", z)]
     for _, g in groups:
         idx = g.index.to_numpy()
@@ -980,7 +1147,9 @@ def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 def impute_features_by_partition(df: pd.DataFrame, features: list[str], limit: int | None = 5) -> pd.DataFrame:
     """Impute features strictly within (trip, split) groups; labels are untouched."""
     pieces = []
-    group_cols = [c for c in ("trip_id", "split") if c in df]
+    group_cols = [c for c in ("segment_id", "split") if c in df]
+    if not group_cols:
+        group_cols = [c for c in ("trip_id", "split") if c in df]
     groups = df.groupby(group_cols, sort=False, dropna=False) if group_cols else [("all", df)]
     for _, g in groups:
         g = g.copy()
@@ -1042,7 +1211,9 @@ def _resample_partition(g: pd.DataFrame, features: list[str], hz: float, max_gap
 
 def resample_by_partition(df: pd.DataFrame, features: list[str], hz: float, max_gap_s: float) -> pd.DataFrame:
     pieces = []
-    group_cols = [c for c in ("trip_id", "split") if c in df]
+    group_cols = [c for c in ("segment_id", "split") if c in df]
+    if not group_cols:
+        group_cols = [c for c in ("trip_id", "split") if c in df]
     groups = df.groupby(group_cols, sort=False, dropna=False) if group_cols else [("all", df)]
     for _, g in groups:
         if "split" in g and str(g["split"].iloc[0]) == "purged":
@@ -1181,19 +1352,27 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         )
 
     # Speed/acceleration unit conversion is source-column-name based in
-    # canonical_vehicle; no magnitude-only conversion is applied here.
-    for needed in ("speed", "ax", "ay"):
-        if needed not in df:
-            df[needed] = 0.0
+    # canonical_vehicle; no magnitude-only conversion is applied here.  These
+    # three channels are mandatory for the mechanics layer: never synthesize a
+    # zero-filled substitute because that can make an invalid run look healthy.
+    missing_mandatory = [needed for needed in ("speed", "ax", "ay") if needed not in df]
+    if missing_mandatory:
+        raise RuntimeError(
+            "LiRA preprocessing could not resolve mandatory physical signals: "
+            f"{missing_mandatory}. The run is stopped instead of zero-filling them."
+        )
 
-    feats = [c for c in CANONICAL if c in df and c not in ("time", "distance", "lat", "lon")]
-    if len(feats) < 3:
-        raise RuntimeError(f"Only {feats} production features resolved. Extend CANONICAL aliases for this LiRA revision.")
+    candidate_feats = [c for c in CANONICAL if c in df and c not in ("time", "distance", "lat", "lon")]
+    if len(candidate_feats) < 3:
+        raise RuntimeError(f"Only {candidate_feats} production features resolved. Extend CANONICAL aliases for this LiRA revision.")
+    feats, feature_audit = _screen_lira_model_features(df, candidate_feats)
+    pd.DataFrame(feature_audit).to_csv(out / "lira_signal_audit.csv", index=False)
 
     # Split first. All interpolation/resampling is performed only inside a single
     # (trip_id, split) block, preventing adjacent validation/test values from
     # filling training samples and preventing any operation across trips.
     df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["mu_ref"]).reset_index(drop=True)
+    df = add_lira_trajectory_segments(df, cfg)
     df = assign_spatial_splits(df, cfg)
     df = impute_features_by_partition(df, feats, limit=interp_limit)
     df = df.dropna(subset=feats).reset_index(drop=True)
@@ -1203,8 +1382,12 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         df = df.dropna(subset=feats).reset_index(drop=True)
 
     # Recompute the physics lower bound after all signal preprocessing.
+    # ``vehicle_level_lower_bound`` returns the mechanics value without silently
+    # clipping it to an arbitrary 2.0.  If it conflicts with the configured
+    # physical upper support, preprocessing fails loudly instead of letting
+    # conformal calibration hide a unit/schema error.
     v = cfg["vehicle"]
-    df["physics_lower_raw"] = vehicle_level_lower_bound(
+    mechanics = vehicle_level_lower_bound(
         df.ax,
         df.ay,
         df.speed,
@@ -1217,14 +1400,43 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         external_force_margin=v["external_force_margin_n"],
         vertical_force_margin=v["vertical_force_margin_n"],
     )
+    mu_upper = float(cfg["mu_upper"])
+    invalid_rate = float(np.mean(np.asarray(mechanics) > mu_upper + 1e-9))
+    max_invalid_rate = float(cfg.get("physics_audit", {}).get("max_bound_above_upper_rate", 0.01))
+    if invalid_rate > max_invalid_rate:
+        stats = {
+            "invalid_rate": invalid_rate,
+            "mu_upper": mu_upper,
+            "ax": _feature_summary(df.ax),
+            "ay": _feature_summary(df.ay),
+            "speed": _feature_summary(df.speed),
+            "mechanics": _feature_summary(pd.Series(mechanics)),
+        }
+        raise RuntimeError(
+            "LiRA physics lower bound conflicts with mu_upper for too many samples. "
+            f"This normally indicates an unresolved signal-unit/offset problem: {stats}"
+        )
+    df["physics_lower_mechanics"] = np.asarray(mechanics, dtype=float)
+    df["physics_lower_raw"] = np.minimum(np.asarray(mechanics, dtype=float), mu_upper)
+    physics_audit = {
+        "mu_upper": mu_upper,
+        "bound_above_upper_rate": invalid_rate,
+        "max_allowed_bound_above_upper_rate": max_invalid_rate,
+        "speed": _feature_summary(df.speed),
+        "ax": _feature_summary(df.ax),
+        "ay": _feature_summary(df.ay),
+        "physics_lower_mechanics": _feature_summary(pd.Series(mechanics)),
+    }
+    (out / "lira_physics_audit.json").write_text(json.dumps(physics_audit, indent=2), encoding="utf-8")
 
     # Stable sample IDs let the benchmark prove that methods with different
     # history lengths are evaluated on exactly the same endpoints.
-    df["sample_uid"] = [f"{trip}:{split}:{i}" for i, (trip, split) in enumerate(zip(df.trip_id, df.split))]
+    seg_for_uid = df["segment_id"].astype(str) if "segment_id" in df else df["trip_id"].astype(str)
+    df["sample_uid"] = [f"{seg}:{split}:{i}" for i, (seg, split) in enumerate(zip(seg_for_uid, df.split))]
     keep_meta = [
         "time", "distance", "lat", "lon", "route_s_m", "gps_heading_deg", "match_distance_m",
-        "match_ref_index", "mu_ref", "physics_lower_raw", "source_file", "ref_source_file",
-        "route_id", "direction", "trip_id", "split", "split_position", "sample_uid", "resampled",
+        "match_ref_index", "mu_ref", "physics_lower_mechanics", "physics_lower_raw", "source_file", "ref_source_file",
+        "route_id", "direction", "trip_id", "trajectory_id", "segment_id", "split", "split_position", "sample_uid", "resampled",
     ]
     keep = feats + [c for c in keep_meta if c in df]
     df = df[keep].copy()
@@ -1239,13 +1451,18 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         "preprocessing": {
             "split_before_imputation": True,
             "partition_local_imputation": True,
+            "trajectory_aware_splitting": True,
+            "segment_safe_windows": True,
+            "segment_gap_s": float(lira_cfg.get("segment_gap_s", 2.0)),
             "resample_hz": resample_hz,
             "resample_max_gap_s": resample_gap,
             "interpolation_limit": interp_limit,
         },
         "split_counts": {str(k): int(v) for k, v in split_counts.items()},
         "features": feats,
+        "dropped_or_rejected_features": [r for r in feature_audit if not r.get("kept", False)],
         "gps_used_as_model_feature": False,
+        "physics_bound_consistency_checked": True,
     }
     (out / "lira_preprocessing_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     path = out / "lira_aligned.csv"

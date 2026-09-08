@@ -35,3 +35,17 @@ def test_nested_identified_lower_is_monotone():
     x=nested_identified_lower([.1,.3,.2,.5,.4])
     assert np.all(np.diff(x)>=0)
     assert np.allclose(x,[.1,.3,.3,.5,.5])
+
+
+def test_vehicle_lower_bound_does_not_hide_unit_errors_with_hard_clip():
+    from safegrip.physics import vehicle_level_lower_bound
+    # An absurd acceleration should stay absurd so preprocessing can detect it;
+    # it must not be silently clipped to 2.0 and then 'fixed' by calibration.
+    x = vehicle_level_lower_bound([100.0], [100.0], [10.0])[0]
+    assert x > 2.0
+
+
+def test_window_identified_lower_matches_trailing_maximum():
+    from safegrip.physics import window_identified_lower
+    x=window_identified_lower([.1,.3,.2,.5,.4],3)
+    assert np.allclose(x,[.1,.3,.3,.5,.5])

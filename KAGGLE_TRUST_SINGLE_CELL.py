@@ -1,5 +1,5 @@
-# SafeGrip v0.4.0 - trustworthy LiRA Kaggle run
-# Paste this entire file into one Kaggle cell AFTER pushing v0.4.0 to GitHub.
+# SafeGrip v0.5.0 - trustworthy LiRA Kaggle run
+# Paste this entire file into one Kaggle cell AFTER pushing v0.5.0 to GitHub.
 # Internet ON; T4 GPU recommended.
 import os, sys, json, shutil, subprocess
 from pathlib import Path
@@ -13,9 +13,9 @@ shutil.rmtree(REPO,ignore_errors=True)
 if ZIP.exists(): ZIP.unlink()
 run('git clone --depth 1 https://github.com/tydeptrai21042004/quynh-method.git',WORK)
 SRC=REPO/'src'; sys.path.insert(0,str(SRC)); os.environ['PYTHONPATH']=str(SRC)+os.pathsep+os.environ.get('PYTHONPATH','')
-run(f'{sys.executable} -m pip install -q -e .')
+run(f'{sys.executable} -m pip install -q -e \".[dev]\"')
 import safegrip, pandas as pd
-assert safegrip.__version__ == '0.4.0', f'Expected corrected SafeGrip 0.4.0, got {safegrip.__version__}. Push the supplied ZIP to GitHub first.'
+assert safegrip.__version__ == '0.5.0', f'Expected corrected SafeGrip 0.5.0, got {safegrip.__version__}. Push the supplied ZIP to GitHub first.'
 run(f'{sys.executable} -m pytest -q')
 SG=f'{sys.executable} -m safegrip.cli --config configs/kaggle_trust.yaml'
 run(f'{SG} download --datasets lira')
@@ -50,3 +50,7 @@ try:
     from IPython.display import FileLink,display
     display(FileLink(str(ZIP)))
 except Exception: pass
+
+
+if health.get("status") != "PASS":
+    raise RuntimeError("TRUST RUN DID NOT PASS scientific health gates. Use the exported diagnostics to fix/interpret the result; do not report it as a paper result.")

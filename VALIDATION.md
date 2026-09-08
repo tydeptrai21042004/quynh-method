@@ -67,3 +67,10 @@ RUN_EXTENDED=1 bash scripts/run_paper.sh
 ```
 
 Public repositories may change API metadata, guestbook requirements or authentication rules. The downloader reports those cases rather than bypassing upstream terms.
+
+
+## v0.5.0 final audit
+
+- `pytest -q`: **31/31 PASS** in the final audit environment.
+- New regression tests cover discontinuous-segment window safety, fixed-window maximum lower bounds, mandatory-signal failure, and LiRA Table-2 decoding.
+- `scripts/check_paper_readiness.py` is the authoritative automatic paper-output gate.

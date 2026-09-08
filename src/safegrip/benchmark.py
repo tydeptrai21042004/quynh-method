@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, time
+import json, time, hashlib, platform
 from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
@@ -21,8 +21,8 @@ from .utils import ensure_dir, seed_everything, device
 
 META={
     "time","distance","lat","lon","route_s_m","gps_heading_deg","match_distance_m","match_ref_index",
-    "mu_ref","physics_lower_raw","split","split_position","source_file","ref_source_file",
-    "route_id","direction","trip_id","sample_uid","resampled",
+    "mu_ref","physics_lower_mechanics","physics_lower_raw","split","split_position","source_file","ref_source_file",
+    "route_id","direction","trip_id","trajectory_id","segment_id","sample_uid","resampled",
 }
 PROPOSAL_VARIANTS=(
     "safegrip_data_only",
@@ -61,21 +61,27 @@ def common_eval_start(cfg) -> int:
     return max(values)-1
 
 
-def windows_for_split(df, features, split, L, stride, eval_start=None):
+def windows_for_split(df, features, split, L, stride, eval_start=None, physics_window=1):
     """Build windows strictly inside one trip and one split.
 
     This prevents the subtle leakage/error where filtering all rows by split and
     then resetting the index creates a sequence that bridges two independent
-    trips. Stable endpoint IDs are returned for exact cross-model parity checks.
+    trips or discontinuous matched trajectory segments.  The physics lower
+    endpoint is the maximum over a fixed trailing physics window, matching the
+    partial-identification theorem used in the paper. Stable endpoint IDs are
+    returned for exact cross-model parity checks.
     """
     z=df[df.split==split].copy()
     xs=[]; ys=[]; ls=[]; ids=[]
     if z.empty:
         return (np.empty((0,L,len(features)),np.float32), np.empty(0,np.float32),
                 np.empty(0,np.float32), np.empty(0,dtype=str))
-    group_cols=[c for c in ("trip_id",) if c in z.columns]
+    group_cols=[c for c in ("segment_id",) if c in z.columns]
+    if not group_cols:
+        group_cols=[c for c in ("trip_id",) if c in z.columns]
     groups=z.groupby(group_cols,sort=False,dropna=False) if group_cols else [("all",z)]
-    first=max(L-1,int(eval_start) if eval_start is not None else L-1)
+    pw=max(1,int(physics_window))
+    first=max(L-1,pw-1,int(eval_start) if eval_start is not None else L-1)
     for gkey,g in groups:
         g=g.copy()
         sort_cols=[c for c in ("time","route_s_m","distance") if c in g.columns and g[c].notna().any()]
@@ -92,7 +98,9 @@ def windows_for_split(df, features, split, L, stride, eval_start=None):
             prefix=str(gkey[0] if isinstance(gkey,tuple) else gkey)
             uid=np.asarray([f"{prefix}:{split}:{i}" for i in range(len(g))],dtype=str)
         for end in range(first,len(g),stride):
-            xs.append(X[end-L+1:end+1]); ys.append(y[end]); ls.append(lo[end]); ids.append(uid[end])
+            xs.append(X[end-L+1:end+1]); ys.append(y[end])
+            ls.append(float(np.nanmax(lo[end-pw+1:end+1])))
+            ids.append(uid[end])
     if not xs:
         return (np.empty((0,L,len(features)),np.float32), np.empty(0,np.float32),
                 np.empty(0,np.float32), np.empty(0,dtype=str))
@@ -111,7 +119,8 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
     features=[c for c in features if c not in ("mu_ref","physics_lower_raw")]
     L=int(sequence_length or cfg["sequence_length"]); stride=int(cfg["stride"])
     start=common_eval_start(cfg) if eval_start is None else int(eval_start)
-    splits={sp:windows_for_split(df,features,sp,L,stride,start) for sp in ("train","calibration","validation","test")}
+    physics_window=int(cfg.get("physics",{}).get("window_samples",1))
+    splits={sp:windows_for_split(df,features,sp,L,stride,start,physics_window=physics_window) for sp in ("train","calibration","validation","test")}
     Xtr,ytr,raw_lotr,idtr=splits["train"]; Xc,yc,raw_loc,idc=splits["calibration"]
     Xv,yv,raw_lov,idv=splits["validation"]; Xt,yt,raw_lot,idt=splits["test"]
     if min(len(Xtr),len(Xv),len(Xt))==0:
@@ -155,7 +164,11 @@ def regression_metrics(y,p,lo=None,mu_upper=1.3,sigma=None,raw_mean=None,project
         out.update({
             "picp95_raw":float(np.mean((y>=low_raw)&(y<=high_raw))),
             "mpiw95_raw":float(np.mean(high_raw-low_raw)),
-            "gaussian_nll":float(np.mean(.5*((y-p)/sigma)**2+np.log(sigma))),
+            # The Gaussian head predicts a distribution around ``raw_mean``.
+            # Projection is a non-Gaussian post-processing map, so NLL must be
+            # evaluated at the raw Gaussian center rather than the projected
+            # point prediction.
+            "gaussian_nll_raw":float(np.mean(.5*((y-center)/sigma)**2+np.log(sigma))),
         })
         if project_uncertainty and lo is not None:
             low,high=project_interval_numpy(low_raw,high_raw,np.asarray(lo),float(mu_upper))
@@ -211,9 +224,17 @@ def literature_hparams(name,cfg,overrides=None,preset="paper"):
         "patience":int(tr.get("patience",10)),
         "epochs":int(tr["epochs_quick" if preset=="quick" else "epochs_paper"]),
     }
-    if preset=="paper": base.update(cfg.get("baseline",{}).get(name,{}))
+    if preset in ("trust", "paper"):
+        # Trust/paper modes use the literature-specific preprocessing/context and
+        # full architecture.  Trust mode caps only the training duration so a
+        # Kaggle validation run remains practical.
+        base.update(cfg.get("baseline",{}).get(name,{}))
+        if preset == "trust":
+            base["epochs"] = int(cfg["training"].get("epochs_trust", 30))
+            base["patience"] = int(cfg["training"].get("patience_trust", min(int(base.get("patience",10)), 10)))
     elif name=="todorovic2022_cnn":
-        # Quick mode stays lightweight while preserving the published layer pattern.
+        # Quick mode stays lightweight while preserving the layer pattern only;
+        # it is a software smoke test, not a scientific comparison.
         base["sequence_length"]=max(16,min(100,int(cfg.get("sequence_length",64))))
     if overrides: base.update(overrides)
     return base
@@ -266,7 +287,11 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     if variant not in PROPOSAL_VARIANTS: raise ValueError(variant)
     hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,len(b.features),hp).to(dev)
     opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
-    lo_train=b.raw_lotr if variant=="safegrip_no_calibration" else b.lotr
+    # Calibration labels are never used in gradient training.  The soft physics
+    # penalty always uses the uncalibrated mechanics-derived lower endpoint from
+    # the training split.  The calibrated bound is applied only for validation
+    # model selection and final inference.
+    lo_train=b.raw_lotr
     lo_val=b.raw_lov if variant=="safegrip_no_calibration" else b.lov
     dl=_deep_loader(b.Xtr,b.ytr,lo_train,int(hp["batch_size"]))
     xv=torch.from_numpy(b.Xv).to(dev); yv=torch.from_numpy(b.yv).to(dev); lov=torch.from_numpy(lo_val).to(dev)
@@ -276,17 +301,17 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
         for xb,yb,lb in dl:
             xb=xb.to(dev); yb=yb.to(dev); lb=lb.to(dev); ub=torch.full_like(lb,mu_u); opt.zero_grad()
             if variant=="safegrip_no_uq":
-                raw=model(xb); pred=project_torch(raw,lb,ub)
-                # Controlled deterministic ablation: one MSE term, not
-                # (1 + lambda_mse) * MSE.
-                loss=nn.functional.mse_loss(pred,yb)
+                raw=model(xb)
+                # Controlled deterministic ablation: train on labels only; hard
+                # projection is an inference-time safety map, not a gradient path.
+                loss=nn.functional.mse_loss(raw,yb)
             else:
                 raw,logsig=model(xb)
-                use_projection=variant not in ("safegrip_no_projection","safegrip_data_only")
-                pred=project_torch(raw,lb,ub) if use_projection else raw
                 sig=torch.exp(logsig)
-                nll=(.5*((yb-pred)/sig)**2+logsig).mean()
-                loss=nll+float(hp["lambda_mse"])*nn.functional.mse_loss(pred,yb)
+                # The Gaussian head is centered at the raw network mean.  Hard
+                # projection is non-Gaussian and is therefore kept out of NLL.
+                nll=(.5*((yb-raw)/sig)**2+logsig).mean()
+                loss=nll+float(hp["lambda_mse"])*nn.functional.mse_loss(raw,yb)
             if variant not in ("safegrip_no_physics_loss","safegrip_data_only"):
                 phys=torch.relu(lb-raw).pow(2).mean()+.25*torch.relu(raw-mu_u).pow(2).mean()
                 loss=loss+float(hp["lambda_physics"])*phys
@@ -350,6 +375,8 @@ def _save_bundle_meta(out,b,cfg):
     (out/"features.json").write_text(json.dumps(b.features,indent=2),encoding="utf-8")
     (out/"calibration.json").write_text(json.dumps({"one_sided_q":b.q,"alpha":cfg["alpha"],"test_used_for_calibration":False,
                                                      "sequence_length":b.sequence_length,"eval_start":b.eval_start,
+                                                     "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
+                                                     "calibration_labels_used_in_gradient_training":False,
                                                      "scaler":b.scaler_kind},indent=2),encoding="utf-8")
 
 
@@ -377,17 +404,129 @@ def _aggregate_seed_metrics(rows):
     return pd.DataFrame(out)
 
 
+def _sanity_baselines(bundle: Bundle):
+    """Train-only constant baselines used to detect misleading negative-R2 wins."""
+    train_mean = float(np.mean(bundle.ytr))
+    train_median = float(np.median(bundle.ytr))
+    rows = []
+    for name, value in (("train_mean", train_mean), ("train_median", train_median)):
+        pred = np.full_like(bundle.yt, value, dtype=float)
+        rows.append({"model": name, "kind": "sanity_constant_baseline", **regression_metrics(bundle.yt, pred)})
+    return pd.DataFrame(rows)
+
+
+def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, preset: str, cfg: dict) -> dict:
+    """Machine-readable scientific sanity gates.
+
+    These gates do not manufacture a positive result.  They flag runs whose
+    apparent error is dominated by a constant projection, too few endpoints, or
+    performance no better than a train-only constant baseline.
+    """
+    row = metrics.loc[metrics["model"] == "safegrip"].iloc[0]
+    y = np.asarray(bundle.yt, float)
+    p = np.asarray(preds["safegrip"], float)
+    raw = np.asarray(preds.get("safegrip_raw", p), float)
+    target_std = float(np.std(y))
+    pred_std = float(np.std(p))
+    sanity = _sanity_baselines(bundle)
+    mean_rmse = float(sanity.loc[sanity.model == "train_mean", "rmse"].iloc[0])
+    min_n = int(cfg.get("health",{}).get("min_test_endpoints_trust", 200 if preset != "quick" else 50))
+    projection_rate = float(row.get("projection_correction_rate", np.nan))
+    raw_bound = np.asarray(bundle.raw_lot, float)
+    alpha=float(cfg.get("alpha",0.05))
+    lower_violation=float(row.get("lower_violation_rate",np.nan))
+    # Finite-sample tolerance for a one-sided nominal alpha violation rate.
+    coverage_tol=max(0.02,2.0*np.sqrt(max(alpha*(1-alpha),1e-12)/max(len(y),1)))
+    checks = {
+        "finite_predictions": bool(np.isfinite(p).all()),
+        "enough_test_endpoints": bool(len(y) >= min_n),
+        "final_prediction_not_constant": bool(pred_std > max(1e-4, 0.05 * target_std)),
+        "not_projection_dominated": bool(not np.isfinite(projection_rate) or projection_rate < float(cfg.get("health",{}).get("max_projection_correction_rate", 0.95))),
+        "beats_train_mean_rmse": bool(float(row["rmse"]) < mean_rmse),
+        "positive_r2": bool(float(row["r2"]) > 0.0),
+        "raw_bound_finite": bool(np.isfinite(raw_bound).all()),
+        "calibrated_lower_coverage_consistent": bool(np.isfinite(lower_violation) and lower_violation <= alpha + coverage_tol),
+    }
+    return {
+        "status": "PASS" if all(checks.values()) else "REVIEW",
+        "preset": preset,
+        "checks": checks,
+        "diagnostics": {
+            "n_test_endpoints": int(len(y)),
+            "target_std": target_std,
+            "prediction_std": pred_std,
+            "raw_prediction_std": float(np.std(raw)),
+            "projection_correction_rate": projection_rate,
+            "safegrip_rmse": float(row["rmse"]),
+            "safegrip_r2": float(row["r2"]),
+            "train_mean_rmse": mean_rmse,
+            "physics_lower_median": float(np.median(raw_bound)),
+            "physics_lower_p99": float(np.quantile(raw_bound, 0.99)),
+            "calibrated_lower_violation_rate": lower_violation,
+            "nominal_alpha": alpha,
+            "coverage_tolerance": coverage_tol,
+        },
+        "interpretation": "PASS means the run clears automatic degeneracy/sanity gates; it does not replace multi-seed statistical analysis or external validation.",
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    h=hashlib.sha256()
+    with open(path,"rb") as f:
+        for chunk in iter(lambda:f.read(1024*1024),b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _write_reproducibility_manifest(out: Path, csv_path, cfg: dict, preset: str):
+    csv_path=Path(csv_path)
+    source_file=csv_path.parent.parent.parent/"raw"/csv_path.parent.name/"SOURCE.json"
+    source_meta=None
+    if source_file.exists():
+        try: source_meta=json.loads(source_file.read_text(encoding="utf-8"))
+        except Exception: source_meta={"path":str(source_file)}
+    manifest={
+        "preset":preset,
+        "processed_csv":str(csv_path),
+        "processed_csv_sha256":_sha256_file(csv_path),
+        "source_metadata":source_meta,
+        "python":platform.python_version(),
+        "torch":torch.__version__,
+        "numpy":np.__version__,
+        "pandas":pd.__version__,
+        "config":cfg,
+    }
+    (out/"reproducibility_manifest.json").write_text(json.dumps(manifest,indent=2,default=str),encoding="utf-8")
+
+
 def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=None,baseline_hparams=None):
     out=ensure_dir(out_dir)
+    _write_reproducibility_manifest(out,csv_path,cfg,preset)
     baseline_names=list(models) if models is not None else list(QUICK_BASELINES if preset=="quick" else PAPER_BASELINES)
     validate_paper_baselines(baseline_names); _export_literature_manifest(out,baseline_names)
-    start=common_eval_start(cfg)
     proposal_seq=int((hp_overrides or {}).get("sequence_length",cfg["sequence_length"]))
+    baseline_plan = {
+        name: literature_hparams(name, cfg, (baseline_hparams or {}).get(name, {}), preset)
+        for name in baseline_names
+    }
+    # Never allow an explicit warm-up that is shorter than one comparator's
+    # context; otherwise different methods silently evaluate different labels.
+    start=max(
+        common_eval_start(cfg),
+        proposal_seq - 1,
+        max([int(hp["sequence_length"]) - 1 for hp in baseline_plan.values()] or [0]),
+    )
     proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind="standard",eval_start=start)
     _save_bundle_meta(out,proposal_bundle,cfg)
-    seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]])) if preset=="paper" else [int(cfg["seed"])]
-    include_projection=bool(cfg.get("evaluation",{}).get("projection_parity_controls",True)) and preset=="paper"
-    epochs_proposal=int(cfg["training"]["epochs_quick" if preset=="quick" else "epochs_paper"])
+    if preset == "paper":
+        seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]]))
+    elif preset == "trust":
+        seed_list=list(cfg.get("evaluation",{}).get("trust_seeds",[0,1,2]))
+    else:
+        seed_list=[int(cfg["seed"])]
+    include_projection=bool(cfg.get("evaluation",{}).get("projection_parity_controls",True)) and preset in ("trust","paper")
+    epoch_key = "epochs_quick" if preset=="quick" else ("epochs_trust" if preset=="trust" else "epochs_paper")
+    epochs_proposal=int(cfg["training"].get(epoch_key, cfg["training"].get("epochs_paper",60)))
 
     per_seed=[]; control_rows=[]
     preds=pd.DataFrame({"endpoint_id":proposal_bundle.idt,"y_true":proposal_bundle.yt,
@@ -396,8 +535,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     selected={}; scaler_dir=ensure_dir(out/"baseline_scalers")
 
     for name in baseline_names:
-        override=(baseline_hparams or {}).get(name,{})
-        hp=literature_hparams(name,cfg,override,preset); selected[name]=hp
+        hp=dict(baseline_plan[name]); selected[name]=hp
         b=make_bundle(csv_path,cfg,sequence_length=int(hp["sequence_length"]),scaler_kind=str(hp["scaler"]),eval_start=start)
         _assert_same_targets(proposal_bundle,b,name); dump(b.scaler,scaler_dir/f"{name}.joblib")
         print(f"[baseline/adapted] {name} DOI={LITERATURE_BASELINES[name]['doi']} L={b.sequence_length} scaler={b.scaler_kind}")
@@ -444,9 +582,15 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     (out/"evaluation_protocol.json").write_text(json.dumps({
         "seeds":seed_list,"common_eval_start":start,"common_eval_warmup_samples":start+1,
         "same_validation_test_endpoints":True,"endpoint_identity_checked":True,
-        "windows_grouped_by_trip":True,"primary_selection_metric":"validation RMSE",
+        "windows_grouped_by_segment":True,"primary_selection_metric":"validation RMSE",
+        "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
+        "calibration_labels_used_in_gradient_training":False,
         "physical_claim":"conditional on configured bounded-error and mu_upper assumptions",
     },indent=2),encoding="utf-8")
+    sanity = _sanity_baselines(proposal_bundle)
+    sanity.to_csv(out/"sanity_baselines.csv", index=False)
+    health = _result_health(proposal_bundle, metrics, preds, preset, cfg)
+    (out/"result_health.json").write_text(json.dumps(health, indent=2), encoding="utf-8")
     if control_rows:
         _aggregate_seed_metrics(control_rows).to_csv(out/"projection_control_metrics.csv",index=False)
         pd.DataFrame(control_rows).to_csv(out/"projection_control_metrics_by_seed.csv",index=False)
@@ -459,8 +603,14 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     seq=(hp_overrides or {}).get("sequence_length")
     b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=common_eval_start(cfg)); _save_bundle_meta(out,b,cfg)
     variants=list(variants or PROPOSAL_VARIANTS)
-    epochs=int(cfg["training"]["epochs_quick" if preset=="quick" else "epochs_paper"])
-    seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]])) if preset=="paper" else [int(cfg["seed"])]
+    epoch_key = "epochs_quick" if preset=="quick" else ("epochs_trust" if preset=="trust" else "epochs_paper")
+    epochs=int(cfg["training"].get(epoch_key, cfg["training"].get("epochs_paper",60)))
+    if preset == "paper":
+        seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]]))
+    elif preset == "trust":
+        seed_list=list(cfg.get("evaluation",{}).get("trust_seeds",[0,1,2]))
+    else:
+        seed_list=[int(cfg["seed"])]
     results=[]; preds=pd.DataFrame({"endpoint_id":b.idt,"y_true":b.yt,"physics_lower":b.lot,"physics_lower_raw":b.raw_lot})
     for variant in variants:
         print(f"[ablation] {variant}")

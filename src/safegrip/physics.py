@@ -59,7 +59,10 @@ def vehicle_level_lower_bound(
     ext = np.abs(drag) + abs(float(crr)) * mass * g + abs(float(external_force_margin))
     tang = np.maximum(0.0, inertial - ext)
     fz_up = mass * g + abs(float(vertical_force_margin))
-    return np.clip(tang / max(fz_up, 1e-6), 0.0, 2.0)
+    # Do not hide a unit/schema problem with an arbitrary hard cap.  The caller
+    # must check compatibility with its assumed ``mu_upper`` before constructing
+    # an admissible interval.
+    return np.maximum(0.0, tang / max(fz_up, 1e-6))
 
 
 def identified_interval(lower, mu_upper=1.3):

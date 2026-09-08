@@ -44,3 +44,33 @@ def test_spatial_alignment_reference_indices_are_monotone():
     z=spatial_align(car,ref,max_m=5,heading_tolerance_deg=60,enforce_monotonic=True)
     assert len(z)==3
     assert np.all(np.diff(z.match_ref_index.to_numpy())>=0)
+
+
+def test_windows_never_bridge_discontinuous_segments_and_use_window_max_bound():
+    rows=[]
+    for seg,base in (("s1",1.0),("s2",100.0)):
+        for i in range(6):
+            rows.append({
+                "trip_id":"t","segment_id":seg,"sample_uid":f"{seg}:{i}","split":"test","time":i,
+                "x":base,"mu_ref":.6,"physics_lower_raw":[.1,.2,.3,.15,.25,.4][i],
+            })
+    df=pd.DataFrame(rows)
+    X,y,lo,ids=windows_for_split(df,["x"],"test",L=3,stride=1,eval_start=2,physics_window=3)
+    assert len(X)==8
+    for w in X:
+        assert np.all(w[:,0] < 10) or np.all(w[:,0] > 90)
+    # First endpoint in each segment uses max(.1,.2,.3)=.3.
+    assert np.isclose(lo[0],.3)
+    assert np.isclose(lo[4],.3)
+
+
+def test_segment_builder_breaks_reference_trace_and_large_time_gaps():
+    from safegrip.data import add_lira_trajectory_segments
+    df=pd.DataFrame({
+        "trip_id":["t"]*6,
+        "ref_source_file":["a.csv"]*4+["b.csv"]*2,
+        "time":[0.0,.1,5.0,5.1,5.2,5.3],
+    })
+    z=add_lira_trajectory_segments(df,{"lira":{"segment_gap_s":1.0}})
+    assert z.trajectory_id.nunique()==2
+    assert z.segment_id.nunique()==3

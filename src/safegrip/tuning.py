@@ -6,7 +6,7 @@ import pandas as pd
 import yaml
 
 from .benchmark import (
-    make_bundle, common_eval_start, fit_proposal, predict_proposal, regression_metrics,
+    make_bundle, common_eval_start, fit_proposal, predict_proposal, predict_proposal_details, regression_metrics,
     fit_literature, predict_literature, literature_hparams,
 )
 from .literature import PAPER_BASELINES, validate_paper_baselines
@@ -59,8 +59,9 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"])
         seed_everything(int(cfg["seed"])+trial.number)
         model,_=fit_proposal("safegrip",b,cfg,epochs,hp)
-        p,s,_=predict_proposal(model,"safegrip",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"])
-        rmse=float(np.sqrt(np.mean((b.yv-p)**2))); nll=_gaussian_nll(b.yv,p,s)
+        d=predict_proposal_details(model,"safegrip",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"])
+        p,s=d["prediction"],d["sigma"]
+        rmse=float(np.sqrt(np.mean((b.yv-p)**2))); nll=_gaussian_nll(b.yv,d["raw_mean"],s)
         lower_violation=float(np.mean(b.lov>b.yv))
         trial.set_user_attr("val_rmse",rmse); trial.set_user_attr("val_nll",nll); trial.set_user_attr("lower_violation_rate",lower_violation)
         # Main benchmark ranks point estimators by RMSE; use the same validation
@@ -85,9 +86,10 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
              "common_eval_start":start,"fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"]}}
     if evaluate_test:
         b=bundle(int(best["sequence_length"])); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
-        p,s,bound=predict_proposal(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"])
-        summary["final_test_metrics"]=regression_metrics(b.yt,p,bound,cfg["mu_upper"],s)
-        pd.DataFrame({"y_true":b.yt,"prediction":p,"sigma":s,"physics_lower":bound}).to_csv(out/"best_test_predictions.csv",index=False)
+        d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"])
+        p,s,bound=d["prediction"],d["sigma"],d["bound"]
+        summary["final_test_metrics"]=regression_metrics(b.yt,p,bound,cfg["mu_upper"],s,raw_mean=d["raw_mean"],project_uncertainty=True)
+        pd.DataFrame({"y_true":b.yt,"prediction":p,"raw_mean":d["raw_mean"],"sigma":s,"physics_lower":bound}).to_csv(out/"best_test_predictions.csv",index=False)
     (out/"tuning_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
     return summary
 

@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
+PYTHON_BIN="${PYTHON_BIN:-python}"
+export PYTHONPATH="$(pwd)/src${PYTHONPATH:+:${PYTHONPATH}}"
+${PYTHON_BIN} -m pip install -q -e ".[dev]"
+SG="${PYTHON_BIN} -m safegrip.cli"
 # Small REAL-DATA development run. This verifies the complete LiRA -> SafeGrip
 # -> two literature baselines -> ablation pipeline. It is not a final paper run.
 CONFIG="${CONFIG:-configs/kaggle_small.yaml}"
 
-python -m pytest -q
-safegrip --config "$CONFIG" download --datasets lira
-safegrip --config "$CONFIG" prepare --dataset lira
+${PYTHON_BIN} -m pytest -q
+$SG --config "$CONFIG" download --datasets lira
+$SG --config "$CONFIG" prepare --dataset lira
 
 # Proposal + two lightweight literature-backed comparator families.
-safegrip --config "$CONFIG" benchmark \
+$SG --config "$CONFIG" benchmark \
   --dataset lira \
   --preset quick \
   --models todorovic2022_cnn,lampe2023_gru
 
 # Full component ablation in one-seed / three-epoch development mode.
-safegrip --config "$CONFIG" ablation \
+$SG --config "$CONFIG" ablation \
   --dataset lira \
   --preset quick \
   --variants safegrip_data_only,safegrip_no_projection,safegrip_no_uq,safegrip_no_physics_loss,safegrip_no_calibration,safegrip_no_temporal,safegrip

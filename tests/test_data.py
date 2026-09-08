@@ -124,3 +124,35 @@ def test_viafrik_custom_schema_numeric_fallback():
     z = canonical_friction(f)
     assert "mu_ref" in z
     assert abs(float(z.mu_ref.iloc[0]) - 0.54) < 1e-9
+
+
+def test_lira_table2_encoded_accelerations_decode_to_physical_units(tmp_path):
+    """Regression for the 2026-09 Kaggle run where encoded CAN values were
+    accidentally treated as m/s^2 and forced the physics lower bound to 2.0."""
+    import numpy as np
+    from safegrip.data import _extract_lira_scalar_stream
+
+    t = 1_000_000.0 + np.arange(100) * 0.1
+    # Encoded zero points from LiRA-CD Table 2 are 396 and 65536.
+    # Small offsets correspond to ordinary vehicle accelerations after decoding.
+    pd.DataFrame({"timestamp": t, "value": 396.4 + np.sin(np.arange(100)/10)}).to_csv(
+        tmp_path / "task_7505_acc_lon.txt", index=False
+    )
+    pd.DataFrame({"timestamp": t, "value": 65537.5 + np.cos(np.arange(100)/10)}).to_csv(
+        tmp_path / "task_7505_acc_trans.txt", index=False
+    )
+
+    ax = _extract_lira_scalar_stream(tmp_path / "task_7505_acc_lon.txt", "ax")
+    ay = _extract_lira_scalar_stream(tmp_path / "task_7505_acc_trans.txt", "ay")
+    assert np.nanpercentile(np.abs(ax.ax), 99) < 1.0
+    assert np.nanpercentile(np.abs(ay.ay), 99) < 1.0
+    assert abs(float(np.nanmedian(ax.ax))) < 0.1
+    assert abs(float(np.nanmedian(ay.ay))) < 0.2
+
+
+def test_lira_mandatory_signals_are_never_zero_filled():
+    from safegrip.data import _screen_lira_model_features
+    import pytest
+    df=pd.DataFrame({"speed":[10.0]*20,"ax":[0.1]*20})
+    with pytest.raises(RuntimeError):
+        _screen_lira_model_features(df,["speed","ax"])

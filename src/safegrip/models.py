@@ -57,6 +57,11 @@ class SafeGripNet(nn.Module):
         self.encoder = TCNEncoder(d, hidden, dropout, blocks, kernel_size)
         self.mu = nn.Linear(hidden, 1)
         self.log_sigma = nn.Linear(hidden, 1)
+        # Stable, data-independent UQ initialization.  Starting at sigma≈0.135
+        # prevents the early NLL from being dominated by an arbitrary sigma≈1
+        # while leaving both mean and uncertainty fully learnable.
+        nn.init.zeros_(self.log_sigma.weight)
+        nn.init.constant_(self.log_sigma.bias, -2.0)
 
     def forward(self, x):
         z = self.encoder(x)
@@ -73,6 +78,8 @@ class SafeGripNoTemporal(nn.Module):
         )
         self.mu = nn.Linear(hidden, 1)
         self.log_sigma = nn.Linear(hidden, 1)
+        nn.init.zeros_(self.log_sigma.weight)
+        nn.init.constant_(self.log_sigma.bias, -2.0)
 
     def forward(self, x):
         z = self.net(x[:, -1, :])

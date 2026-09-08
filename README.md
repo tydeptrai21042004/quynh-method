@@ -1,4 +1,40 @@
-# SafeGrip-Open v0.3.1
+# SafeGrip-Open v0.5.0
+
+## Final research-release safeguards (v0.5.0)
+
+v0.5.0 keeps the LiRA Table-2 CAN decoding introduced in v0.4.0 and adds the safeguards required for a defensible paper run:
+
+- mandatory `speed/ax/ay` signals fail loudly instead of being replaced by zeros;
+- reference traces and large temporal gaps are separated into `trajectory_id` / `segment_id`, so splitting, imputation, resampling and temporal windows cannot bridge discontinuous road pieces;
+- the physics lower endpoint is the trailing-window maximum used by the partial-identification theorem (`physics.window_samples`);
+- calibration labels are never used in gradient training; calibration only changes the inference-time admissible lower endpoint;
+- Gaussian NLL is evaluated at the raw probabilistic mean, while hard physics projection remains post-processing;
+- benchmark outputs include a SHA-256 reproducibility manifest and train-only constant sanity baselines;
+- `scripts/check_paper_readiness.py` verifies the scientific health gate, five-seed coverage, tuning records, preprocessing/physics audits and complete ablations;
+- `scripts/package_paper_results.py` refuses to create a paper-release ZIP unless every readiness check passes.
+
+`PASS` / `PAPER_READY` means the automatic implementation and degeneracy checks passed. It does **not** guarantee novelty, statistical significance, or journal acceptance; manuscript claims must match the observed multi-seed results.
+
+
+
+## Scientific-validity safeguard (v0.4.0)
+
+The LiRA platoon TXT files contain several CAN signals that require the LiRA-CD
+Table-2 offset/resolution translation before they are physical units. v0.4.0
+applies those source-documented translations, audits signal plausibility, and
+refuses to let conformal calibration hide an invalid mechanics bound. See
+`SCIENTIFIC_VALIDITY_FIX.md`.
+
+For a meaningful Kaggle validation run (3 seeds, 30-epoch practical cap, full
+literature architectures for the selected baselines):
+
+```bash
+bash scripts/run_kaggle_trust.sh
+```
+
+Inspect `results/lira_trust/result_health.json`. `PASS` means automatic
+degeneracy/sanity gates passed; `REVIEW` means the run completed but should not
+be used as supporting paper evidence yet.
 
 Reproducible research code for **physics-constrained partial identification of tire-road friction under limited excitation**.
 

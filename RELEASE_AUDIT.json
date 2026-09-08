@@ -1,0 +1,276 @@
+{
+  "release": "SafeGrip-Open v0.5.0",
+  "purpose": "final research-code release; paper packaging remains gated on real-data PAPER_READY checks",
+  "final_static_test_count": 31,
+  "verified_invariants": [
+    "LiRA Table-2 encoded CAN decoding",
+    "mandatory speed/ax/ay fail-fast",
+    "trajectory-aware spatial splits",
+    "segment-safe interpolation/resampling/windows",
+    "fixed trailing physics-window maximum",
+    "training-only scaler fitting",
+    "calibration labels excluded from gradient training",
+    "test locked during tuning",
+    "raw-Gaussian UQ/NLL consistency",
+    "constant sanity baselines and scientific-health gate",
+    "paper-readiness gate requires five-seed main and ablation outputs",
+    "processed-data SHA-256 reproducibility manifest"
+  ],
+  "official_lira_reference": {
+    "title": "LiRA-CD: An open-source dataset for road condition modelling and research",
+    "doi": "10.11583/DTU.c.6659909",
+    "note": "Table 2 correction metadata and preprocessing recommendations were cross-checked against the public data article during final audit."
+  },
+  "files": [
+    {
+      "path": "ABLATION_AND_TUNING.md",
+      "bytes": 2725,
+      "sha256": "ef1ff9babc347bf339b0aa4e99377cf2fc6f40ce446e1342fcece1b80fec0c42"
+    },
+    {
+      "path": "DATASETS.md",
+      "bytes": 4963,
+      "sha256": "ee95f4193ee0a6597eb7a53d46ef08b18faaf89c42102459239b9d9c0d217d7e"
+    },
+    {
+      "path": "FINAL_RESEARCH_RELEASE.md",
+      "bytes": 2647,
+      "sha256": "dcb4e588f00b6cab73f46db5458ede5684c4709cee1f4d8d916aa1ecd07f9046"
+    },
+    {
+      "path": "IMPLEMENTED_IMPROVEMENTS.md",
+      "bytes": 3229,
+      "sha256": "f900e5e1f853d2d691b1c6d19d44e38cdf492bc3eadb218f0de04b71d126d6b5"
+    },
+    {
+      "path": "KAGGLE_LIRA_FIX.md",
+      "bytes": 3315,
+      "sha256": "b1a3c0b536a71953ef38e9b6b7aca32076cf25348ed08db041823081e08abc2b"
+    },
+    {
+      "path": "KAGGLE_SINGLE_CELL.py",
+      "bytes": 3027,
+      "sha256": "a721319c07f625d7a05e2857c45f5b0ef6f91417c6259a16e76ab4b04ddacd8d"
+    },
+    {
+      "path": "KAGGLE_TRUST_SINGLE_CELL.py",
+      "bytes": 3241,
+      "sha256": "65a3b75beb02c006dca82e3c924997095238b84671cd1c8138441830b2650abb"
+    },
+    {
+      "path": "LITERATURE_BASELINES.md",
+      "bytes": 5550,
+      "sha256": "9c2a091fbebc3bee998592c599aae1aa1851cd8f6bc9112a92ca70b886140597"
+    },
+    {
+      "path": "README.md",
+      "bytes": 13587,
+      "sha256": "015ab7f7b8b99f575ce46d225cfcf0b1cb12e88c427627c227c1dc4828308c97"
+    },
+    {
+      "path": "RESEARCH_PROTOCOL.md",
+      "bytes": 8761,
+      "sha256": "e86effce2fcd943940a3a4099fe0c2a9cf726e8632cb3a0173a4fef5c45c83af"
+    },
+    {
+      "path": "SCIENTIFIC_VALIDITY_FIX.md",
+      "bytes": 2383,
+      "sha256": "b971f7b646bd55b420ef5a1415279d1b8f89e54f3b4b70a8177f596130ca7d70"
+    },
+    {
+      "path": "VALIDATION.md",
+      "bytes": 3170,
+      "sha256": "8d9be61684f1f49f83f93dc320f97510a2d3955af1586120225918ae5525c799"
+    },
+    {
+      "path": "configs/default.yaml",
+      "bytes": 3980,
+      "sha256": "801b7204504d0cfa5f11e28620d5a664318058675b68efbf827593c3ea4e61ba"
+    },
+    {
+      "path": "configs/kaggle_small.yaml",
+      "bytes": 3833,
+      "sha256": "892d1fc26bd0e710d609f0f6aac238834ec2c363a14ca0419e703a71f87493ba"
+    },
+    {
+      "path": "configs/kaggle_trust.yaml",
+      "bytes": 3980,
+      "sha256": "c575bb46a10cd221da0cdb8a090345143073b1306df728e0e367990ab6637106"
+    },
+    {
+      "path": "pyproject.toml",
+      "bytes": 791,
+      "sha256": "c83a01ae5219719539e3887f5c2eb1514cdac12a0e4a39c79dbddef8b8ff76a3"
+    },
+    {
+      "path": "references.bib",
+      "bytes": 2472,
+      "sha256": "145cb2837f57373f4ca935ecbfbb672d682b32643ea925feb012f53f3e50ec1e"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 205,
+      "sha256": "b34e33c2be35e3cc10bc88c62d71c008d7e2d7158acbec655aa7db1ee13ef272"
+    },
+    {
+      "path": "scripts/check_paper_readiness.py",
+      "bytes": 4537,
+      "sha256": "294fa710c01c70cbcfce4e50648e712dd0535dcfc57b77c9fa1743e29be8d146"
+    },
+    {
+      "path": "scripts/download_all_datasets.sh",
+      "bytes": 760,
+      "sha256": "04d67c7cb3a32eb01fb6cf0ff3d3f136c53410448a3fa50e3a6570c6fcfbff4f"
+    },
+    {
+      "path": "scripts/package_paper_results.py",
+      "bytes": 1334,
+      "sha256": "8370ca76bafc42ab6103bae9476357ab85c30568c2c4677bd4ebb1fde864db93"
+    },
+    {
+      "path": "scripts/run_all.sh",
+      "bytes": 442,
+      "sha256": "9a851125100ea03599e4de3468566611e77c6f4831ac7b53f9299522aca695f6"
+    },
+    {
+      "path": "scripts/run_extended_experiments.sh",
+      "bytes": 988,
+      "sha256": "24568ef6be774daa57650ef51248441c969cfffd6efc1548e83561c1ccbb4e3f"
+    },
+    {
+      "path": "scripts/run_kaggle_small.sh",
+      "bytes": 1458,
+      "sha256": "e3b707838efe13247121a88502c69d4b5e9154304d0bb3d2cda8ac9f3334b179"
+    },
+    {
+      "path": "scripts/run_kaggle_trust.sh",
+      "bytes": 1277,
+      "sha256": "177b63158be252f6eda4803593fb8823494f9c035d4e42882a43c8cb58bbb252"
+    },
+    {
+      "path": "scripts/run_paper.sh",
+      "bytes": 2678,
+      "sha256": "ff5b74b5a28a7656817877d86291b7d35759420350e14ad54c417633c055df9b"
+    },
+    {
+      "path": "scripts/run_tuning.sh",
+      "bytes": 363,
+      "sha256": "b8bf60cfc261e309fd63b607371ca9790ae921578d1adef2593ad3e6dbdf84e3"
+    },
+    {
+      "path": "scripts/smoke_test.sh",
+      "bytes": 316,
+      "sha256": "165cb0174af7531978423ae6565e5ab8257d1d86e3bf54a5e43828e9a9ecfccf"
+    },
+    {
+      "path": "src/safegrip/__init__.py",
+      "bytes": 22,
+      "sha256": "2c12b8ea17aeb6f9f72a6b02aca218bbc4508a46df9e365a8f6c45ad769e0b34"
+    },
+    {
+      "path": "src/safegrip/benchmark.py",
+      "bytes": 35832,
+      "sha256": "16c69736e25b443291cb2d96bda2039d160ddb0aac9ef379d3c9aa032885b33c"
+    },
+    {
+      "path": "src/safegrip/cli.py",
+      "bytes": 8164,
+      "sha256": "4c49e57290f0e3971a4c4175f013c2ef77f4411ffed545f671f8d00555cc4b7b"
+    },
+    {
+      "path": "src/safegrip/config.py",
+      "bytes": 303,
+      "sha256": "6cb6ccf64df82736f0ebfc71f48e05d07481d6e0afa3d1007b51f4ffc4d70517"
+    },
+    {
+      "path": "src/safegrip/data.py",
+      "bytes": 77614,
+      "sha256": "324176ee19bc1c30dc40bd7dbe4bfb791db380e7da924096e4bed666cefaa544"
+    },
+    {
+      "path": "src/safegrip/datasets.py",
+      "bytes": 2870,
+      "sha256": "218dd1394751315a727b881aa879761e6e596c0a3bff629b331886da2a61c7c0"
+    },
+    {
+      "path": "src/safegrip/download.py",
+      "bytes": 11644,
+      "sha256": "64874c018b178c0406d6c1506450a16cf7f7fd60a634aaf4773f8d56b589028d"
+    },
+    {
+      "path": "src/safegrip/experiments.py",
+      "bytes": 18719,
+      "sha256": "2a11700f456dd2baac3469e7010d1a73a55a8eff27173359199001b0618d7b72"
+    },
+    {
+      "path": "src/safegrip/literature.py",
+      "bytes": 5525,
+      "sha256": "69da5efc19627ebe447539d55e629fd011ecf2ed47f9e307647ae5ef763fe489"
+    },
+    {
+      "path": "src/safegrip/models.py",
+      "bytes": 9998,
+      "sha256": "90c1b82ce45f2d541055874131853df7b0bf4123f2f9f6d0a1b34dad2128c6a9"
+    },
+    {
+      "path": "src/safegrip/physics.py",
+      "bytes": 5830,
+      "sha256": "8313b0918706f74e71d00b36a1d7d216428596e80226d7fd1cdbdd2f01e0ddae"
+    },
+    {
+      "path": "src/safegrip/plots.py",
+      "bytes": 1736,
+      "sha256": "e3fe5c94a44e50ad9c0bca0b0ee7718422329403bcb5cb5563bf73a0c9c27811"
+    },
+    {
+      "path": "src/safegrip/svdkl.py",
+      "bytes": 3974,
+      "sha256": "d20a7b87724307d45ae9632d3ba03c689928c95d7576a41c420797855d8dfd04"
+    },
+    {
+      "path": "src/safegrip/tuning.py",
+      "bytes": 10826,
+      "sha256": "1944784b156aea555470184924f684eaacec923d916853c27d438da16d3e9251"
+    },
+    {
+      "path": "src/safegrip/utils.py",
+      "bytes": 958,
+      "sha256": "8bf4fa318feb1eecf5e347b1271b2c8a03725c8805679fb3c31aff43e651de4c"
+    },
+    {
+      "path": "tests/test_data.py",
+      "bytes": 6634,
+      "sha256": "7956be1091442cf5034ec713cac497489cafaff07049d2044146133231069e1c"
+    },
+    {
+      "path": "tests/test_experiments.py",
+      "bytes": 509,
+      "sha256": "7aac8d7d2bfb05c4c760368b677c9ee5d786310921b2f12528f1bb4b9df298e0"
+    },
+    {
+      "path": "tests/test_models.py",
+      "bytes": 2394,
+      "sha256": "59622eb52af3d6e829a3fb7c454be2c4ba47c26ef9486e1b6703970df54b02ec"
+    },
+    {
+      "path": "tests/test_physics.py",
+      "bytes": 2109,
+      "sha256": "f365f78028daf25576f51cc3badb546b0035c9f6a60781f0cceeef3f03b9ab29"
+    },
+    {
+      "path": "tests/test_preprocessing.py",
+      "bytes": 2942,
+      "sha256": "d2a113f3c6b86d0f79b3c7a8e44ef8410536f2a827b47a8fc0639e43c48781ca"
+    },
+    {
+      "path": "tests/test_registry.py",
+      "bytes": 690,
+      "sha256": "f40a7cd9566b2ad2038e55ca2dad3cf21cd0064f1993e90574215a67e6d2edb3"
+    },
+    {
+      "path": "tests/test_tuning.py",
+      "bytes": 915,
+      "sha256": "038782fc12f251d860bf88f7f017e4453441f040826ba97d4c69abeedcd2f877"
+    }
+  ]
+}

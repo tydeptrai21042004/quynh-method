@@ -8,12 +8,12 @@ lira:
   heading_tolerance_deg: 45.0
   k_candidates: 8
   enforce_monotonic: true
-  resample_hz: 20.0
+  resample_hz: 10.0
   sensor_merge_max_gap_s: 0.5
   gps_interp_max_gap_s: 2.5
   resample_max_gap_s: 0.25
   interpolation_limit: 5
-  split_guard_samples: 64
+  split_guard_samples: 32
   segment_gap_s: 2.0
 benchmark:
   common_warmup_samples: 128
@@ -259,4 +259,4 @@ split:
   validation: 0.1
   test: 0.2
 physics:
-  window_samples: 64
+  window_samples: 32
