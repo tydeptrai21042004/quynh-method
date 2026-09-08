@@ -74,3 +74,18 @@ Public repositories may change API metadata, guestbook requirements or authentic
 - `pytest -q`: **31/31 PASS** in the final audit environment.
 - New regression tests cover discontinuous-segment window safety, fixed-window maximum lower bounds, mandatory-signal failure, and LiRA Table-2 decoding.
 - `scripts/check_paper_readiness.py` is the authoritative automatic paper-output gate.
+
+## v0.6.0 SafeGrip-v2 audit
+
+The v0.6.0 test suite adds checks for:
+
+- identified-set output parameterization (`lower <= prediction <= mu_upper`);
+- positive residual-scale outputs;
+- label-free excitation feature construction;
+- jerk calculation that does not cross split boundaries;
+- disjoint lower-bound-calibration and predictive-UQ calibration roles;
+- bounded `[0,1]` excitation scores.
+
+Repository audit performed for this release: **36 tests passed**. The two remaining runtime warnings are non-fatal upstream/PyTorch warnings already surfaced by the test output.
+
+An end-to-end synthetic smoke run also completes the SafeGrip-v2 benchmark and controlled ablations. Scientific-health status is not forced to PASS; low-quality or under-covered runs remain REVIEW by design.

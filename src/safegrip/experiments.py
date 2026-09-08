@@ -40,12 +40,20 @@ def _proposal_sequence_length(results_dir: str | Path, cfg: dict) -> int:
 
 
 def _bundle_for_results(csv_path, results_dir, cfg):
+    protocol_path=Path(results_dir)/"evaluation_protocol.json"
+    eval_start=common_eval_start(cfg)
+    if protocol_path.exists():
+        try:
+            eval_start=int(json.loads(protocol_path.read_text(encoding="utf-8")).get("common_eval_start",eval_start))
+        except Exception:
+            pass
     return make_bundle(
         csv_path,
         cfg,
         sequence_length=_proposal_sequence_length(results_dir, cfg),
         scaler_kind="standard",
-        eval_start=common_eval_start(cfg),
+        eval_start=eval_start,
+        proposal_features=True,
     )
 
 
@@ -69,10 +77,10 @@ def _prediction_model_columns(pred: pd.DataFrame) -> list[str]:
         "endpoint_id", "y_true", "physics_lower", "physics_lower_raw",
     }
     suffixes = (
-        "_sigma", "_raw", "_pi95_low_physics", "_pi95_high_physics",
-        "_pi95_low_raw", "_pi95_high_raw",
+        "_sigma", "_raw", "_latent", "_gate", "_excitation",
+        "_pi95_low_physics", "_pi95_high_physics", "_pi95_low_raw", "_pi95_high_raw",
     )
-    return [c for c in pred.columns if c not in reserved and not c.endswith(suffixes)]
+    return [c for c in pred.columns if c not in reserved and not c.endswith(suffixes) and "_latent_seed_" not in c]
 
 
 def run_excitation_analysis(csv_path, results_dir, out_dir, cfg, bins: int = 4) -> pd.DataFrame:
@@ -89,28 +97,18 @@ def run_excitation_analysis(csv_path, results_dir, out_dir, cfg, bins: int = 4) 
     b = _bundle_for_results(csv_path, results_dir, cfg)
     if "endpoint_id" in pred and not np.array_equal(pred.endpoint_id.astype(str).to_numpy(), b.idt.astype(str)):
         raise RuntimeError("Benchmark predictions do not correspond to the current prepared test endpoints")
-    prepared = pd.read_csv(csv_path)
-    if not {"ax", "ay"}.issubset(prepared.columns):
-        raise RuntimeError("Excitation analysis requires ax and ay among prepared model features")
-    pw = int(cfg.get("physics", {}).get("window_samples", 1))
-    Xexc, _, _, exc_ids = windows_for_split(
-        prepared, ["ax", "ay"], "test", L=pw, stride=int(cfg["stride"]),
-        eval_start=common_eval_start(cfg), physics_window=pw,
-    )
-    if not np.array_equal(exc_ids.astype(str), b.idt.astype(str)):
-        raise RuntimeError("Excitation windows do not match benchmark test endpoint identity")
-    excitation = np.max(np.hypot(Xexc[:, :, 0], Xexc[:, :, 1]), axis=1) / float(cfg["vehicle"]["gravity"])
+    excitation = np.asarray(b.et, float)
     frame = pd.DataFrame({
         "endpoint_id": b.idt,
         "y_true": b.yt,
         "physics_lower": b.lot,
         "physics_lower_raw": b.raw_lot,
-        "excitation_g": excitation,
+        "excitation_score": excitation,
     })
     quant = min(max(2, int(bins)), max(2, len(np.unique(excitation))))
     try:
         frame["excitation_bin"] = pd.qcut(
-            frame.excitation_g,
+            frame.excitation_score,
             q=quant,
             labels=[f"Q{i+1}" for i in range(quant)],
             duplicates="drop",
@@ -128,6 +126,8 @@ def run_excitation_analysis(csv_path, results_dir, out_dir, cfg, bins: int = 4) 
         for group, g in frame.groupby("excitation_bin", observed=True, sort=True):
             sigma = g[sigma_col].to_numpy() if sigma_col in g else None
             raw_mean = g[raw_col].to_numpy() if raw_col in g else g[model].to_numpy()
+            low_col=model+"_pi95_low_physics"; high_col=model+"_pi95_high_physics"
+            low_raw_col=model+"_pi95_low_raw"; high_raw_col=model+"_pi95_high_raw"
             metrics = regression_metrics(
                 g.y_true.to_numpy(),
                 g[model].to_numpy(),
@@ -135,22 +135,27 @@ def run_excitation_analysis(csv_path, results_dir, out_dir, cfg, bins: int = 4) 
                 cfg["mu_upper"],
                 sigma,
                 raw_mean=raw_mean,
-                project_uncertainty=(model == "safegrip"),
+                project_uncertainty=False,
+                interval_low=g[low_col].to_numpy() if low_col in g else None,
+                interval_high=g[high_col].to_numpy() if high_col in g else None,
+                interval_low_raw=g[low_raw_col].to_numpy() if low_raw_col in g else None,
+                interval_high_raw=g[high_raw_col].to_numpy() if high_raw_col in g else None,
             )
             rows.append({
                 "model": model,
                 "excitation_bin": str(group),
                 "n": int(len(g)),
-                "excitation_mean_g": float(g.excitation_g.mean()),
-                "excitation_min_g": float(g.excitation_g.min()),
-                "excitation_max_g": float(g.excitation_g.max()),
+                "excitation_mean": float(g.excitation_score.mean()),
+                "excitation_min": float(g.excitation_score.min()),
+                "excitation_max": float(g.excitation_score.max()),
                 **metrics,
             })
     summary = pd.DataFrame(rows)
     summary.to_csv(out / "excitation_metrics.csv", index=False)
     frame.to_csv(out / "excitation_samples.csv", index=False)
     (out / "excitation_protocol.json").write_text(json.dumps({
-        "score": "max over fixed physics window of sqrt(ax^2 + ay^2) / g",
+        "score": "SafeGrip-v2 label-free composite excitation score (acceleration, relative wheel spread, torque and jerk)",
+        "score_range": [0.0, 1.0],
         "physics_window_samples": int(cfg.get("physics", {}).get("window_samples", 1)),
         "bins": int(bins),
         "test_only": True,
@@ -190,10 +195,11 @@ def run_robustness_analysis(csv_path, results_dir, out_dir, cfg) -> pd.DataFrame
     """
     out = ensure_dir(out_dir)
     pred = pd.read_csv(Path(results_dir) / "predictions.csv")
-    if "safegrip_raw" not in pred:
-        raise RuntimeError("Run the corrected benchmark first; predictions.csv must contain safegrip_raw")
+    if "safegrip_latent" not in pred:
+        raise RuntimeError("Run the SafeGrip-v2 benchmark first; predictions.csv must contain safegrip_latent")
     base = _bundle_for_results(csv_path, results_dir, cfg)
-    raw_mean = pred.safegrip_raw.to_numpy(float)
+    latent_cols=[c for c in pred.columns if c.startswith("safegrip_latent_seed_")]
+    latents=[pred[c].to_numpy(float) for c in latent_cols] or [pred.safegrip_latent.to_numpy(float)]
     sigma = pred.safegrip_sigma.to_numpy(float) if "safegrip_sigma" in pred else None
     source_df = pd.read_csv(csv_path)
     if not {"ax", "ay", "speed"}.issubset(source_df.columns):
@@ -215,7 +221,7 @@ def run_robustness_analysis(csv_path, results_dir, out_dir, cfg) -> pd.DataFrame
     sample_rows = []
     v = cfg["vehicle"]
     seq = _proposal_sequence_length(results_dir, cfg)
-    start_eval = common_eval_start(cfg)
+    start_eval = base.eval_start
     with tempfile.TemporaryDirectory(prefix="safegrip_robustness_") as tmp:
         tmp = Path(tmp)
         for sc in scenarios:
@@ -233,26 +239,28 @@ def run_robustness_analysis(csv_path, results_dir, out_dir, cfg) -> pd.DataFrame
             sc_csv = tmp / f"{sc['scenario']}.csv"
             z.to_csv(sc_csv, index=False)
             sc_cfg = deepcopy(cfg); sc_cfg["mu_upper"] = mu_u
-            sb = make_bundle(sc_csv, sc_cfg, sequence_length=seq, scaler_kind="standard", eval_start=start_eval)
+            sb = make_bundle(sc_csv, sc_cfg, sequence_length=seq, scaler_kind="standard", eval_start=start_eval, proposal_features=True)
             if not np.array_equal(sb.idt.astype(str), base.idt.astype(str)):
                 raise RuntimeError(f"Robustness scenario {sc['scenario']} changed test endpoint identity")
             lo = sb.lot
-            p = project_numpy(raw_mean, lo, mu_u)
-            metrics = regression_metrics(
-                sb.yt, p, lo, mu_u, sigma,
-                raw_mean=raw_mean, project_uncertainty=True,
-            )
-            rows.append({**sc, "calibration_q": float(sb.q), **metrics})
+            scenario_preds=[]
+            for latent in latents:
+                sigmoid = 1.0 / (1.0 + np.exp(-latent))
+                scenario_preds.append(lo + np.maximum(mu_u - lo, 0.0) * sigmoid)
+            p=np.mean(np.stack(scenario_preds),axis=0)
+            metrics = regression_metrics(sb.yt, p, lo, mu_u, sigma, raw_mean=p)
+            rows.append({**sc, "calibration_q": float(sb.q), "n_seed_latents":int(len(latents)), **metrics})
             sample_rows.append(pd.DataFrame({
                 "scenario": sc["scenario"], "endpoint_id": sb.idt, "y_true": sb.yt,
-                "raw_mean": raw_mean, "physics_lower": lo, "prediction": p,
+                "physics_lower": lo, "prediction": p,
             }))
     summary = pd.DataFrame(rows)
     summary.to_csv(out / "physics_robustness_metrics.csv", index=False)
     pd.concat(sample_rows, ignore_index=True).to_csv(out / "physics_robustness_samples.csv", index=False)
     (out / "physics_robustness_protocol.json").write_text(json.dumps({
         "network_retrained": False,
-        "purpose": "isolate sensitivity of physics lower bound, conformal relaxation and projection",
+        "purpose": "isolate sensitivity of the physics lower endpoint while keeping the learned latent friction position fixed",
+        "bound_parameterization": "lower + (mu_upper-lower)*sigmoid(latent)",
         "uses_same_fixed_physics_window_as_main_benchmark": True,
         "mass_scales": [0.90, 0.95, 1.0, 1.05, 1.10],
         "accel_error_scales": [0.5, 1.0, 1.5, 2.0],
@@ -275,6 +283,7 @@ def _subset_training_bundle(bundle, fraction: float, seed: int):
         lotr=bundle.lotr[idx],
         raw_lotr=bundle.raw_lotr[idx],
         idtr=bundle.idtr[idx],
+        etr=bundle.etr[idx],
     )
 
 
@@ -283,7 +292,7 @@ def run_scarcity_analysis(csv_path, out_dir, cfg, *, preset="paper", hp_override
     out = ensure_dir(out_dir)
     fractions = list(fractions or [0.10, 0.25, 0.50, 0.75, 1.00])
     seq = int((hp_overrides or {}).get("sequence_length", cfg["sequence_length"]))
-    b = make_bundle(csv_path, cfg, sequence_length=seq, scaler_kind="standard", eval_start=common_eval_start(cfg))
+    b = make_bundle(csv_path, cfg, sequence_length=seq, scaler_kind="standard", eval_start=common_eval_start(cfg), proposal_features=True)
     seeds = list(cfg.get("evaluation", {}).get("seeds", [cfg["seed"]])) if preset == "paper" else [int(cfg["seed"])]
     epochs = int(cfg["training"]["epochs_quick" if preset == "quick" else "epochs_paper"])
     rows = []
@@ -293,7 +302,7 @@ def run_scarcity_analysis(csv_path, out_dir, cfg, *, preset="paper", hp_override
             for variant in ("safegrip_data_only", "safegrip"):
                 seed_everything(int(seed))
                 model, _ = fit_proposal(variant, sb, cfg, epochs, hp_overrides)
-                d = predict_proposal_details(model, variant, sb.Xt, sb.lot, sb.raw_lot, cfg["mu_upper"])
+                d = predict_proposal_details(model, variant, sb.Xt, sb.lot, sb.raw_lot, cfg["mu_upper"], excitation=sb.et)
                 rows.append({
                     "training_fraction": float(fraction),
                     "training_windows": int(len(sb.Xtr)),
@@ -301,7 +310,9 @@ def run_scarcity_analysis(csv_path, out_dir, cfg, *, preset="paper", hp_override
                     "seed": int(seed),
                     **regression_metrics(
                         sb.yt, d["prediction"], d["bound"], cfg["mu_upper"], d["sigma"],
-                        raw_mean=d["raw_mean"], project_uncertainty=(variant == "safegrip"),
+                        raw_mean=d["raw_mean"],
+                        interval_low=d.get("pi95_low_physics"), interval_high=d.get("pi95_high_physics"),
+                        interval_low_raw=d.get("pi95_low_raw"), interval_high_raw=d.get("pi95_high_raw"),
                     ),
                 })
     by_seed = pd.DataFrame(rows)

@@ -100,17 +100,17 @@ All methods receive the same train/calibration/validation/test population, the s
 
 ## Proposal ablation
 
-Required variants:
+Required SafeGrip-v2 variants:
 
-1. data-only TCN+UQ;
-2. no hard projection;
-3. no uncertainty head;
-4. no soft physics loss;
-5. no external-reference calibration;
-6. no temporal encoder;
-7. full SafeGrip.
+1. `safegrip_data_only`: no sample-specific lower bound and no excitation gate;
+2. `safegrip_static_only`: no temporal GRU;
+3. `safegrip_no_gate`: fixed static/temporal fusion;
+4. `safegrip_no_bound`: no sample-specific lower endpoint;
+5. `safegrip_no_uq`: full point estimator without post-hoc UQ;
+6. `safegrip_no_calibration`: raw mechanics lower endpoint;
+7. `safegrip`: full excitation-aware bound-parameterized estimator with block-conformal UQ.
 
-The deterministic no-UQ variant uses exactly one MSE term plus the optional physics penalty; it does not double-weight MSE. Paper-mode ablations use the same five final seeds as the main benchmark and report mean/std.
+The point objective is Huber/SmoothL1. The full model is feasible by construction through `lower + (mu_upper-lower)*sigmoid(z)`; it does not require a soft physics penalty or a post-hoc point projection. Predictive UQ is fitted only after point-model selection. Paper-mode ablations use the same five final seeds as the main benchmark and report mean/std.
 
 ## Hyperparameter selection
 

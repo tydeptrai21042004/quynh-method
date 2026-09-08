@@ -10,5 +10,9 @@ def test_dataset_registry_has_multiple_real_sources():
         assert DATASET_REGISTRY[name]["auto_download"]
 
 
-def test_ablation_covers_core_proposal_components():
-    assert {"safegrip_data_only","safegrip_no_projection","safegrip_no_uq","safegrip_no_physics_loss","safegrip_no_calibration","safegrip_no_temporal","safegrip"}.issubset(PROPOSAL_VARIANTS)
+def test_ablation_covers_safegrip_v2_components():
+    expected={
+        "safegrip_data_only","safegrip_static_only","safegrip_no_gate",
+        "safegrip_no_bound","safegrip_no_uq","safegrip_no_calibration","safegrip",
+    }
+    assert expected.issubset(PROPOSAL_VARIANTS)

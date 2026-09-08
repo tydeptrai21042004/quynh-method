@@ -16,7 +16,7 @@ BTUNE = ROOT / "results" / "lira_baseline_tuning"
 required_main = [
     "metrics.csv", "metrics_by_seed.csv", "predictions.csv", "result_health.json",
     "sanity_baselines.csv", "evaluation_protocol.json", "reproducibility_manifest.json",
-    "baseline_manifest.csv", "proposal_hparams.json", "baseline_selected_hparams.json",
+    "baseline_manifest.csv", "proposal_hparams.json", "proposal_uq.json", "baseline_selected_hparams.json",
 ]
 required_proc = [
     "lira_aligned.csv", "lira_signal_audit.csv", "lira_physics_audit.json",
@@ -52,7 +52,7 @@ else:
 if (ABL / "ablation_metrics_by_seed.csv").exists():
     a = pd.read_csv(ABL / "ablation_metrics_by_seed.csv")
     counts = a.groupby("model")["seed"].nunique().to_dict() if "seed" in a else {}
-    expected_abl = {"safegrip_data_only", "safegrip_no_projection", "safegrip_no_uq", "safegrip_no_physics_loss", "safegrip_no_calibration", "safegrip_no_temporal", "safegrip"}
+    expected_abl = {"safegrip_data_only", "safegrip_static_only", "safegrip_no_gate", "safegrip_no_bound", "safegrip_no_uq", "safegrip_no_calibration", "safegrip"}
     checks["all_ablation_variants_present"] = expected_abl.issubset(set(a["model"].astype(str)))
     checks["five_seeds_each_ablation"] = all(int(counts.get(name, 0)) >= 5 for name in expected_abl)
 else:

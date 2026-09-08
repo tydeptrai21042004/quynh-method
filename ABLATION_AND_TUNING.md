@@ -1,81 +1,47 @@
-# SafeGrip ablation and hyperparameter protocol
+# SafeGrip v2 ablation and hyperparameter protocol
 
 ## Controlled ablation
 
-All variants use the same split, feature list, selected proposal hyperparameters and final seed list unless the removed component makes a parameter irrelevant.
+All variants use the same data splits, endpoint identities, seed list and selected hyperparameters unless a removed component makes a parameter irrelevant.
 
-| Variant | Temporal TCN | UQ head | soft physics loss | calibrated lower set | hard projection |
+| Variant | Temporal GRU | Excitation gate | sample-specific bound | post-hoc UQ | lower-bound relaxation |
 |---|---:|---:|---:|---:|---:|
-| `safegrip_data_only` | yes | yes | no | reported only | no |
-| `safegrip_no_projection` | yes | yes | yes | yes | no |
-| `safegrip_no_uq` | yes | no | yes | yes | yes |
-| `safegrip_no_physics_loss` | yes | yes | no | yes | yes |
-| `safegrip_no_calibration` | yes | yes | yes | raw mechanics bound | yes |
-| `safegrip_no_temporal` | no (last-state MLP) | yes | yes | yes | yes |
-| `safegrip` | yes | yes | yes | yes | yes |
+| `safegrip_data_only` | yes | no | no | yes | reported only |
+| `safegrip_static_only` | no | no | yes | yes | yes |
+| `safegrip_no_gate` | yes | no (fixed 50/50 fusion) | yes | yes | yes |
+| `safegrip_no_bound` | yes | yes | no; global `[0,mu_upper]` only | yes | n/a |
+| `safegrip_no_uq` | yes | yes | yes | no | yes |
+| `safegrip_no_calibration` | yes | yes | raw mechanics lower endpoint | yes | no |
+| `safegrip` | yes | yes | yes, by parameterization | yes | yes |
 
-The deterministic `safegrip_no_uq` objective is
-
-`MSE + lambda_physics * L_physics`,
-
-not `(1 + lambda_mse) * MSE`. This keeps removal of the heteroscedastic head controlled.
-
-Run:
-
-```bash
-safegrip ablation --dataset lira --preset paper
-```
-
-After tuning, reuse exactly the same selected proposal hyperparameters:
-
-```bash
-safegrip ablation --dataset lira --preset paper \
-  --proposal-hparams results/lira_tuning/best_hparams.yaml
-```
-
-Paper mode uses the same five seeds as the main table and exports:
+The full point estimator is
 
 ```text
-ablation_metrics.csv          # mean/std
-ablation_metrics_by_seed.csv  # individual runs
-ablation_predictions.csv
-ablation_design.json
+mu_hat = lower + (mu_upper - lower) * sigmoid(z)
 ```
+
+and is trained with Huber/SmoothL1 loss. There is no soft physics-loss weight and no post-hoc point projection in the full method.
+
+Predictive UQ is fitted only after the point network is frozen. Validation residuals train a positive scale head; a disjoint calibration subset determines the block-max conformal multiplier.
 
 ## Hyperparameter search
 
-The main benchmark uses **validation RMSE for every method**. Test data are never queried by proposal or baseline tuning.
-
-SafeGrip search space (`configs/default.yaml`) includes:
+The proposal search is selected only by validation RMSE. The test partition is locked during search.
 
 | Parameter | Search |
 |---|---|
-| `sequence_length` | {16, 32, 64, 100, 128} |
-| `hidden` | {32, 64, 96, 128} |
-| `tcn_blocks` | integer 2–5 |
-| `kernel_size` | {2, 3, 5} |
+| `sequence_length` | {8, 16, 24, 32, 64} |
+| `hidden` | {32, 64, 96} |
+| `gru_hidden` | {16, 32, 64} |
 | `dropout` | 0–0.30 |
 | `lr` | log-uniform 1e-4–3e-3 |
 | `weight_decay` | log-uniform 1e-6–1e-3 |
 | `batch_size` | {128, 256, 512} |
-| `lambda_mse` | log-uniform 0.05–0.50 |
-| `lambda_physics` | log-uniform 1e-3–0.30 |
+| `huber_beta` | {0.03, 0.05, 0.10} |
+| `excitation_beta` | {0.5, 1.0, 2.0} |
 
-Literature baselines receive the **same number of Optuna trials**. Recoverable source architecture/preprocessing remains fixed; unknown details of explicitly adapted methods are selected on validation and disclosed as adaptations.
+The point hyperparameter search runs the `safegrip_no_uq` variant because UQ is post-hoc and must not influence selection of the point estimator. The final selected point configuration is then refit with the full UQ pipeline.
 
-```bash
-safegrip tune --dataset lira --trials 30 --no-test
-safegrip tune-baselines --dataset lira --trials 30
-```
+**Not tuned against validation score:** `mu_upper`, conformal `alpha`, LiRA matching tolerances, physical uncertainty margins, and the fixed label-free excitation-feature reference scales.
 
-### Intentionally fixed protocol assumptions
-
-The following are not optimized against validation RMSE:
-
-- `mu_upper`;
-- conformal `alpha`;
-- LiRA GPS match tolerance;
-- heading tolerance;
-- physical uncertainty margins.
-
-Sensitivity to important physical assumptions is evaluated separately by the robustness experiment.
+Literature comparators receive the same Optuna trial budget while preserving their recoverable source architecture/preprocessing constraints.

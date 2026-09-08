@@ -6,7 +6,7 @@ import pandas as pd
 import yaml
 
 from .benchmark import (
-    make_bundle, common_eval_start, fit_proposal, predict_proposal, predict_proposal_details, regression_metrics,
+    make_bundle, common_eval_start, tuning_eval_start, fit_proposal, predict_proposal, predict_proposal_details, regression_metrics,
     fit_literature, predict_literature, literature_hparams,
 )
 from .literature import PAPER_BASELINES, validate_paper_baselines
@@ -23,18 +23,17 @@ def require_optuna():
 
 def suggest_safegrip(trial, cfg):
     space=cfg.get("tuning",{}).get("space",{})
-    seq_choices=space.get("sequence_length",[16,32,64,100,128])
+    seq_choices=space.get("sequence_length",[8,16,24,32,64])
     hp={
         "sequence_length":trial.suggest_categorical("sequence_length",seq_choices),
-        "hidden":trial.suggest_categorical("hidden",space.get("hidden",[32,64,96,128])),
-        "tcn_blocks":trial.suggest_int("tcn_blocks",*space.get("tcn_blocks",[2,5])),
-        "kernel_size":trial.suggest_categorical("kernel_size",space.get("kernel_size",[2,3,5])),
+        "hidden":trial.suggest_categorical("hidden",space.get("hidden",[32,64,96])),
+        "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[16,32,64])),
         "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
         "lr":trial.suggest_float("lr",*space.get("lr",[1e-4,3e-3]),log=True),
         "weight_decay":trial.suggest_float("weight_decay",*space.get("weight_decay",[1e-6,1e-3]),log=True),
         "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[128,256,512])),
-        "lambda_mse":trial.suggest_float("lambda_mse",*space.get("lambda_mse",[0.05,0.5]),log=True),
-        "lambda_physics":trial.suggest_float("lambda_physics",*space.get("lambda_physics",[1e-3,0.3]),log=True),
+        "huber_beta":trial.suggest_categorical("huber_beta",space.get("huber_beta",[0.03,0.05,0.10])),
+        "excitation_beta":trial.suggest_categorical("excitation_beta",space.get("excitation_beta",[0.5,1.0,2.0])),
     }
     return hp
 
@@ -49,27 +48,27 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
     optuna=require_optuna(); out=ensure_dir(out_dir); seed_everything(cfg["seed"])
     trials=int(trials or cfg.get("tuning",{}).get("trials",30))
     epochs=int(epochs or cfg.get("tuning",{}).get("epochs",cfg["training"]["epochs_paper"]))
-    start=common_eval_start(cfg); cache={}
+    start=tuning_eval_start(cfg); cache={}
 
     def bundle(seq):
-        if seq not in cache: cache[seq]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start)
+        if seq not in cache: cache[seq]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,proposal_features=True)
         return cache[seq]
 
     def objective(trial):
         hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"])
         seed_everything(int(cfg["seed"])+trial.number)
-        model,_=fit_proposal("safegrip",b,cfg,epochs,hp)
-        d=predict_proposal_details(model,"safegrip",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"])
-        p,s=d["prediction"],d["sigma"]
-        rmse=float(np.sqrt(np.mean((b.yv-p)**2))); nll=_gaussian_nll(b.yv,d["raw_mean"],s)
+        model,_=fit_proposal("safegrip_no_uq",b,cfg,epochs,hp)
+        d=predict_proposal_details(model,"safegrip_no_uq",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev)
+        p=d["prediction"]
+        rmse=float(np.sqrt(np.mean((b.yv-p)**2)))
         lower_violation=float(np.mean(b.lov>b.yv))
-        trial.set_user_attr("val_rmse",rmse); trial.set_user_attr("val_nll",nll); trial.set_user_attr("lower_violation_rate",lower_violation)
+        trial.set_user_attr("val_rmse",rmse); trial.set_user_attr("lower_violation_rate",lower_violation)
         # Main benchmark ranks point estimators by RMSE; use the same validation
         # selection metric for the proposal and every literature comparator.
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_rmse_v2",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_v060_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)
@@ -86,10 +85,16 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
              "common_eval_start":start,"fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"]}}
     if evaluate_test:
         b=bundle(int(best["sequence_length"])); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
-        d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"])
+        d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et)
         p,s,bound=d["prediction"],d["sigma"],d["bound"]
-        summary["final_test_metrics"]=regression_metrics(b.yt,p,bound,cfg["mu_upper"],s,raw_mean=d["raw_mean"],project_uncertainty=True)
-        pd.DataFrame({"y_true":b.yt,"prediction":p,"raw_mean":d["raw_mean"],"sigma":s,"physics_lower":bound}).to_csv(out/"best_test_predictions.csv",index=False)
+        summary["final_test_metrics"]=regression_metrics(
+            b.yt,p,bound,cfg["mu_upper"],s,raw_mean=d["raw_mean"],
+            interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
+            interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw"),
+        )
+        pd.DataFrame({"y_true":b.yt,"prediction":p,"sigma":s,"physics_lower":bound,
+                      "pi95_low":d.get("pi95_low_physics"),"pi95_high":d.get("pi95_high_physics"),
+                      "excitation":b.et}).to_csv(out/"best_test_predictions.csv",index=False)
     (out/"tuning_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
     return summary
 
@@ -147,7 +152,7 @@ def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs
     optuna=require_optuna(); out=ensure_dir(out_dir)
     names=list(names or PAPER_BASELINES); validate_paper_baselines(names)
     trials=int(trials or cfg.get("baseline_tuning",{}).get("trials",cfg.get("tuning",{}).get("trials",30)))
-    start=common_eval_start(cfg); all_best={}; summaries={}
+    start=tuning_eval_start(cfg,include_baselines=True); all_best={}; summaries={}
 
     for model_index,name in enumerate(names):
         model_out=ensure_dir(out/name); cache={}

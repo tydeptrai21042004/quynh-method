@@ -22,7 +22,7 @@ $SG --config "$CONFIG" benchmark \
 $SG --config "$CONFIG" ablation \
   --dataset lira \
   --preset quick \
-  --variants safegrip_data_only,safegrip_no_projection,safegrip_no_uq,safegrip_no_physics_loss,safegrip_no_calibration,safegrip_no_temporal,safegrip
+  --variants safegrip_data_only,safegrip_static_only,safegrip_no_gate,safegrip_no_bound,safegrip_no_uq,safegrip_no_calibration,safegrip
 
 echo "Small LiRA run complete."
 echo "Main metrics: results/lira_quick/metrics.csv"

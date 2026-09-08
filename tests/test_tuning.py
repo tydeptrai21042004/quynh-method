@@ -8,7 +8,7 @@ class DummyTrial:
 def test_proposal_hyperparameter_space_is_explicit():
     from safegrip.tuning import suggest_safegrip
     hp=suggest_safegrip(DummyTrial(),{"tuning":{"space":{}}})
-    for k in ["sequence_length","hidden","tcn_blocks","kernel_size","dropout","lr","weight_decay","batch_size","lambda_mse","lambda_physics"]:
+    for k in ["sequence_length","hidden","gru_hidden","dropout","lr","weight_decay","batch_size","huber_beta","excitation_beta"]:
         assert k in hp
 
 

@@ -1,4 +1,11 @@
-# SafeGrip-Open v0.5.0
+# SafeGrip-Open v0.6.0
+
+## SafeGrip v2 (v0.6.0)
+
+v0.6.0 changes the proposal architecture rather than merely tuning the failed v0.5 trust run. The full method now uses a short static+GRU hybrid, a label-free excitation gate, identified-set output parameterization, Huber point training, and separately fitted block-conformal uncertainty. The benchmark warm-up is no longer inflated by unused tuning candidates, and the calibration split has disjoint lower-bound and predictive-UQ roles. See `SAFEGRIP_V2_METHOD.md`.
+
+The cited literature baselines are intentionally unchanged and do not receive SafeGrip-only engineered features.
+
 
 ## Final research-release safeguards (v0.5.0)
 
@@ -25,7 +32,7 @@ applies those source-documented translations, audits signal plausibility, and
 refuses to let conformal calibration hide an invalid mechanics bound. See
 `SCIENTIFIC_VALIDITY_FIX.md`.
 
-For a meaningful Kaggle validation run (3 seeds, 30-epoch practical cap, full
+For a meaningful Kaggle validation run (3 seeds, 40-epoch practical cap, full
 literature architectures for the selected baselines):
 
 ```bash
@@ -73,7 +80,7 @@ For the smallest real-data Kaggle development run (SafeGrip + Todorovic CNN + La
 bash scripts/run_kaggle_small.sh
 ```
 
-This uses `configs/kaggle_small.yaml` (10 Hz, 32-sample context, stride 16, one seed, three quick epochs) only as a plumbing/sanity run; it is not a final paper configuration.
+This uses `configs/kaggle_small.yaml` (10 Hz, 16-sample proposal context, stride 16, one seed, three quick epochs) only as a plumbing/sanity run; it is not a final paper configuration.
 
 Skip tuning and use `configs/default.yaml`:
 
@@ -107,35 +114,35 @@ Paper-reported scores from non-matching protocols are stored as literature conte
 
 ## Proposal and ablations
 
-Full SafeGrip:
+Full SafeGrip v2:
 
 ```text
-production-sensor time window
-        -> compact TCN
-        -> mean + aleatoric scale
-        -> soft physics loss
-        -> calibrated identified set [mu_lower, mu_upper]
-        -> hard projection
+raw sensor window
+   -> label-free dynamics features + excitation score
+   -> window-statistics MLP ---------\
+                                     -> excitation-aware gated fusion
+   -> short GRU temporal branch -----/
+   -> latent score z
+   -> mu = lower + (mu_upper-lower) * sigmoid(z)
+   -> frozen point estimator
+   -> residual-scale head
+   -> block-max conformal calibration
+   -> physical interval intersection
 ```
 
-Controlled ablation:
+Controlled ablations:
 
 | Variant | What is removed? |
 |---|---|
-| `safegrip_data_only` | hard projection + soft physics loss |
-| `safegrip_no_projection` | hard identified-set projection |
-| `safegrip_no_uq` | heteroscedastic uncertainty head |
-| `safegrip_no_physics_loss` | soft physics penalty |
-| `safegrip_no_calibration` | one-sided external-reference calibration |
-| `safegrip_no_temporal` | TCN temporal encoder; uses last-state MLP |
-| `safegrip` | full proposal |
+| `safegrip_data_only` | sample-specific bound + excitation gate |
+| `safegrip_static_only` | temporal GRU branch |
+| `safegrip_no_gate` | excitation-aware fusion (fixed 50/50 fusion instead) |
+| `safegrip_no_bound` | sample-specific lower endpoint; global support remains |
+| `safegrip_no_uq` | residual-scale and conformal UQ |
+| `safegrip_no_calibration` | statistical relaxation of the mechanics lower endpoint |
+| `safegrip` | full v2 proposal |
 
-Run separately:
-
-```bash
-safegrip ablation --dataset lira --preset paper \
-  --proposal-hparams results/lira_tuning/best_hparams.yaml
-```
+See `SAFEGRIP_V2_METHOD.md` and `ABLATION_AND_TUNING.md` for the exact formulation and calibration-role separation.
 
 ## Fair validation tuning
 
@@ -153,18 +160,17 @@ safegrip tune-baselines --dataset lira --trials 30
 
 The primary selection objective for both is **validation RMSE**. Each baseline may use its own temporal context and source-appropriate train-only scaler; a common warm-up makes validation/test endpoints identical across methods.
 
-Tuned parameters:
+Tuned proposal parameters:
 
 - sequence length;
-- hidden width;
-- number of TCN blocks;
-- kernel size;
+- static/fusion hidden width;
+- GRU hidden width;
 - dropout;
 - learning rate;
 - weight decay;
 - batch size;
-- supervised MSE weight;
-- soft physics-loss weight.
+- Huber transition (`huber_beta`);
+- excitation-dependent uncertainty inflation (`excitation_beta`).
 
 **Not tuned:** `mu_upper` and calibration coverage `alpha`. They are physical/safety assumptions, not validation-score knobs.
 

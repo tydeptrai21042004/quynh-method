@@ -4,88 +4,6 @@ import torch
 from torch import nn
 
 
-class TCNBlock(nn.Module):
-    def __init__(self, channels: int, kernel_size: int = 3, dilation: int = 1, dropout: float = 0.1):
-        super().__init__()
-        pad = (kernel_size - 1) * dilation
-        self.c1 = nn.Conv1d(channels, channels, kernel_size, dilation=dilation, padding=pad)
-        self.c2 = nn.Conv1d(channels, channels, kernel_size, dilation=dilation, padding=pad)
-        self.act = nn.ReLU()
-        self.drop = nn.Dropout(dropout)
-
-    @staticmethod
-    def _causal_crop(y, n):
-        return y[..., :n]
-
-    def forward(self, x):
-        n = x.shape[-1]
-        y = self._causal_crop(self.c1(x), n)
-        y = self.drop(self.act(y))
-        y = self._causal_crop(self.c2(y), n)
-        return self.act(x + self.drop(y))
-
-
-class TCNEncoder(nn.Module):
-    def __init__(self, d: int, hidden: int = 64, dropout: float = 0.1,
-                 blocks: int = 4, kernel_size: int = 3):
-        super().__init__()
-        self.inp = nn.Conv1d(d, hidden, 1)
-        self.blocks = nn.Sequential(*[
-            TCNBlock(hidden, kernel_size=kernel_size, dilation=2 ** i, dropout=dropout)
-            for i in range(blocks)
-        ])
-
-    def forward(self, x):
-        z = self.blocks(self.inp(x.transpose(1, 2)))
-        return z[:, :, -1]
-
-
-class DeterministicTCN(nn.Module):
-    def __init__(self, d, hidden=64, dropout=.1, blocks=4, kernel_size=3):
-        super().__init__()
-        self.encoder = TCNEncoder(d, hidden, dropout, blocks, kernel_size)
-        self.head = nn.Linear(hidden, 1)
-
-    def forward(self, x):
-        return self.head(self.encoder(x)).squeeze(-1)
-
-
-class SafeGripNet(nn.Module):
-    """Proposal backbone: compact TCN with heteroscedastic Gaussian head."""
-    def __init__(self, d, hidden=64, dropout=.1, blocks=4, kernel_size=3):
-        super().__init__()
-        self.encoder = TCNEncoder(d, hidden, dropout, blocks, kernel_size)
-        self.mu = nn.Linear(hidden, 1)
-        self.log_sigma = nn.Linear(hidden, 1)
-        # Stable, data-independent UQ initialization.  Starting at sigma≈0.135
-        # prevents the early NLL from being dominated by an arbitrary sigma≈1
-        # while leaving both mean and uncertainty fully learnable.
-        nn.init.zeros_(self.log_sigma.weight)
-        nn.init.constant_(self.log_sigma.bias, -2.0)
-
-    def forward(self, x):
-        z = self.encoder(x)
-        return self.mu(z).squeeze(-1), self.log_sigma(z).squeeze(-1).clamp(-6, 2)
-
-
-class SafeGripNoTemporal(nn.Module):
-    """Ablation: removes temporal encoder while retaining the uncertainty head."""
-    def __init__(self, d, hidden=64, dropout=.1):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d, hidden), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(dropout),
-        )
-        self.mu = nn.Linear(hidden, 1)
-        self.log_sigma = nn.Linear(hidden, 1)
-        nn.init.zeros_(self.log_sigma.weight)
-        nn.init.constant_(self.log_sigma.bias, -2.0)
-
-    def forward(self, x):
-        z = self.net(x[:, -1, :])
-        return self.mu(z).squeeze(-1), self.log_sigma(z).squeeze(-1).clamp(-6, 2)
-
-
 class Todorovic2022CNN(nn.Module):
     """Architecture-faithful adaptation of Todorovic et al. (2022).
 
@@ -231,3 +149,105 @@ def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
         return Schaefke2023Transformer(d, hidden=h, dropout=dropout,
                                        layers=1 if debug_scale else int(layers), heads=int(heads), ff_mult=int(ff_mult))
     raise ValueError(name)
+
+
+class SafeGripV2Net(nn.Module):
+    """Excitation-aware partial-identification estimator.
+
+    The network combines a short GRU temporal representation with statistics of
+    the same window.  A learned gate is driven by the label-free excitation
+    feature.  When ``use_bound`` is enabled, the output is parameterized inside
+    the identified set rather than clipped after inference:
+
+        mu_hat = lower + (upper - lower) * sigmoid(z).
+    """
+
+    def __init__(self, d: int, excitation_index: int | None, hidden: int = 64,
+                 gru_hidden: int = 32, dropout: float = 0.1,
+                 use_temporal: bool = True, use_gate: bool = True,
+                 use_bound: bool = True):
+        super().__init__()
+        self.d = int(d)
+        self.excitation_index = excitation_index
+        self.use_temporal = bool(use_temporal)
+        self.use_gate = bool(use_gate) and self.use_temporal and excitation_index is not None
+        self.use_bound = bool(use_bound)
+
+        self.static = nn.Sequential(
+            nn.Linear(3 * d, hidden),
+            nn.SiLU(),
+            nn.LayerNorm(hidden),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+        )
+        if self.use_temporal:
+            self.gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
+            self.temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
+        else:
+            self.gru = None
+            self.temporal_proj = None
+
+        if self.use_gate:
+            self.gate_net = nn.Sequential(
+                nn.Linear(1, 8), nn.SiLU(), nn.Linear(8, 1)
+            )
+        else:
+            self.gate_net = None
+
+        inner = max(16, hidden // 2)
+        self.point_head = nn.Sequential(
+            nn.Linear(hidden, inner), nn.SiLU(), nn.Dropout(dropout), nn.Linear(inner, 1)
+        )
+        self.scale_head: ResidualScaleHead | None = None
+        self.conformal_q: float | None = None
+        self.conformal_block_size: int | None = None
+        self.excitation_beta: float = 1.0
+
+    def encode(self, x: torch.Tensor):
+        last = x[:, -1, :]
+        mean = x.mean(dim=1)
+        std = x.std(dim=1, unbiased=False)
+        hs = self.static(torch.cat([last, mean, std], dim=-1))
+
+        if not self.use_temporal:
+            gate = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+            return hs, gate
+
+        y, _ = self.gru(x)
+        ht = self.temporal_proj(y[:, -1])
+        if self.use_gate:
+            e = x[:, -1, self.excitation_index:self.excitation_index + 1]
+            gate = torch.sigmoid(self.gate_net(e)).squeeze(-1)
+        else:
+            gate = torch.full((x.shape[0],), 0.5, device=x.device, dtype=x.dtype)
+        h = (1.0 - gate.unsqueeze(-1)) * hs + gate.unsqueeze(-1) * ht
+        return h, gate
+
+    def forward(self, x: torch.Tensor, lower: torch.Tensor | None = None, upper: float | torch.Tensor = 1.3):
+        h, gate = self.encode(x)
+        latent = self.point_head(h).squeeze(-1)
+        upper_t = torch.as_tensor(upper, dtype=latent.dtype, device=latent.device)
+        if self.use_bound:
+            if lower is None:
+                raise ValueError("SafeGripV2Net requires lower when use_bound=True")
+            span = torch.clamp(upper_t - lower, min=1e-6)
+            pred = lower + span * torch.sigmoid(latent)
+        else:
+            # The no-bound/data-only ablation still respects the global support,
+            # but removes the sample-specific identified lower endpoint.
+            pred = upper_t * torch.sigmoid(latent)
+        return pred, latent, gate
+
+
+class ResidualScaleHead(nn.Module):
+    """Positive residual-scale head trained after the point estimator is fixed."""
+
+    def __init__(self, hidden: int, floor: float = 1e-2):
+        super().__init__()
+        inner = max(8, hidden // 2)
+        self.net = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
+        self.floor = float(floor)
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        return nn.functional.softplus(self.net(h).squeeze(-1)) + self.floor

@@ -10,7 +10,7 @@ ${PYTHON_BIN} -m pip install -q -e ".[dev]"
 ${PYTHON_BIN} -m safegrip.cli --config "$CFG" download --datasets lira
 ${PYTHON_BIN} -m safegrip.cli --config "$CFG" prepare --dataset lira
 ${PYTHON_BIN} -m safegrip.cli --config "$CFG" benchmark --dataset lira --preset trust --models todorovic2022_cnn,lampe2023_gru
-${PYTHON_BIN} -m safegrip.cli --config "$CFG" ablation --dataset lira --preset trust --variants safegrip_data_only,safegrip_no_projection,safegrip_no_uq,safegrip_no_physics_loss,safegrip_no_calibration,safegrip_no_temporal,safegrip
+${PYTHON_BIN} -m safegrip.cli --config "$CFG" ablation --dataset lira --preset trust --variants safegrip_data_only,safegrip_static_only,safegrip_no_gate,safegrip_no_bound,safegrip_no_uq,safegrip_no_calibration,safegrip
 
 ${PYTHON_BIN} - <<'PY2'
 import json

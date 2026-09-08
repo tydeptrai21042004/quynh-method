@@ -12,12 +12,13 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from joblib import dump
 
 from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, PAPER_BASELINES, QUICK_BASELINES, validate_paper_baselines
-from .models import make_literature_baseline, SafeGripNet, SafeGripNoTemporal, DeterministicTCN
+from .models import make_literature_baseline, SafeGripV2Net, ResidualScaleHead
 from .physics import (
     project_torch, project_numpy, project_interval_numpy, gaussian_interval,
     conformal_lower_correction, apply_lower_correction,
 )
 from .utils import ensure_dir, seed_everything, device
+from .features import add_safegrip_features
 
 META={
     "time","distance","lat","lon","route_s_m","gps_heading_deg","match_distance_m","match_ref_index",
@@ -26,11 +27,11 @@ META={
 }
 PROPOSAL_VARIANTS=(
     "safegrip_data_only",
-    "safegrip_no_projection",
+    "safegrip_static_only",
+    "safegrip_no_gate",
+    "safegrip_no_bound",
     "safegrip_no_uq",
-    "safegrip_no_physics_loss",
     "safegrip_no_calibration",
-    "safegrip_no_temporal",
     "safegrip",
 )
 
@@ -43,22 +44,36 @@ class Bundle:
     sequence_length: int
     eval_start: int
     q: float
-    Xtr: np.ndarray; ytr: np.ndarray; lotr: np.ndarray; raw_lotr: np.ndarray; idtr: np.ndarray
-    Xc: np.ndarray; yc: np.ndarray; loc: np.ndarray; raw_loc: np.ndarray; idc: np.ndarray
-    Xv: np.ndarray; yv: np.ndarray; lov: np.ndarray; raw_lov: np.ndarray; idv: np.ndarray
-    Xt: np.ndarray; yt: np.ndarray; lot: np.ndarray; raw_lot: np.ndarray; idt: np.ndarray
+    proposal_features: bool
+    Xtr: np.ndarray; ytr: np.ndarray; lotr: np.ndarray; raw_lotr: np.ndarray; idtr: np.ndarray; etr: np.ndarray
+    Xc: np.ndarray; yc: np.ndarray; loc: np.ndarray; raw_loc: np.ndarray; idc: np.ndarray; ec: np.ndarray; lower_cal_mask: np.ndarray; uq_cal_mask: np.ndarray
+    Xv: np.ndarray; yv: np.ndarray; lov: np.ndarray; raw_lov: np.ndarray; idv: np.ndarray; ev: np.ndarray
+    Xt: np.ndarray; yt: np.ndarray; lot: np.ndarray; raw_lot: np.ndarray; idt: np.ndarray; et: np.ndarray
 
 
 def common_eval_start(cfg) -> int:
-    """Return a common endpoint warm-up so different history lengths share labels."""
+    """Benchmark warm-up independent of unused hyperparameter-search choices.
+
+    The old implementation included the largest sequence length present in the
+    tuning search space, which silently discarded extra validation/test points
+    even when that length was not used by the benchmark.  The benchmark now
+    uses only its configured warm-up; ``run_benchmark`` additionally takes the
+    maximum of the methods actually being compared.
+    """
     b=cfg.get("benchmark",{})
     if "common_warmup_samples" in b:
         return max(0,int(b["common_warmup_samples"])-1)
-    values=[int(cfg.get("sequence_length",64)),100]
-    values.extend(int(x) for x in cfg.get("tuning",{}).get("space",{}).get("sequence_length",[]))
-    for x in cfg.get("baseline_tuning",{}).get("sequence_length",[]):
-        values.append(int(x))
-    return max(values)-1
+    return max(int(cfg.get("sequence_length",16)),100)-1
+
+
+def tuning_eval_start(cfg, *, include_baselines: bool = False) -> int:
+    """Fixed endpoint warm-up used only during hyperparameter search."""
+    values=[int(x) for x in cfg.get("tuning",{}).get("space",{}).get("sequence_length",[cfg.get("sequence_length",16)])]
+    if include_baselines:
+        values.extend(int(x) for x in cfg.get("baseline_tuning",{}).get("sequence_length",[]))
+        for space in cfg.get("baseline_tuning",{}).get("space",{}).values():
+            values.extend(int(x) for x in space.get("sequence_length",[]))
+    return max(values or [int(cfg.get("sequence_length",16))])-1
 
 
 def windows_for_split(df, features, split, L, stride, eval_start=None, physics_window=1):
@@ -113,8 +128,41 @@ def _make_scaler(kind: str):
     raise ValueError(f"Unknown scaler: {kind}")
 
 
-def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eval_start=None):
+def _calibration_role_masks(ids: np.ndarray, lower_fraction: float = 0.25):
+    """Deterministically split calibration endpoints into disjoint roles.
+
+    The first contiguous portion of each trajectory segment calibrates only the
+    mechanics lower-bound relaxation; the remaining portion is reserved for
+    predictive conformal UQ.  This prevents the same calibration labels from
+    defining both the point estimator's lower endpoint and its UQ quantile.
+    """
+    ids=np.asarray(ids,dtype=str); n=len(ids)
+    lower=np.zeros(n,dtype=bool); uq=np.zeros(n,dtype=bool)
+    frac=min(max(float(lower_fraction),0.05),0.8)
+    start=0
+    while start<n:
+        key=_segment_key(ids[start]); stop=start+1
+        while stop<n and _segment_key(ids[stop])==key:
+            stop+=1
+        m=stop-start
+        if m==1:
+            uq[start]=True
+        else:
+            k=max(1,min(m-1,int(np.ceil(frac*m))))
+            lower[start:start+k]=True; uq[start+k:stop]=True
+        start=stop
+    if n and not lower.any():
+        lower[0]=True; uq[0]=False
+    if n>1 and not uq.any():
+        uq[-1]=True; lower[-1]=False
+    return lower,uq
+
+
+def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eval_start=None,
+                proposal_features: bool = False):
     df=pd.read_csv(csv_path)
+    if proposal_features:
+        df=add_safegrip_features(df,cfg)
     features=[c for c in df.columns if c not in META and pd.api.types.is_numeric_dtype(df[c])]
     features=[c for c in features if c not in ("mu_ref","physics_lower_raw")]
     L=int(sequence_length or cfg["sequence_length"]); stride=int(cfg["stride"])
@@ -125,22 +173,34 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
     Xv,yv,raw_lov,idv=splits["validation"]; Xt,yt,raw_lot,idt=splits["test"]
     if min(len(Xtr),len(Xv),len(Xt))==0:
         raise RuntimeError("One split has no common-evaluation windows; lower benchmark.common_warmup_samples or inspect prepared data")
+
+    # Preserve an unscaled, interpretable excitation score for uncertainty
+    # inflation and reporting.  The model receives the standardized copy.
+    if proposal_features and "sg_excitation_score" in features:
+        ei=features.index("sg_excitation_score")
+        etr=np.clip(Xtr[:,-1,ei],0,1).astype(np.float32); ec=np.clip(Xc[:,-1,ei],0,1).astype(np.float32) if len(Xc) else np.empty(0,np.float32)
+        ev=np.clip(Xv[:,-1,ei],0,1).astype(np.float32); et=np.clip(Xt[:,-1,ei],0,1).astype(np.float32)
+    else:
+        etr=np.zeros(len(Xtr),np.float32); ec=np.zeros(len(Xc),np.float32); ev=np.zeros(len(Xv),np.float32); et=np.zeros(len(Xt),np.float32)
+
     scaler=_make_scaler(scaler_kind).fit(Xtr.reshape(-1,len(features)))
     def sc(X):
         if len(X)==0: return X.astype(np.float32)
         return scaler.transform(X.reshape(-1,len(features))).reshape(X.shape).astype(np.float32)
     Xtr,Xc,Xv,Xt=map(sc,(Xtr,Xc,Xv,Xt))
-    q=conformal_lower_correction(raw_loc,yc,cfg["alpha"]) if len(yc) else 0.0
+    lower_cal_mask,uq_cal_mask=_calibration_role_masks(idc,cfg.get("calibration",{}).get("lower_fraction",0.25)) if len(yc) else (np.zeros(0,dtype=bool),np.zeros(0,dtype=bool))
+    q=conformal_lower_correction(raw_loc[lower_cal_mask],yc[lower_cal_mask],cfg["alpha"]) if lower_cal_mask.any() else 0.0
     lotr=apply_lower_correction(raw_lotr,q).astype(np.float32)
     loc=apply_lower_correction(raw_loc,q).astype(np.float32)
     lov=apply_lower_correction(raw_lov,q).astype(np.float32)
     lot=apply_lower_correction(raw_lot,q).astype(np.float32)
-    return Bundle(features,scaler,scaler_kind,L,start,q,
-                  Xtr,ytr,lotr,raw_lotr,idtr,Xc,yc,loc,raw_loc,idc,
-                  Xv,yv,lov,raw_lov,idv,Xt,yt,lot,raw_lot,idt)
+    return Bundle(features,scaler,scaler_kind,L,start,q,bool(proposal_features),
+                  Xtr,ytr,lotr,raw_lotr,idtr,etr,Xc,yc,loc,raw_loc,idc,ec,lower_cal_mask,uq_cal_mask,
+                  Xv,yv,lov,raw_lov,idv,ev,Xt,yt,lot,raw_lot,idt,et)
 
 
-def regression_metrics(y,p,lo=None,mu_upper=1.3,sigma=None,raw_mean=None,project_uncertainty=False):
+def regression_metrics(y,p,lo=None,mu_upper=1.3,sigma=None,raw_mean=None,project_uncertainty=False,
+                       interval_low=None,interval_high=None,interval_low_raw=None,interval_high_raw=None):
     y=np.asarray(y); p=np.asarray(p)
     out={
         "mae":float(mean_absolute_error(y,p)),
@@ -157,17 +217,30 @@ def regression_metrics(y,p,lo=None,mu_upper=1.3,sigma=None,raw_mean=None,project
             "point_outside_physics_set_rate":float(np.mean((p<lo)|(p>mu_upper))),
             "projection_correction_rate":float(np.mean(np.abs(p-np.asarray(raw_mean if raw_mean is not None else p))>1e-8)),
         })
-    if sigma is not None:
+
+    # SafeGrip-v2 supplies conformal intervals directly. Literature models that
+    # expose a predictive sigma retain the legacy Gaussian diagnostics.
+    if interval_low is not None and interval_high is not None:
+        low=np.asarray(interval_low); high=np.asarray(interval_high)
+        raw_low=np.asarray(interval_low_raw if interval_low_raw is not None else low)
+        raw_high=np.asarray(interval_high_raw if interval_high_raw is not None else high)
+        out.update({
+            "picp95_raw":float(np.mean((y>=raw_low)&(y<=raw_high))),
+            "mpiw95_raw":float(np.mean(raw_high-raw_low)),
+            "picp95":float(np.mean((y>=low)&(y<=high))),
+            "mpiw95":float(np.mean(high-low)),
+        })
+        if lo is not None:
+            out["interval_outside_physics_set_rate"]=float(np.mean((low<np.asarray(lo)-1e-9)|(high>float(mu_upper)+1e-9)))
+        if sigma is not None:
+            out["mean_uq_scale"]=float(np.mean(np.asarray(sigma)))
+    elif sigma is not None:
         sigma=np.maximum(np.asarray(sigma),1e-5)
         center=np.asarray(raw_mean if raw_mean is not None else p)
         low_raw,high_raw=gaussian_interval(center,sigma)
         out.update({
             "picp95_raw":float(np.mean((y>=low_raw)&(y<=high_raw))),
             "mpiw95_raw":float(np.mean(high_raw-low_raw)),
-            # The Gaussian head predicts a distribution around ``raw_mean``.
-            # Projection is a non-Gaussian post-processing map, so NLL must be
-            # evaluated at the raw Gaussian center rather than the projected
-            # point prediction.
             "gaussian_nll_raw":float(np.mean(.5*((y-center)/sigma)**2+np.log(sigma))),
         })
         if project_uncertainty and lo is not None:
@@ -266,99 +339,232 @@ def predict_literature(model,name,X,batch=1024):
     return np.concatenate(ps),None
 
 
-def _proposal_model(variant,d,hp):
-    common=dict(hidden=int(hp["hidden"]),dropout=float(hp["dropout"]),blocks=int(hp["tcn_blocks"]),kernel_size=int(hp["kernel_size"]))
-    if variant=="safegrip_no_uq": return DeterministicTCN(d,**common)
-    if variant=="safegrip_no_temporal": return SafeGripNoTemporal(d,hidden=common["hidden"],dropout=common["dropout"])
-    return SafeGripNet(d,**common)
+def _proposal_flags(variant: str) -> dict:
+    if variant not in PROPOSAL_VARIANTS:
+        raise ValueError(variant)
+    return {
+        "use_temporal": variant != "safegrip_static_only",
+        "use_gate": variant not in ("safegrip_data_only", "safegrip_static_only", "safegrip_no_gate"),
+        "use_bound": variant not in ("safegrip_data_only", "safegrip_no_bound"),
+        "use_uq": variant != "safegrip_no_uq",
+        "use_calibrated_lower": variant != "safegrip_no_calibration",
+    }
+
+
+def _proposal_model(variant: str, b: Bundle, hp: dict):
+    flags=_proposal_flags(variant)
+    exc_idx=b.features.index("sg_excitation_score") if "sg_excitation_score" in b.features else None
+    model=SafeGripV2Net(
+        len(b.features), excitation_index=exc_idx,
+        hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]),
+        dropout=float(hp["dropout"]), use_temporal=flags["use_temporal"],
+        use_gate=flags["use_gate"], use_bound=flags["use_bound"],
+    )
+    model.excitation_beta=float(hp.get("excitation_beta",1.0))
+    return model
 
 
 def proposal_hparams(cfg, overrides=None):
     p=dict(cfg.get("proposal",{})); tr=cfg["training"]
     defaults={
-        "hidden":tr.get("hidden",64),"dropout":tr.get("dropout",.1),"tcn_blocks":4,"kernel_size":3,
-        "lr":tr.get("lr",1e-3),"weight_decay":tr.get("weight_decay",1e-4),"batch_size":tr.get("batch_size",256),
-        "lambda_mse":.20,"lambda_physics":.05,
+        "hidden":tr.get("hidden",64), "gru_hidden":32, "dropout":tr.get("dropout",.1),
+        "lr":tr.get("lr",1e-3), "weight_decay":tr.get("weight_decay",1e-4),
+        "batch_size":tr.get("batch_size",256), "huber_beta":0.05,
+        "uq_epochs":25, "uq_lr":1e-3, "uq_scale_floor":0.01,
+        "excitation_beta":1.0,
     }
     defaults.update(p); defaults.update(overrides or {}); return defaults
 
 
-def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
-    if variant not in PROPOSAL_VARIANTS: raise ValueError(variant)
-    hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,len(b.features),hp).to(dev)
-    opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
-    # Calibration labels are never used in gradient training.  The soft physics
-    # penalty always uses the uncalibrated mechanics-derived lower endpoint from
-    # the training split.  The calibrated bound is applied only for validation
-    # model selection and final inference.
-    lo_train=b.raw_lotr
-    lo_val=b.raw_lov if variant=="safegrip_no_calibration" else b.lov
-    dl=_deep_loader(b.Xtr,b.ytr,lo_train,int(hp["batch_size"]))
-    xv=torch.from_numpy(b.Xv).to(dev); yv=torch.from_numpy(b.yv).to(dev); lov=torch.from_numpy(lo_val).to(dev)
-    mu_u=float(cfg["mu_upper"]); best=None; bestloss=float("inf"); bad=0; patience=int(cfg["training"]["patience"])
-    for _ in range(int(epochs)):
-        model.train()
-        for xb,yb,lb in dl:
-            xb=xb.to(dev); yb=yb.to(dev); lb=lb.to(dev); ub=torch.full_like(lb,mu_u); opt.zero_grad()
-            if variant=="safegrip_no_uq":
-                raw=model(xb)
-                # Controlled deterministic ablation: train on labels only; hard
-                # projection is an inference-time safety map, not a gradient path.
-                loss=nn.functional.mse_loss(raw,yb)
-            else:
-                raw,logsig=model(xb)
-                sig=torch.exp(logsig)
-                # The Gaussian head is centered at the raw network mean.  Hard
-                # projection is non-Gaussian and is therefore kept out of NLL.
-                nll=(.5*((yb-raw)/sig)**2+logsig).mean()
-                loss=nll+float(hp["lambda_mse"])*nn.functional.mse_loss(raw,yb)
-            if variant not in ("safegrip_no_physics_loss","safegrip_data_only"):
-                phys=torch.relu(lb-raw).pow(2).mean()+.25*torch.relu(raw-mu_u).pow(2).mean()
-                loss=loss+float(hp["lambda_physics"])*phys
-            loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step()
-        model.eval()
-        with torch.no_grad():
-            if variant=="safegrip_no_uq":
-                raw=model(xv); pv=project_torch(raw,lov,torch.full_like(lov,mu_u))
-            else:
-                raw,_=model(xv); pv=raw if variant in ("safegrip_no_projection","safegrip_data_only") else project_torch(raw,lov,torch.full_like(lov,mu_u))
-            vl=nn.functional.mse_loss(pv,yv).item()
-        if vl<bestloss-1e-7:
-            bestloss=vl; best={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}; bad=0
-        else: bad+=1
-        if bad>=patience: break
-    if best: model.load_state_dict(best)
-    return model,hp
+def _finite_sample_quantile(values, alpha: float) -> float:
+    values=np.asarray(values,float)
+    values=values[np.isfinite(values)]
+    if len(values)==0:
+        return 1.0
+    level=min(1.0,np.ceil((len(values)+1)*(1-float(alpha)))/len(values))
+    try:
+        return float(np.quantile(values,level,method="higher"))
+    except TypeError:
+        return float(np.quantile(values,level,interpolation="higher"))
 
 
-def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024):
-    dev=device(); model.eval(); ps=[]; raws=[]; ss=[]
-    bound=np.asarray(raw_lo if variant=="safegrip_no_calibration" else lo,dtype=np.float32)
+def _segment_key(endpoint_id: str) -> str:
+    text=str(endpoint_id)
+    parts=text.rsplit(":",2)
+    return parts[0] if len(parts)>=3 else text
+
+
+def _block_max_scores(scores, ids, block_size: int) -> np.ndarray:
+    """Conservative block-max calibration for overlapping temporal windows.
+
+    It does not claim arbitrary-dependence conformal validity.  It reduces the
+    pseudo-replication caused by strongly overlapping windows by taking one
+    worst-case score per non-overlapping block inside each trajectory segment.
+    """
+    scores=np.asarray(scores,float); ids=np.asarray(ids,dtype=str)
+    block=max(1,int(block_size)); out=[]
+    if len(scores)==0:
+        return np.empty(0,float)
+    start=0
+    while start<len(scores):
+        key=_segment_key(ids[start]); stop=start+1
+        while stop<len(scores) and _segment_key(ids[stop])==key:
+            stop+=1
+        local=scores[start:stop]
+        for i in range(0,len(local),block):
+            chunk=local[i:i+block]
+            finite=chunk[np.isfinite(chunk)]
+            if len(finite): out.append(float(np.max(finite)))
+        start=stop
+    return np.asarray(out,float)
+
+
+def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False):
+    dev=device(); model.eval(); pred=[]; latent=[]; gates=[]; feats=[]
     with torch.no_grad():
         for i in range(0,len(X),batch):
             xb=torch.from_numpy(X[i:i+batch]).to(dev)
-            lb=torch.from_numpy(bound[i:i+batch]).to(dev)
-            ub=torch.full_like(lb,float(mu_upper))
-            if variant=="safegrip_no_uq":
-                raw=model(xb); p=project_torch(raw,lb,ub)
+            lb=torch.from_numpy(np.asarray(lower[i:i+batch],dtype=np.float32)).to(dev)
+            if return_features:
+                h,g=model.encode(xb)
+                z=model.point_head(h).squeeze(-1)
+                upper_t=torch.as_tensor(float(mu_upper),dtype=z.dtype,device=z.device)
+                if model.use_bound:
+                    pp=lb+torch.clamp(upper_t-lb,min=1e-6)*torch.sigmoid(z)
+                else:
+                    pp=upper_t*torch.sigmoid(z)
+                feats.append(h.cpu().numpy())
             else:
-                raw,logsig=model(xb)
-                p=raw if variant in ("safegrip_no_projection","safegrip_data_only") else project_torch(raw,lb,ub)
-                ss.append(torch.exp(logsig).cpu().numpy())
-            raws.append(raw.cpu().numpy()); ps.append(p.cpu().numpy())
-    prediction=np.concatenate(ps); raw_mean=np.concatenate(raws)
-    sigma=np.concatenate(ss) if ss else None
-    details={"prediction":prediction,"raw_mean":raw_mean,"sigma":sigma,"bound":bound}
-    if sigma is not None:
-        low_raw,high_raw=gaussian_interval(raw_mean,sigma)
-        low_phys,high_phys=project_interval_numpy(low_raw,high_raw,bound,float(mu_upper))
-        details.update({"pi95_low_raw":low_raw,"pi95_high_raw":high_raw,
-                        "pi95_low_physics":low_phys,"pi95_high_physics":high_phys})
+                pp,z,g=model(xb,lb,float(mu_upper))
+            pred.append(pp.cpu().numpy()); latent.append(z.cpu().numpy()); gates.append(g.cpu().numpy())
+    ans=(np.concatenate(pred),np.concatenate(latent),np.concatenate(gates))
+    if return_features:
+        ans=ans+(np.concatenate(feats),)
+    return ans
+
+
+def _fit_residual_scale(model: SafeGripV2Net, b: Bundle, cfg: dict, hp: dict, lower_val: np.ndarray):
+    dev=device(); model.eval()
+    xv=torch.from_numpy(b.Xv).to(dev)
+    lv=torch.from_numpy(np.asarray(lower_val,dtype=np.float32)).to(dev)
+    with torch.no_grad():
+        h,g=model.encode(xv)
+        z=model.point_head(h).squeeze(-1)
+        upper=torch.as_tensor(float(cfg["mu_upper"]),dtype=z.dtype,device=z.device)
+        if model.use_bound:
+            pred=lv+torch.clamp(upper-lv,min=1e-6)*torch.sigmoid(z)
+        else:
+            pred=upper*torch.sigmoid(z)
+        target=torch.abs(torch.from_numpy(b.yv).to(dev)-pred).clamp_min(float(hp["uq_scale_floor"]))
+        h=h.detach()
+    head=ResidualScaleHead(int(hp["hidden"]),floor=float(hp["uq_scale_floor"])).to(dev)
+    opt=torch.optim.AdamW(head.parameters(),lr=float(hp["uq_lr"]),weight_decay=float(hp["weight_decay"]))
+    e=torch.from_numpy(np.asarray(b.ev,dtype=np.float32)).to(dev)
+    inflation=1.0+float(hp.get("excitation_beta",1.0))*(1.0-e)
+    for _ in range(int(hp.get("uq_epochs",25))):
+        head.train(); opt.zero_grad()
+        scale=head(h)*inflation
+        # Log-scale regression is robust to a few large alignment residuals and
+        # cannot perturb the already-selected point estimator.
+        loss=nn.functional.smooth_l1_loss(torch.log(scale),torch.log(target),beta=0.25)
+        loss.backward(); torch.nn.utils.clip_grad_norm_(head.parameters(),5.0); opt.step()
+    model.scale_head=head
+
+
+def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
+    if variant not in PROPOSAL_VARIANTS: raise ValueError(variant)
+    if not b.proposal_features:
+        raise ValueError("SafeGrip-v2 requires make_bundle(..., proposal_features=True)")
+    hp=proposal_hparams(cfg,hp_overrides); flags=_proposal_flags(variant); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
+    opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
+
+    # Deterministic mechanics are used in training; calibration labels never
+    # enter gradient training for the point estimator.
+    lo_train=b.raw_lotr
+    lo_val=b.lov if flags["use_calibrated_lower"] else b.raw_lov
+    dl=_deep_loader(b.Xtr,b.ytr,lo_train,int(hp["batch_size"]))
+    xv=torch.from_numpy(b.Xv).to(dev); yv=torch.from_numpy(b.yv).to(dev); lov=torch.from_numpy(np.asarray(lo_val,dtype=np.float32)).to(dev)
+    mu_u=float(cfg["mu_upper"]); best=None; bestloss=float("inf"); bad=0
+    patience=int(cfg["training"].get("patience",10)); huber_beta=float(hp.get("huber_beta",0.05))
+    for _ in range(int(epochs)):
+        model.train()
+        for xb,yb,lb in dl:
+            xb=xb.to(dev); yb=yb.to(dev); lb=lb.to(dev); opt.zero_grad()
+            pred,_,_=model(xb,lb,mu_u)
+            loss=nn.functional.smooth_l1_loss(pred,yb,beta=huber_beta)
+            loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step()
+        model.eval()
+        with torch.no_grad():
+            pv,_,_=model(xv,lov,mu_u)
+            vl=nn.functional.mse_loss(pv,yv).item()
+        if vl<bestloss-1e-7:
+            bestloss=vl; best={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}; bad=0
+        else:
+            bad+=1
+        if bad>=patience: break
+    if best: model.load_state_dict(best)
+
+    # UQ is deliberately fitted after point estimation, so uncertainty learning
+    # cannot trade away RMSE. Validation fits the scale function; the disjoint
+    # calibration split determines the conformal multiplier.
+    if flags["use_uq"]:
+        _fit_residual_scale(model,b,cfg,hp,lo_val)
+        lo_cal=b.loc if flags["use_calibrated_lower"] else b.raw_loc
+        mask=np.asarray(b.uq_cal_mask,dtype=bool)
+        Xcal=b.Xc[mask]; ycal=b.yc[mask]; idcal=b.idc[mask]; ecal=b.ec[mask]; lower_cal=lo_cal[mask]
+        pcal,_,_,hcal=_forward_point(model,Xcal,lower_cal,mu_u,return_features=True) if len(Xcal) else (np.empty(0),np.empty(0),np.empty(0),np.empty((0,int(hp["hidden"]))))
+        if len(Xcal):
+            model.scale_head.eval()
+            with torch.no_grad():
+                base=model.scale_head(torch.from_numpy(hcal.astype(np.float32)).to(dev)).cpu().numpy()
+            scale=base*(1.0+float(hp.get("excitation_beta",1.0))*(1.0-np.asarray(ecal,float)))
+            scores=np.abs(np.asarray(ycal,float)-pcal)/np.maximum(scale,float(hp["uq_scale_floor"]))
+            block=int(cfg.get("uq",{}).get("block_size",0))
+            if block<=0:
+                block=max(1,int(np.ceil(float(b.sequence_length)/max(float(cfg.get("stride",1)),1.0))))
+            block_scores=_block_max_scores(scores,idcal,block)
+            model.conformal_q=_finite_sample_quantile(block_scores,cfg.get("alpha",0.05))
+            model.conformal_block_size=block
+            model.uq_calibration_count=int(len(Xcal)); model.uq_block_count=int(len(block_scores))
+        else:
+            model.conformal_q=1.96
+            model.conformal_block_size=1
+    return model,hp
+
+
+def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excitation=None):
+    flags=_proposal_flags(variant)
+    bound=np.asarray(lo if flags["use_calibrated_lower"] else raw_lo,dtype=np.float32)
+    prediction,latent,gate,h=_forward_point(model,X,bound,mu_upper,batch=batch,return_features=True)
+    details={"prediction":prediction,"raw_mean":prediction.copy(),"latent_score":latent,"gate":gate,"sigma":None,"bound":bound}
+    if flags["use_uq"] and getattr(model,"scale_head",None) is not None:
+        dev=device(); model.scale_head.eval(); scales=[]
+        with torch.no_grad():
+            for i in range(0,len(h),batch):
+                scales.append(model.scale_head(torch.from_numpy(h[i:i+batch].astype(np.float32)).to(dev)).cpu().numpy())
+        base=np.concatenate(scales)
+        if excitation is None:
+            excitation=np.clip(gate,0.0,1.0)
+        excitation=np.clip(np.asarray(excitation,float),0.0,1.0)
+        scale=base*(1.0+float(getattr(model,"excitation_beta",1.0))*(1.0-excitation))
+        q=float(getattr(model,"conformal_q",1.96) or 1.96)
+        radius=q*scale
+        low_raw=prediction-radius; high_raw=prediction+radius
+        if flags["use_bound"]:
+            low=np.maximum(low_raw,bound); high=np.minimum(high_raw,float(mu_upper))
+        else:
+            low=np.maximum(low_raw,0.0); high=np.minimum(high_raw,float(mu_upper))
+        low=np.minimum(low,prediction); high=np.maximum(high,prediction)
+        details.update({
+            "sigma":scale.astype(np.float32), "conformal_q":q,
+            "pi95_low_raw":low_raw.astype(np.float32), "pi95_high_raw":high_raw.astype(np.float32),
+            "pi95_low_physics":low.astype(np.float32), "pi95_high_physics":high.astype(np.float32),
+        })
     return details
 
 
-def predict_proposal(model,variant,X,lo,raw_lo,mu_upper,batch=1024):
-    d=predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=batch)
+def predict_proposal(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excitation=None):
+    d=predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=batch,excitation=excitation)
     return d["prediction"],d["sigma"],d["bound"]
 
 
@@ -377,6 +583,10 @@ def _save_bundle_meta(out,b,cfg):
                                                      "sequence_length":b.sequence_length,"eval_start":b.eval_start,
                                                      "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
                                                      "calibration_labels_used_in_gradient_training":False,
+                                                     "proposal_features":bool(b.proposal_features),
+                                                     "lower_bound_calibration_count":int(np.sum(b.lower_cal_mask)),
+                                                     "predictive_uq_calibration_count":int(np.sum(b.uq_cal_mask)),
+                                                     "calibration_roles_disjoint":bool(not np.any(b.lower_cal_mask & b.uq_cal_mask)),
                                                      "scaler":b.scaler_kind},indent=2),encoding="utf-8")
 
 
@@ -437,6 +647,9 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
     lower_violation=float(row.get("lower_violation_rate",np.nan))
     # Finite-sample tolerance for a one-sided nominal alpha violation rate.
     coverage_tol=max(0.02,2.0*np.sqrt(max(alpha*(1-alpha),1e-12)/max(len(y),1)))
+    picp=float(row.get("picp95",np.nan))
+    target_coverage=1.0-alpha
+    interval_tol=max(0.03,2.0*np.sqrt(max(target_coverage*(1-target_coverage),1e-12)/max(len(y),1)))
     checks = {
         "finite_predictions": bool(np.isfinite(p).all()),
         "enough_test_endpoints": bool(len(y) >= min_n),
@@ -446,6 +659,7 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
         "positive_r2": bool(float(row["r2"]) > 0.0),
         "raw_bound_finite": bool(np.isfinite(raw_bound).all()),
         "calibrated_lower_coverage_consistent": bool(np.isfinite(lower_violation) and lower_violation <= alpha + coverage_tol),
+        "predictive_interval_coverage_consistent": bool(np.isfinite(picp) and picp >= target_coverage-interval_tol),
     }
     return {
         "status": "PASS" if all(checks.values()) else "REVIEW",
@@ -465,6 +679,9 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
             "calibrated_lower_violation_rate": lower_violation,
             "nominal_alpha": alpha,
             "coverage_tolerance": coverage_tol,
+            "predictive_interval_coverage": picp,
+            "target_predictive_coverage": target_coverage,
+            "predictive_coverage_tolerance": interval_tol,
         },
         "interpretation": "PASS means the run clears automatic degeneracy/sanity gates; it does not replace multi-seed statistical analysis or external validation.",
     }
@@ -516,7 +733,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         proposal_seq - 1,
         max([int(hp["sequence_length"]) - 1 for hp in baseline_plan.values()] or [0]),
     )
-    proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind="standard",eval_start=start)
+    proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind="standard",eval_start=start,proposal_features=True)
     _save_bundle_meta(out,proposal_bundle,cfg)
     if preset == "paper":
         seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]]))
@@ -532,12 +749,12 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     preds=pd.DataFrame({"endpoint_id":proposal_bundle.idt,"y_true":proposal_bundle.yt,
                         "physics_lower":proposal_bundle.lot,"physics_lower_raw":proposal_bundle.raw_lot})
     control_preds=pd.DataFrame({"endpoint_id":proposal_bundle.idt,"y_true":proposal_bundle.yt,"physics_lower":proposal_bundle.lot})
-    selected={}; scaler_dir=ensure_dir(out/"baseline_scalers")
+    selected={}; scaler_dir=ensure_dir(out/"baseline_scalers"); feature_dir=ensure_dir(out/"baseline_features")
 
     for name in baseline_names:
         hp=dict(baseline_plan[name]); selected[name]=hp
         b=make_bundle(csv_path,cfg,sequence_length=int(hp["sequence_length"]),scaler_kind=str(hp["scaler"]),eval_start=start)
-        _assert_same_targets(proposal_bundle,b,name); dump(b.scaler,scaler_dir/f"{name}.joblib")
+        _assert_same_targets(proposal_bundle,b,name); dump(b.scaler,scaler_dir/f"{name}.joblib"); (feature_dir/f"{name}.json").write_text(json.dumps(b.features,indent=2),encoding="utf-8")
         print(f"[baseline/adapted] {name} DOI={LITERATURE_BASELINES[name]['doi']} L={b.sequence_length} scaler={b.scaler_kind}")
         seed_preds=[]; seed_sigmas=[]; seed_control=[]
         for seed in seed_list:
@@ -557,24 +774,51 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         if seed_sigmas: preds[name+"_sigma"]=np.mean(np.stack(seed_sigmas),axis=0)
         if seed_control: control_preds[name+"__projection_control"]=np.mean(np.stack(seed_control),axis=0)
 
-    name="safegrip"; print(f"[proposal] safegrip L={proposal_bundle.sequence_length}")
-    proposal_preds=[]; proposal_raw=[]; proposal_sigmas=[]; final_hp=None
-    seed_pi_low=[]; seed_pi_high=[]
+    name="safegrip"; print(f"[proposal/v2] safegrip L={proposal_bundle.sequence_length}")
+    proposal_preds=[]; proposal_raw=[]; proposal_sigmas=[]; proposal_latent=[]; final_hp=None
+    seed_pi_low=[]; seed_pi_high=[]; seed_pi_low_raw=[]; seed_pi_high_raw=[]; seed_gates=[]; seed_q=[]; seed_blocks=[]; seed_uq_counts=[]
     for seed in seed_list:
         seed_everything(int(seed)); t0=time.time(); model,final_hp=fit_proposal(name,proposal_bundle,cfg,epochs_proposal,hp_overrides)
-        d=predict_proposal_details(model,name,proposal_bundle.Xt,proposal_bundle.lot,proposal_bundle.raw_lot,cfg["mu_upper"])
+        d=predict_proposal_details(model,name,proposal_bundle.Xt,proposal_bundle.lot,proposal_bundle.raw_lot,cfg["mu_upper"],excitation=proposal_bundle.et)
         per_seed.append({"model":name,"kind":"proposal","doi":"","seed":int(seed),
                          **regression_metrics(proposal_bundle.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],
-                                              raw_mean=d["raw_mean"],project_uncertainty=True),
+                                              raw_mean=d["raw_mean"],
+                                              interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
+                                              interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw")),
+                         "conformal_q":float(d.get("conformal_q",np.nan)),
+                         "mean_gate":float(np.mean(d["gate"])),
                          "seconds":time.time()-t0})
-        proposal_preds.append(d["prediction"]); proposal_raw.append(d["raw_mean"]); proposal_sigmas.append(d["sigma"])
-        seed_pi_low.append(d["pi95_low_physics"]); seed_pi_high.append(d["pi95_high_physics"])
+        proposal_preds.append(d["prediction"]); proposal_raw.append(d["raw_mean"]); proposal_latent.append(d["latent_score"]); seed_gates.append(d["gate"])
+        if d["sigma"] is not None: proposal_sigmas.append(d["sigma"])
+        if "pi95_low_physics" in d:
+            seed_pi_low.append(d["pi95_low_physics"]); seed_pi_high.append(d["pi95_high_physics"])
+            seed_pi_low_raw.append(d["pi95_low_raw"]); seed_pi_high_raw.append(d["pi95_high_raw"])
+            seed_q.append(float(d["conformal_q"])); seed_blocks.append(int(getattr(model,"conformal_block_size",1) or 1)); seed_uq_counts.append(int(getattr(model,"uq_calibration_count",0)))
     preds[name]=np.mean(np.stack(proposal_preds),axis=0)
     preds[name+"_raw"]=np.mean(np.stack(proposal_raw),axis=0)
-    preds[name+"_sigma"]=np.mean(np.stack(proposal_sigmas),axis=0)
-    preds[name+"_pi95_low_physics"]=np.mean(np.stack(seed_pi_low),axis=0)
-    preds[name+"_pi95_high_physics"]=np.mean(np.stack(seed_pi_high),axis=0)
+    preds[name+"_latent"]=np.mean(np.stack(proposal_latent),axis=0)
+    for _seed,_latent in zip(seed_list,proposal_latent):
+        preds[f"{name}_latent_seed_{int(_seed)}"]=_latent
+    preds[name+"_gate"]=np.mean(np.stack(seed_gates),axis=0)
+    preds[name+"_excitation"]=proposal_bundle.et
+    if proposal_sigmas: preds[name+"_sigma"]=np.mean(np.stack(proposal_sigmas),axis=0)
+    if seed_pi_low:
+        preds[name+"_pi95_low_physics"]=np.mean(np.stack(seed_pi_low),axis=0)
+        preds[name+"_pi95_high_physics"]=np.mean(np.stack(seed_pi_high),axis=0)
+        preds[name+"_pi95_low_raw"]=np.mean(np.stack(seed_pi_low_raw),axis=0)
+        preds[name+"_pi95_high_raw"]=np.mean(np.stack(seed_pi_high_raw),axis=0)
 
+    (out/"proposal_uq.json").write_text(json.dumps({
+        "method":"post-hoc residual scale + block-max split conformal",
+        "alpha":float(cfg.get("alpha",0.05)),
+        "per_seed_conformal_q":seed_q,
+        "per_seed_block_size":seed_blocks,
+        "per_seed_uq_calibration_count":seed_uq_counts,
+        "lower_bound_calibration_count":int(np.sum(proposal_bundle.lower_cal_mask)),
+        "predictive_uq_calibration_count":int(np.sum(proposal_bundle.uq_cal_mask)),
+        "calibration_roles_disjoint":bool(not np.any(proposal_bundle.lower_cal_mask & proposal_bundle.uq_cal_mask)),
+        "dependence_claim":"block maxima mitigate overlap; no arbitrary-dependence finite-sample guarantee",
+    },indent=2),encoding="utf-8")
     by_seed=pd.DataFrame(per_seed); metrics=_aggregate_seed_metrics(per_seed)
     metrics.to_csv(out/"metrics.csv",index=False); by_seed.to_csv(out/"metrics_by_seed.csv",index=False); preds.to_csv(out/"predictions.csv",index=False)
     (out/"proposal_hparams.json").write_text(json.dumps(final_hp,indent=2),encoding="utf-8")
@@ -585,6 +829,11 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         "windows_grouped_by_segment":True,"primary_selection_metric":"validation RMSE",
         "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
         "calibration_labels_used_in_gradient_training":False,
+        "proposal_feature_engineering_label_free":True,
+        "proposal_point_loss":"Huber / SmoothL1",
+        "proposal_bound_parameterization":"lower + (mu_upper-lower)*sigmoid(z)",
+        "proposal_uq":"post-hoc residual scale + block-max split-conformal multiplier",
+        "proposal_uq_dependence_note":"block-max calibration is a conservative dependence mitigation, not an arbitrary-dependence finite-sample guarantee",
         "physical_claim":"conditional on configured bounded-error and mu_upper assumptions",
     },indent=2),encoding="utf-8")
     sanity = _sanity_baselines(proposal_bundle)
@@ -601,8 +850,10 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
 def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=None):
     out=ensure_dir(out_dir)
     seq=(hp_overrides or {}).get("sequence_length")
-    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=common_eval_start(cfg)); _save_bundle_meta(out,b,cfg)
+    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=common_eval_start(cfg),proposal_features=True); _save_bundle_meta(out,b,cfg)
     variants=list(variants or PROPOSAL_VARIANTS)
+    bad=[v for v in variants if v not in PROPOSAL_VARIANTS]
+    if bad: raise ValueError("Unknown proposal variants: "+", ".join(bad))
     epoch_key = "epochs_quick" if preset=="quick" else ("epochs_trust" if preset=="trust" else "epochs_paper")
     epochs=int(cfg["training"].get(epoch_key, cfg["training"].get("epochs_paper",60)))
     if preset == "paper":
@@ -611,33 +862,41 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
         seed_list=list(cfg.get("evaluation",{}).get("trust_seeds",[0,1,2]))
     else:
         seed_list=[int(cfg["seed"])]
-    results=[]; preds=pd.DataFrame({"endpoint_id":b.idt,"y_true":b.yt,"physics_lower":b.lot,"physics_lower_raw":b.raw_lot})
+    results=[]; preds=pd.DataFrame({"endpoint_id":b.idt,"y_true":b.yt,"physics_lower":b.lot,"physics_lower_raw":b.raw_lot,"excitation":b.et})
     for variant in variants:
-        print(f"[ablation] {variant}")
-        variant_preds=[]; variant_raw=[]; variant_sigma=[]
+        print(f"[ablation/v2] {variant}")
+        variant_preds=[]; variant_raw=[]; variant_sigma=[]; variant_gate=[]; lo_int=[]; hi_int=[]
         for seed in seed_list:
             seed_everything(int(seed)); t0=time.time(); model,hp=fit_proposal(variant,b,cfg,epochs,hp_overrides)
-            d=predict_proposal_details(model,variant,b.Xt,b.lot,b.raw_lot,cfg["mu_upper"])
+            d=predict_proposal_details(model,variant,b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et)
             row={"model":variant,"kind":"ablation" if variant!="safegrip" else "proposal","seed":int(seed),
                  **regression_metrics(b.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],
                                       raw_mean=d["raw_mean"],
-                                      project_uncertainty=(variant not in ("safegrip_no_projection","safegrip_data_only"))),
+                                      interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
+                                      interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw")),
+                 "conformal_q":float(d.get("conformal_q",np.nan)),
+                 "mean_gate":float(np.mean(d["gate"])),
                  "seconds":time.time()-t0}
-            results.append(row); variant_preds.append(d["prediction"]); variant_raw.append(d["raw_mean"])
+            results.append(row); variant_preds.append(d["prediction"]); variant_raw.append(d["raw_mean"]); variant_gate.append(d["gate"])
             if d["sigma"] is not None: variant_sigma.append(d["sigma"])
+            if "pi95_low_physics" in d: lo_int.append(d["pi95_low_physics"]); hi_int.append(d["pi95_high_physics"])
         preds[variant]=np.mean(np.stack(variant_preds),axis=0)
         preds[variant+"_raw"]=np.mean(np.stack(variant_raw),axis=0)
+        preds[variant+"_gate"]=np.mean(np.stack(variant_gate),axis=0)
         if variant_sigma: preds[variant+"_sigma"]=np.mean(np.stack(variant_sigma),axis=0)
+        if lo_int:
+            preds[variant+"_pi95_low_physics"]=np.mean(np.stack(lo_int),axis=0)
+            preds[variant+"_pi95_high_physics"]=np.mean(np.stack(hi_int),axis=0)
     by_seed=pd.DataFrame(results); summary=_aggregate_seed_metrics(results)
     summary.to_csv(out/"ablation_metrics.csv",index=False); by_seed.to_csv(out/"ablation_metrics_by_seed.csv",index=False); preds.to_csv(out/"ablation_predictions.csv",index=False)
     (out/"ablation_design.json").write_text(json.dumps({
-        "safegrip_data_only":"remove hard projection and soft physics loss; retain the same TCN + UQ backbone",
-        "safegrip_no_projection":"remove hard identified-set projection; keep UQ + soft physics",
-        "safegrip_no_uq":"replace heteroscedastic NLL by one deterministic MSE objective; keep hard projection",
-        "safegrip_no_physics_loss":"remove soft physics penalty; keep hard projection + UQ",
-        "safegrip_no_calibration":"use raw mechanics lower bound; remove one-sided statistical relaxation",
-        "safegrip_no_temporal":"replace TCN by last-state MLP; keep projection + UQ",
-        "safegrip":"full calibrated physics-constrained partial-identification estimator",
+        "safegrip_data_only":"remove sample-specific identified lower bound and excitation gate; keep the same sensor-derived features and temporal/static backbone",
+        "safegrip_static_only":"remove the GRU temporal branch; retain bound-aware point estimation and conformal UQ",
+        "safegrip_no_gate":"replace excitation-aware fusion by a fixed 50/50 static-temporal fusion",
+        "safegrip_no_bound":"remove the sample-specific lower endpoint; retain only global [0, mu_upper] support",
+        "safegrip_no_uq":"retain the full point estimator but remove residual-scale and conformal uncertainty",
+        "safegrip_no_calibration":"use the raw mechanics lower endpoint instead of its one-sided calibration relaxation",
+        "safegrip":"full excitation-aware, bound-parameterized point estimator with separately fitted block-conformal UQ",
         "seeds":seed_list,"same_hyperparameters_across_variants":True,
     },indent=2),encoding="utf-8")
     return summary
