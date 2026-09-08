@@ -63,7 +63,23 @@ CANONICAL = {
 
 
 def _to_numeric(s):
-    return pd.to_numeric(s, errors="coerce")
+    """Numeric conversion tolerant of European decimal-comma exports.
+
+    LiRA mirrors are not completely uniform: some CSV exports preserve decimal
+    commas while others use decimal points.  Prefer normal pandas conversion,
+    then try a conservative comma-to-dot conversion only when it recovers more
+    finite values.
+    """
+    base = pd.to_numeric(s, errors="coerce")
+    if base.notna().sum() >= max(3, int(0.8 * len(base))):
+        return base
+    text = pd.Series(s, index=getattr(s, "index", None), dtype="string").str.strip()
+    text = text.str.replace("−", "-", regex=False).str.replace(" ", "", regex=False)
+    if text.str.contains(",", regex=False, na=False).any():
+        alt = pd.to_numeric(text.str.replace(",", ".", regex=False), errors="coerce")
+        if alt.notna().sum() > base.notna().sum():
+            return alt
+    return base
 
 
 def _time_seconds(s: pd.Series) -> pd.Series:
@@ -166,15 +182,99 @@ def canonical_vehicle(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _plausible_friction_candidate(series: pd.Series) -> bool:
+    """Return True for a numeric column that plausibly contains a friction coefficient.
+
+    This is only a schema fallback used when the documented VIAFRIK header aliases
+    cannot be resolved (for example after Unicode/mojibake changes in a mirror).
+    It is deliberately conservative and excludes columns by name before this test.
+    """
+    x = pd.to_numeric(series, errors="coerce")
+    x = x[np.isfinite(x)]
+    if len(x) < max(3, len(series) // 10):
+        return False
+    q01, q50, q99 = np.nanquantile(x, [0.01, 0.50, 0.99])
+    # VIAFRIK mu is dimensionless and normally O(1). Keep a little headroom for
+    # unusual surfaces while rejecting GPS, speeds, forces, percentages, etc.
+    return bool(q01 >= -0.05 and 0.02 <= q50 <= 2.0 and q99 <= 2.5)
+
+
+def _resolve_viafrik_mu_columns(df: pd.DataFrame, already_used=()) -> list[str]:
+    """Resolve left/right VIAFRIK friction columns from official or variant schemas."""
+    nm = _normmap(df)
+    used = set(already_used)
+
+    # First prefer semantically named fields.  The official LiRA data dictionary
+    # documents ``μ_V [-]`` and ``μ_H [-]``; normalize_name converts these to
+    # ``muv`` and ``muh``.  The additional tokens cover common ASCII/mojibake
+    # exports without weakening the numeric fallback below.
+    semantic = []
+    semantic_tokens = (
+        "muv", "muh", "muleft", "muright", "muleftwheel", "murightwheel",
+        "frictioncoefficientleft", "frictioncoefficientright",
+        "frictioncoeffleft", "frictioncoeffright",
+        "frictionleft", "frictionright", "frictioncoefficient",
+        "frictioncoeff", "frictionnumber", "frictionvalue", "friction",
+    )
+    for c, n in nm.items():
+        if c in used:
+            continue
+        if any(tok == n or tok in n for tok in semantic_tokens):
+            if _plausible_friction_candidate(df[c]):
+                semantic.append(c)
+
+    # Put explicit left/right or V/H channels before generic friction fields.
+    def _mu_priority(c):
+        n = nm[c]
+        sided = any(tok in n for tok in ("muv", "muh", "left", "right", "venstre", "hojre"))
+        return (0 if sided else 1, list(df.columns).index(c))
+
+    semantic = sorted(dict.fromkeys(semantic), key=_mu_priority)
+    if semantic:
+        return semantic[:2]
+
+    # Conservative numeric fallback.  Exclude all columns whose meaning is known
+    # not to be a dimensionless friction coefficient, then choose up to two O(1)
+    # channels. This handles custom_fric mirrors whose Greek mu header was lost.
+    excluded_tokens = (
+        "time", "tid", "timestamp", "dist", "lat", "lon", "bearing",
+        "speed", "kmh", "kmt", "velocity", "slip", "percent", "pct",
+        "vertical", "vertikal", "force", "friksjon", "newton",
+        "wheel", "mw", "tw", "index", "id",
+    )
+    candidates = []
+    for c, n in nm.items():
+        if c in used:
+            continue
+        if any(tok in n for tok in excluded_tokens):
+            continue
+        if _plausible_friction_candidate(df[c]):
+            x = pd.to_numeric(df[c], errors="coerce")
+            finite = x[np.isfinite(x)]
+            coverage = float(len(finite) / max(len(x), 1))
+            spread = float(np.nanstd(finite)) if len(finite) else float("inf")
+            candidates.append((-coverage, spread, list(df.columns).index(c), c))
+    candidates.sort()
+    return [row[-1] for row in candidates[:2]]
+
+
 def canonical_friction(df: pd.DataFrame) -> pd.DataFrame:
+    """Canonicalise LiRA/VIAFRIK reference data.
+
+    Supports the official LiRA fields (Tid, μ_V, μ_H, TotalDist, Lat, Lon,
+    forces/slip) and robustly handles minor header/encoding changes in the
+    ``*_custom_fric_*.csv`` export.  ``mu_ref`` is always the mean of the two
+    resolved wheelpath coefficients when both are available, otherwise the
+    single resolved coefficient is used.
+    """
     out = pd.DataFrame(index=df.index)
     aliases = {
-        "time": [("tid",), ("time",)],
-        "distance": [("totaldist",), ("distance",)],
-        "lat": [("lat",)],
-        "lon": [("lon",)],
-        "mu_l": [("muv",), ("frictioncoefficient", "left")],
-        "mu_r": [("muh",), ("frictioncoefficient", "right")],
+        "time": [("tid",), ("timestamp",), ("time",)],
+        "distance": [("totaldist",), ("distance",), ("dist",)],
+        "lat": [("latitude",), ("lat",)],
+        "lon": [("longitude",), ("lon",)],
+        "mu_l": [("muv",), ("mu", "left"), ("frictioncoefficient", "left"), ("friction", "left")],
+        "mu_r": [("muh",), ("mu", "right"), ("frictioncoefficient", "right"), ("friction", "right")],
         "fz_l": [("fvertikalv",), ("vertical", "left")],
         "fz_r": [("fvertikalh",), ("vertical", "right")],
         "fx_l": [("ffriksjonv",), ("frictional", "left")],
@@ -182,13 +282,30 @@ def canonical_friction(df: pd.DataFrame) -> pd.DataFrame:
         "slip_l": [("slipv",), ("sliprate", "left")],
         "slip_r": [("sliph",), ("sliprate", "right")],
     }
+    source_cols = {}
     for k, pats in aliases.items():
         c = find_col(df, pats)
         if c is not None:
+            source_cols[k] = c
             out[k] = _time_seconds(df[c]) if k == "time" else _to_numeric(df[c])
+
+    # If the exact wheelpath aliases were not recovered, resolve the actual
+    # custom friction export by semantic name and then by conservative numerics.
+    existing_mu_sources = [source_cols[k] for k in ("mu_l", "mu_r") if k in source_cols]
+    if len(existing_mu_sources) < 2:
+        resolved = _resolve_viafrik_mu_columns(df, already_used=source_cols.values())
+        targets = [k for k in ("mu_l", "mu_r") if k not in source_cols]
+        for target, source in zip(targets, resolved):
+            out[target] = _to_numeric(df[source])
+            source_cols[target] = source
+
     mus = [c for c in ("mu_l", "mu_r") if c in out]
     if mus:
-        out["mu_ref"] = out[mus].mean(axis=1)
+        out["mu_ref"] = out[mus].mean(axis=1, skipna=True)
+
+    # Preserve the source mapping for diagnostics in prepare_lira.
+    out.attrs["viafrik_source_columns"] = source_cols
+    out.attrs["viafrik_original_columns"] = [str(c) for c in df.columns]
     return out
 
 
@@ -950,7 +1067,11 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
     interp_limit = lira_cfg.get("interpolation_limit", 5)
     interp_limit = None if interp_limit is None else int(interp_limit)
 
-    fric = list(raw.rglob("*fric_custom*.csv")) or [p for p in raw.rglob("*.csv") if "fric" in p.name.lower()]
+    fric = sorted({
+        *raw.rglob("*fric_custom*.csv"),
+        *raw.rglob("*custom_fric*.csv"),
+        *[p for p in raw.rglob("*.csv") if "fric" in p.name.lower()],
+    })
     car = list(raw.rglob("task_7505*.txt")) or list(raw.rglob("*.txt"))
     if not fric or not car:
         raise FileNotFoundError(
@@ -959,8 +1080,22 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         )
 
     refs = []
+    friction_schema_rows = []
     for p in fric:
-        r = canonical_friction(read_table(p))
+        raw_ref = read_table(p)
+        r = canonical_friction(raw_ref)
+        source_map = dict(r.attrs.get("viafrik_source_columns", {}))
+        friction_schema_rows.append({
+            "file": str(p.relative_to(raw)),
+            "rows": int(len(raw_ref)),
+            "original_columns": json.dumps([str(c) for c in raw_ref.columns], ensure_ascii=False),
+            "resolved_columns": json.dumps(source_map, ensure_ascii=False),
+            "has_mu_ref": bool("mu_ref" in r),
+            "finite_mu_rows": int(r["mu_ref"].notna().sum()) if "mu_ref" in r else 0,
+            "finite_lat_rows": int(r["lat"].notna().sum()) if "lat" in r else 0,
+            "finite_lon_rows": int(r["lon"].notna().sum()) if "lon" in r else 0,
+            "finite_distance_rows": int(r["distance"].notna().sum()) if "distance" in r else 0,
+        })
         ctx = parse_lira_context(p, raw)
         for k, v in ctx.items():
             r[k] = v if k != "trip_id" else f"ref_{v}"
@@ -968,7 +1103,13 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         if all(c in r for c in ("lat", "lon")):
             r["ref_route_s_m"] = cumulative_route_distance(r.lat, r.lon)
         refs.append(r)
+    pd.DataFrame(friction_schema_rows).to_csv(out / "lira_friction_schema_report.csv", index=False)
     ref = pd.concat(refs, ignore_index=True)
+    if "mu_ref" not in ref or int(ref["mu_ref"].notna().sum()) == 0:
+        raise RuntimeError(
+            "Could not resolve a finite VIAFRIK friction coefficient from the LiRA reference CSVs. "
+            "Inspect data/processed/lira/lira_friction_schema_report.csv for the exact downloaded headers."
+        )
 
     # The official platoon-test download stores each vehicle signal in a
     # separate task_<id>_<sensor>.txt file. Assemble/synchronise all streams for
@@ -1034,7 +1175,10 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
         )
     df = pd.concat(aligned, ignore_index=True)
     if "mu_ref" not in df:
-        raise RuntimeError("Could not identify LiRA VIAFRIK mu columns. Inspect raw schema and canonical aliases.")
+        raise RuntimeError(
+            "LiRA alignment completed but no VIAFRIK mu_ref column reached the aligned rows. "
+            "Inspect lira_friction_schema_report.csv and lira_alignment_report.csv."
+        )
 
     # Speed/acceleration unit conversion is source-column-name based in
     # canonical_vehicle; no magnitude-only conversion is applied here.

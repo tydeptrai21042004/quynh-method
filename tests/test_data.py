@@ -88,3 +88,39 @@ def test_official_lira_task_streams_are_synchronised_before_alignment(tmp_path):
     assert {"mu_ref", "physics_lower_raw", "split", "sample_uid"}.issubset(z.columns)
     assert {"train", "calibration", "validation", "test"}.issubset(set(z.split))
     assert (out / "lira_stream_assembly_report.json").exists()
+
+
+def test_viafrik_official_unicode_schema_and_decimal_comma():
+    """Official LiRA Table-5 headers must resolve even with decimal-comma strings."""
+    f = pd.DataFrame({
+        "Tid [ms]": ["0", "100"],
+        "μ_V [-]": ["0,51", "0,61"],
+        "μ_H [-]": ["0,53", "0,63"],
+        "TotalDist [m]": ["0,0", "1,0"],
+        "Lat": ["55,0000", "55,0001"],
+        "Lon": ["12,0000", "12,0000"],
+        "F_vertikal_V [N]": ["1200", "1200"],
+        "F_vertikal_H [N]": ["1200", "1200"],
+    })
+    z = canonical_friction(f)
+    assert "mu_ref" in z
+    assert abs(float(z.mu_ref.iloc[0]) - 0.52) < 1e-9
+    assert abs(float(z.distance.iloc[1]) - 1.0) < 1e-9
+    assert abs(float(z.lat.iloc[0]) - 55.0) < 1e-9
+
+
+def test_viafrik_custom_schema_numeric_fallback():
+    """A custom_fric export with lost/renamed mu headers still resolves conservatively."""
+    f = pd.DataFrame({
+        "Tid [ms]": [0, 100, 200, 300],
+        "TotalDist [m]": [0.0, 1.0, 2.0, 3.0],
+        "Lat": [55.0, 55.00001, 55.00002, 55.00003],
+        "Lon": [12.0, 12.0, 12.0, 12.0],
+        "Channel_A": [0.50, 0.52, 0.54, 0.56],
+        "Channel_B": [0.58, 0.60, 0.62, 0.64],
+        "Bearing": [90.0, 90.0, 90.0, 90.0],
+        "F_vertikal_V [N]": [1200, 1200, 1200, 1200],
+    })
+    z = canonical_friction(f)
+    assert "mu_ref" in z
+    assert abs(float(z.mu_ref.iloc[0]) - 0.54) < 1e-9

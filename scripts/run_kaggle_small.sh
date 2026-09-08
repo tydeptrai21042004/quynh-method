@@ -24,6 +24,7 @@ safegrip --config "$CONFIG" ablation \
 echo "Small LiRA run complete."
 echo "Main metrics: results/lira_quick/metrics.csv"
 echo "Ablation:     results/lira_ablation_quick/ablation_metrics.csv"
-echo "Diagnostics:  data/processed/lira/lira_stream_assembly_report.json"
+echo "Diagnostics:  data/processed/lira/lira_friction_schema_report.csv"
+echo "              data/processed/lira/lira_stream_assembly_report.json"
 echo "              data/processed/lira/lira_alignment_report.csv"
 echo "              data/processed/lira/lira_preprocessing_report.json"

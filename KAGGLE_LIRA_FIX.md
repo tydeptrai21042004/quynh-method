@@ -43,7 +43,7 @@ GPS remains alignment metadata and is not used as a learned model feature.
 
 `tests/test_data.py::test_official_lira_task_streams_are_synchronised_before_alignment`
 constructs separate GPS/speed/acceleration task files and verifies that complete LiRA preparation
-succeeds. The full packaged test suite currently reports 23 passing tests.
+succeeds. The full packaged test suite currently reports 25 passing tests.
 
 ## Diagnostic outputs
 
@@ -58,3 +58,27 @@ data/processed/lira/lira_preprocessing_report.json
 The first report shows which raw sensor files were resolved and whether elapsed-time fallback
 was required. The second shows matching retention and reference traces. The third records the
 final preprocessing protocol and split counts.
+
+
+## VIAFRIK reference-schema fix
+
+A second Kaggle failure occurred after stream assembly succeeded: the downloaded
+`m3_custom_fric_hh.csv` / `m3_custom_fric_vh.csv` reference files did not resolve to
+`mu_ref` under the previous strict alias set. The parser now:
+
+1. supports the official LiRA/VIAFRIK headers `μ_V [-]` and `μ_H [-]`;
+2. tolerates Unicode/mojibake and decimal-comma numeric exports;
+3. recognises common ASCII friction/coefficient header variants;
+4. falls back conservatively to up to two dimensionless O(1) numeric channels only after
+   excluding time, distance, GPS, speed, slip, force and bearing fields;
+5. writes `lira_friction_schema_report.csv` so the exact downloaded headers and selected
+   source columns are auditable.
+
+Inspect these four files after preparation:
+
+```text
+data/processed/lira/lira_friction_schema_report.csv
+data/processed/lira/lira_stream_assembly_report.json
+data/processed/lira/lira_alignment_report.csv
+data/processed/lira/lira_preprocessing_report.json
+```
