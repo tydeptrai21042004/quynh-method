@@ -52,7 +52,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
     optuna=require_optuna(); out=ensure_dir(out_dir); seed_everything(cfg["seed"])
     trials=int(trials or cfg.get("tuning",{}).get("trials",30))
     epochs=int(epochs or cfg.get("tuning",{}).get("epochs",cfg["training"]["epochs_paper"]))
-    start=tuning_eval_start(cfg); cache={}
+    start=tuning_eval_start(cfg,include_baselines=True); cache={}
 
     def bundle(seq):
         if seq not in cache: cache[seq]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,proposal_features=True)
@@ -84,9 +84,14 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         (out/"param_importance.json").write_text(json.dumps(importance,indent=2),encoding="utf-8")
     except Exception:
         importance={}
+    ref_bundle=bundle(int(best["sequence_length"]))
+    endpoint_ids=ref_bundle.idv.astype(str).tolist()
+    endpoint_hash=__import__("hashlib").sha256("\n".join(endpoint_ids).encode()).hexdigest()
+    (out/"tuning_endpoint_manifest.json").write_text(json.dumps({"eval_start":start,"n":len(endpoint_ids),"sha256":endpoint_hash,"endpoint_ids":endpoint_ids},indent=2),encoding="utf-8")
     summary={"objective":"validation RMSE","best_value":study.best_value,"best_trial":study.best_trial.number,"best_params":best,
              "test_used_during_search":False,"n_trials_total":len(study.trials),"param_importance":importance,
-             "common_eval_start":start,"fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"]}}
+             "common_eval_start":start,"validation_endpoint_sha256":endpoint_hash,
+             "fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"]}}
     if evaluate_test:
         b=bundle(int(best["sequence_length"])); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
         d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et)
@@ -188,11 +193,63 @@ def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs
         all_best[name]=best
         (model_out/"best_hparams.yaml").write_text(yaml.safe_dump(best,sort_keys=False),encoding="utf-8")
         pd.DataFrame(study.trials_dataframe()).to_csv(model_out/"trials.csv",index=False)
+        rb=bundle(best["sequence_length"]); ids=rb.idv.astype(str).tolist()
+        eh=__import__("hashlib").sha256("\n".join(ids).encode()).hexdigest()
+        (model_out/"tuning_endpoint_manifest.json").write_text(json.dumps({"eval_start":start,"n":len(ids),"sha256":eh,"endpoint_ids":ids},indent=2),encoding="utf-8")
         summaries[name]={"objective":"validation RMSE","best_value":study.best_value,"best_trial":study.best_trial.number,
-                         "best_params":best,"n_trials_total":len(study.trials),"test_used_during_search":False}
+                         "best_params":best,"n_trials_total":len(study.trials),"test_used_during_search":False,
+                         "common_eval_start":start,"validation_endpoint_sha256":eh}
         (model_out/"tuning_summary.json").write_text(json.dumps(summaries[name],indent=2),encoding="utf-8")
 
     (out/"best_hparams.yaml").write_text(yaml.safe_dump(all_best,sort_keys=False),encoding="utf-8")
     (out/"tuning_summary.json").write_text(json.dumps({"same_trial_budget":trials,"common_eval_start":start,
                                                          "primary_selection_metric":"validation RMSE","models":summaries},indent=2),encoding="utf-8")
     return {"same_trial_budget":trials,"common_eval_start":start,"models":summaries,"best_params":all_best}
+
+
+def tune_ablation_variants(csv_path, out_dir, cfg, variants=None, trials=15, epochs=None):
+    """Retune each SafeGrip ablation on the identical validation endpoints.
+
+    This is a supplementary robustness analysis.  The main controlled ablation
+    should keep the full model hyperparameters fixed; this routine answers the
+    separate objection that an ablated architecture might simply require a
+    different optimum.
+    """
+    from .benchmark import PROPOSAL_VARIANTS, _proposal_flags
+    optuna=require_optuna(); out=ensure_dir(out_dir)
+    variants=list(variants or PROPOSAL_VARIANTS)
+    bad=[v for v in variants if v not in PROPOSAL_VARIANTS]
+    if bad: raise ValueError("Unknown proposal variants: "+", ".join(bad))
+    trials=int(trials); epochs=int(epochs or cfg.get("tuning",{}).get("epochs",cfg["training"]["epochs_paper"]))
+    start=tuning_eval_start(cfg,include_baselines=True)
+    summaries={}; best_all={}
+    for vi,variant in enumerate(variants):
+        vo=ensure_dir(out/variant); cache={}
+        raw=_proposal_flags(variant)["raw_features_only"]
+        def bundle(seq):
+            key=int(seq)
+            if key not in cache:
+                cache[key]=make_bundle(csv_path,cfg,sequence_length=key,scaler_kind="standard",eval_start=start,proposal_features=not raw)
+            return cache[key]
+        def objective(trial):
+            hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"])
+            seed_everything(int(cfg["seed"])+100000*vi+trial.number)
+            model,_=fit_proposal(variant,b,cfg,epochs,hp)
+            d=predict_proposal_details(model,variant,b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev)
+            return float(np.sqrt(np.mean((b.yv-d["prediction"])**2)))
+        study=optuna.create_study(direction="minimize",study_name=f"{variant}_retuned_rmse",
+            storage=f"sqlite:///{vo/'optuna.sqlite3'}",load_if_exists=True,
+            sampler=optuna.samplers.TPESampler(seed=int(cfg["seed"])+vi))
+        remaining=max(0,trials-len(study.trials))
+        if remaining: study.optimize(objective,n_trials=remaining)
+        best=dict(study.best_trial.params); best_all[variant]=best
+        rb=bundle(best["sequence_length"]); ids=rb.idv.astype(str).tolist()
+        eh=__import__("hashlib").sha256("\n".join(ids).encode()).hexdigest()
+        (vo/"best_hparams.yaml").write_text(yaml.safe_dump(best,sort_keys=False),encoding="utf-8")
+        pd.DataFrame(study.trials_dataframe()).to_csv(vo/"trials.csv",index=False)
+        (vo/"tuning_endpoint_manifest.json").write_text(json.dumps({"eval_start":start,"n":len(ids),"sha256":eh,"endpoint_ids":ids},indent=2),encoding="utf-8")
+        summaries[variant]={"best_validation_rmse":float(study.best_value),"best_trial":int(study.best_trial.number),
+                            "best_params":best,"n_trials_total":len(study.trials),"validation_endpoint_sha256":eh}
+    (out/"best_hparams.yaml").write_text(yaml.safe_dump(best_all,sort_keys=False),encoding="utf-8")
+    (out/"retuned_ablation_summary.json").write_text(json.dumps({"protocol":"retuned supplementary ablation","same_validation_endpoints":True,"common_eval_start":start,"models":summaries},indent=2),encoding="utf-8")
+    return summaries

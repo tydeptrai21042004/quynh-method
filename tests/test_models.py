@@ -97,3 +97,18 @@ def test_residual_scale_can_initialize_near_error_scale():
     head=ResidualScaleHead(16,floor=0.005,initial_scale=0.04)
     s=head(h)
     assert torch.allclose(s,torch.full_like(s,0.04),atol=1e-5)
+
+
+def test_static_ablation_is_endpoint_only():
+    from safegrip.models import SafeGripV3Net
+    torch.manual_seed(0)
+    model=SafeGripV3Net(4,excitation_index=None,hidden=16,gru_hidden=8,dropout=0.0,use_temporal=False,use_gate=False)
+    model.eval()
+    x1=torch.randn(2,8,4)
+    x2=x1.clone()
+    x2[:,:-1,:]=torch.randn_like(x2[:,:-1,:])*100.0
+    lo=torch.tensor([0.1,0.2])
+    with torch.no_grad():
+        p1,_,_=model(x1,lo,1.3)
+        p2,_,_=model(x2,lo,1.3)
+    assert torch.allclose(p1,p2,atol=1e-7)

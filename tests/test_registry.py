@@ -16,3 +16,13 @@ def test_ablation_covers_safegrip_v2_components():
         "safegrip_no_bound","safegrip_no_uq","safegrip_no_calibration","safegrip",
     }
     assert expected.issubset(PROPOSAL_VARIANTS)
+
+
+def test_no_excitation_ablation_is_registered():
+    from safegrip.benchmark import PROPOSAL_VARIANTS, _proposal_flags
+    assert "safegrip_no_excitation" in PROPOSAL_VARIANTS
+    flags=_proposal_flags("safegrip_no_excitation")
+    assert flags["raw_features_only"] is True
+    assert flags["use_gate"] is False
+    assert flags["use_excitation_regularizer"] is False
+    assert flags["use_excitation_uq_inflation"] is False

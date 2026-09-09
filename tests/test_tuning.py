@@ -19,3 +19,15 @@ def test_baseline_search_keeps_source_constraints():
     lstm=suggest_literature(DummyTrial(),cfg,"lampe2023_lstm")
     assert tod["sequence_length"]==100
     assert lstm["dropout"]==0.0
+
+
+def test_global_tuning_eval_start_includes_all_search_spaces():
+    from safegrip.benchmark import tuning_eval_start
+    cfg={
+        "sequence_length":16,
+        "tuning":{"space":{"sequence_length":[8,16,64]}},
+        "baseline_tuning":{"sequence_length":[16,128],"space":{"x":{"sequence_length":[100]}}},
+        "baseline":{"foo":{"sequence_length":100}},
+    }
+    assert tuning_eval_start(cfg)==127
+    assert tuning_eval_start(cfg,include_baselines=False)==127

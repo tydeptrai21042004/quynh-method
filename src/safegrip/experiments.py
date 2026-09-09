@@ -397,3 +397,31 @@ def run_force_validation(prepared_csv, out_dir, cfg, *, eps_t=250.0, eps_z=250.0
     }])
     summary.to_csv(out / "force_validation_metrics.csv", index=False)
     return summary
+
+
+def run_statistical_comparison(results_dir, out_dir, *, proposal="safegrip", bootstrap=2000, seed=20260905) -> pd.DataFrame:
+    """Paired endpoint bootstrap of RMSE differences versus the proposal.
+
+    Resampling is paired because every comparator is evaluated on the exact same
+    endpoint IDs. Negative delta means the proposal has lower RMSE.
+    """
+    out=ensure_dir(out_dir); pred=pd.read_csv(Path(results_dir)/"predictions.csv")
+    if proposal not in pred or "y_true" not in pred:
+        raise RuntimeError(f"Missing {proposal} or y_true in predictions.csv")
+    y=pred.y_true.to_numpy(float); pp=pred[proposal].to_numpy(float)
+    models=_prediction_model_columns(pred)
+    rng=np.random.default_rng(int(seed)); n=len(y); rows=[]
+    for model in models:
+        if model==proposal: continue
+        pb=pred[model].to_numpy(float)
+        delta=float(np.sqrt(np.mean((y-pp)**2))-np.sqrt(np.mean((y-pb)**2)))
+        vals=np.empty(int(bootstrap),float)
+        for i in range(int(bootstrap)):
+            idx=rng.integers(0,n,n)
+            vals[i]=np.sqrt(np.mean((y[idx]-pp[idx])**2))-np.sqrt(np.mean((y[idx]-pb[idx])**2))
+        rows.append({"proposal":proposal,"comparator":model,"n_endpoints":n,"delta_rmse_proposal_minus_comparator":delta,
+                     "ci95_low":float(np.quantile(vals,0.025)),"ci95_high":float(np.quantile(vals,0.975)),
+                     "proposal_better_probability":float(np.mean(vals<0)),"bootstrap_replicates":int(bootstrap)})
+    res=pd.DataFrame(rows); res.to_csv(out/"paired_bootstrap_rmse.csv",index=False)
+    (out/"statistical_protocol.json").write_text(json.dumps({"method":"paired endpoint bootstrap","proposal":proposal,"bootstrap_replicates":int(bootstrap),"seed":int(seed),"interpretation":"negative delta RMSE favors proposal"},indent=2),encoding="utf-8")
+    return res

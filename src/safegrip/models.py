@@ -182,7 +182,7 @@ class SafeGripV3Net(nn.Module):
                  evidence_window: int = 8, delta_scale: float = 2.0,
                  gate_init_slope: float = 6.0, gate_init_threshold: float = 0.25,
                  use_temporal: bool = True, use_gate: bool = True,
-                 use_bound: bool = True):
+                 use_bound: bool = True, endpoint_only: bool = False):
         super().__init__()
         self.d = int(d)
         self.excitation_index = excitation_index
@@ -190,12 +190,13 @@ class SafeGripV3Net(nn.Module):
         self.use_temporal = bool(use_temporal)
         self.use_gate = bool(use_gate) and self.use_temporal
         self.use_bound = bool(use_bound)
+        self.endpoint_only = bool(endpoint_only)
         self.evidence_window = max(2, int(evidence_window))
         self.delta_scale = max(1e-4, float(delta_scale))
 
         # Persistent/slow prior: summary statistics plus a full-window GRU.
         self.prior_static = nn.Sequential(
-            nn.Linear(3 * d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+            nn.Linear((3 * d) if self.use_temporal else d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
             nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
         )
         if self.use_temporal:
@@ -257,8 +258,12 @@ class SafeGripV3Net(nn.Module):
         self.conformal_block_size: int | None = None
         self.excitation_beta: float = 1.0
 
-    @staticmethod
-    def _stats(x: torch.Tensor) -> torch.Tensor:
+    def _stats(self, x: torch.Tensor) -> torch.Tensor:
+        # Endpoint-only is a genuine static ablation: no window mean/std are
+        # available to the estimator. Temporal engineered channels are also
+        # removed by the matching feature bundle in benchmark.py.
+        if self.endpoint_only:
+            return x[:, -1, :]
         return torch.cat([
             x[:, -1, :],
             x.mean(dim=1),
@@ -285,7 +290,10 @@ class SafeGripV3Net(nn.Module):
         return torch.clamp(x[:, -1, self.excitation_index], 0.0, 1.0)
 
     def encode(self, x: torch.Tensor, excitation: torch.Tensor | None = None):
-        prior_static = self.prior_static(self._stats(x))
+        # The non-temporal ablation is genuinely endpoint-only: it cannot use
+        # window means/stds and therefore contains no hidden temporal summary.
+        prior_input = self._stats(x) if self.use_temporal else x[:, -1, :]
+        prior_static = self.prior_static(prior_input)
         if self.use_temporal:
             y_long, _ = self.prior_gru(x)
             prior_temporal = self.prior_temporal_proj(y_long[:, -1])
@@ -349,6 +357,62 @@ class SafeGripV3Net(nn.Module):
 # Backward-compatible import alias for notebooks built against v0.6.x.  The
 # implementation is v3; new code and documentation should use SafeGripV3Net.
 SafeGripV2Net = SafeGripV3Net
+
+
+class SafeGripBackboneNet(nn.Module):
+    """Data-only control with the proposal's temporal capacity but no physics/gate.
+
+    This network deliberately has no sample-specific lower bound, no explicit
+    excitation reliability mechanism, and no proposal-specific relative/ranking
+    regularizers.  It can be fed raw sensors (``safegrip_backbone_raw``) or the
+    same label-free engineered representation (``safegrip_features_only``).
+    """
+    def __init__(self, d: int, hidden: int = 64, gru_hidden: int = 32, dropout: float = 0.1):
+        super().__init__()
+        self.hidden = int(hidden)
+        self.static = nn.Sequential(
+            nn.Linear(3 * d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+            nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
+        )
+        self.gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
+        self.temporal = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
+        self.fuse = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden))
+        inner=max(16, hidden // 2)
+        self.head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Dropout(dropout), nn.Linear(inner, 1))
+        self.scale_head: ResidualScaleHead | None = None
+        self.conformal_q: float | None = None
+        self.conformal_block_size: int | None = None
+        self.excitation_beta: float = 0.0
+
+    @staticmethod
+    def _stats(x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([x[:, -1, :], x.mean(dim=1), x.std(dim=1, unbiased=False)], dim=-1)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        s=self.static(self._stats(x))
+        y,_=self.gru(x)
+        t=self.temporal(y[:, -1])
+        return self.fuse(torch.cat([s,t],dim=-1))
+
+    def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
+                        upper: float | torch.Tensor = 1.3,
+                        excitation: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+        h=self.encode(x)
+        q=self.head(h).squeeze(-1)
+        upper_t=torch.as_tensor(upper,dtype=q.dtype,device=q.device)
+        pred=upper_t*torch.sigmoid(q)
+        zero=torch.zeros_like(pred)
+        return {
+            "prediction":pred, "prior_prediction":pred, "latent":q,
+            "prior_latent":q, "evidence_delta":zero, "reliability":zero,
+            "features":h,
+        }
+
+    def forward(self, x: torch.Tensor, lower: torch.Tensor | None = None,
+                upper: float | torch.Tensor = 1.3,
+                excitation: torch.Tensor | None = None):
+        d=self.forward_details(x,lower=lower,upper=upper,excitation=excitation)
+        return d["prediction"],d["latent"],d["reliability"]
 
 
 class ResidualScaleHead(nn.Module):

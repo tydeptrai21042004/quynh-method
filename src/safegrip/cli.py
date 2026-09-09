@@ -8,11 +8,11 @@ from .datasets import DATASET_REGISTRY
 from .download import download_dataset
 from .data import prepare_dataset, make_synthetic
 from .benchmark import run_benchmark, run_ablation, PROPOSAL_VARIANTS
-from .tuning import tune_safegrip, tune_literature_baselines
+from .tuning import tune_safegrip, tune_literature_baselines, tune_ablation_variants
 from .plots import make_plots, make_ablation_plots
 from .experiments import (
     run_excitation_analysis, run_robustness_analysis, run_scarcity_analysis,
-    run_cross_route_analysis, run_force_validation,
+    run_cross_route_analysis, run_force_validation, run_statistical_comparison,
 )
 
 
@@ -49,6 +49,8 @@ def main():
     a=sub.add_parser("ablation"); a.add_argument("--dataset",choices=["lira","synthetic"],required=True); a.add_argument("--preset",choices=["quick","trust","paper"],default="paper"); a.add_argument("--variants",default=None,help="comma-separated proposal ablations"); a.add_argument("--proposal-hparams",default=None,help="YAML from safegrip tune; same hyperparameters are reused across ablations")
     t=sub.add_parser("tune"); t.add_argument("--dataset",choices=["lira","synthetic"],required=True); t.add_argument("--trials",type=int,default=None); t.add_argument("--epochs",type=int,default=None); t.add_argument("--no-test",action="store_true")
     tb=sub.add_parser("tune-baselines"); tb.add_argument("--dataset",choices=["lira","synthetic"],required=True); tb.add_argument("--models",default=None,help="comma-separated literature baselines; default is the full paper set"); tb.add_argument("--trials",type=int,default=None); tb.add_argument("--epochs",type=int,default=None,help="optional development cap; omit for each method's paper-mode epoch budget")
+    ta=sub.add_parser("tune-ablation"); ta.add_argument("--dataset",choices=["lira","synthetic"],required=True); ta.add_argument("--variants",default=None); ta.add_argument("--trials",type=int,default=15); ta.add_argument("--epochs",type=int,default=None)
+    st=sub.add_parser("statistics"); st.add_argument("--results",required=True); st.add_argument("--proposal",default="safegrip"); st.add_argument("--bootstrap",type=int,default=2000)
     e=sub.add_parser("experiment",help="run reviewer-oriented SafeGrip analyses")
     e.add_argument("--dataset",choices=["lira","synthetic"],required=True)
     e.add_argument("--study",choices=["excitation","robustness","scarcity","cross-route"],required=True)
@@ -93,6 +95,12 @@ def main():
         csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_baseline_tuning"
         models=args.models.split(",") if args.models else None
         print(json.dumps(tune_literature_baselines(csv,out,cfg,models,args.trials,args.epochs),indent=2)); return
+    if args.cmd=="tune-ablation":
+        csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_ablation_retuned"
+        variants=args.variants.split(",") if args.variants else None
+        print(json.dumps(tune_ablation_variants(csv,out,cfg,variants,args.trials,args.epochs),indent=2)); return
+    if args.cmd=="statistics":
+        print(run_statistical_comparison(Path(args.results),Path(args.results)/"statistics",proposal=args.proposal,bootstrap=args.bootstrap).to_string(index=False)); return
     if args.cmd=="experiment":
         csv=_ensure_primary(args.dataset,cfg)
         results=Path(args.results) if args.results else Path("results")/f"{args.dataset}_paper"

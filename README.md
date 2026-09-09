@@ -324,3 +324,7 @@ results/lira_baseline_tuning/
 - `references.bib` — citations used by the benchmark registry.
 - `VALIDATION.md` — commands executed on the packaged repository and current test status.
 - `IMPLEMENTED_IMPROVEMENTS.md` — concise map from the review issues to the implemented code changes.
+
+## 2026-09 fairness/ablation hardening
+
+The current release adds global tuning-endpoint parity, feature-parity and label-budget controls, common conformal-UQ controls, corrected component-isolating ablations, retuned supplementary ablations, a fail-closed fairness audit, and paired-bootstrap statistics. See `FAIRNESS_AND_ABLATION_V2.md` for the protocol and commands.

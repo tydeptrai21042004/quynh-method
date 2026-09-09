@@ -29,6 +29,12 @@ evaluation:
   - 3
   - 4
   projection_parity_controls: true
+  feature_parity_controls: true
+  feature_parity_models:
+  - lampe2023_gru
+  - schaefke2023_transformer
+  label_budget_parity_controls: true
+  common_conformal_controls: true
 vehicle:
   mass_kg: 1500.0
   gravity: 9.81

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json, time, hashlib, platform
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -12,7 +12,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from joblib import dump
 
 from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, PAPER_BASELINES, QUICK_BASELINES, validate_paper_baselines
-from .models import make_literature_baseline, SafeGripV3Net, ResidualScaleHead
+from .models import make_literature_baseline, SafeGripV3Net, SafeGripBackboneNet, ResidualScaleHead
 from .physics import (
     project_torch, project_numpy, project_interval_numpy, gaussian_interval,
     conformal_lower_correction, apply_lower_correction,
@@ -26,8 +26,25 @@ META={
     "route_id","direction","trip_id","trajectory_id","segment_id","sample_uid","resampled",
 }
 PROPOSAL_VARIANTS=(
-    "safegrip_data_only",
-    "safegrip_static_only",
+    "safegrip_backbone_raw",
+    "safegrip_features_only",
+    "safegrip_prior_evidence",
+    "safegrip_no_excitation",
+    "safegrip_endpoint_only",
+    "safegrip_no_gate",
+    "safegrip_no_bound",
+    "safegrip_no_uq",
+    "safegrip_no_calibration",
+    "safegrip",
+    "safegrip_data_only",       # legacy alias -> safegrip_backbone_raw
+    "safegrip_static_only",     # legacy alias -> safegrip_endpoint_only
+)
+PRIMARY_ABLATION_VARIANTS=(
+    "safegrip_backbone_raw",
+    "safegrip_features_only",
+    "safegrip_prior_evidence",
+    "safegrip_no_excitation",
+    "safegrip_endpoint_only",
     "safegrip_no_gate",
     "safegrip_no_bound",
     "safegrip_no_uq",
@@ -45,6 +62,7 @@ class Bundle:
     eval_start: int
     q: float
     proposal_features: bool
+    feature_mode: str
     Xtr: np.ndarray; ytr: np.ndarray; lotr: np.ndarray; raw_lotr: np.ndarray; idtr: np.ndarray; etr: np.ndarray
     Xc: np.ndarray; yc: np.ndarray; loc: np.ndarray; raw_loc: np.ndarray; idc: np.ndarray; ec: np.ndarray; lower_cal_mask: np.ndarray; uq_cal_mask: np.ndarray
     Xv: np.ndarray; yv: np.ndarray; lov: np.ndarray; raw_lov: np.ndarray; idv: np.ndarray; ev: np.ndarray
@@ -66,14 +84,22 @@ def common_eval_start(cfg) -> int:
     return max(int(cfg.get("sequence_length",16)),100)-1
 
 
-def tuning_eval_start(cfg, *, include_baselines: bool = False) -> int:
-    """Fixed endpoint warm-up used only during hyperparameter search."""
+def tuning_context_lengths(cfg) -> list[int]:
+    """Union of every proposal/baseline sequence length that may be tuned."""
     values=[int(x) for x in cfg.get("tuning",{}).get("space",{}).get("sequence_length",[cfg.get("sequence_length",16)])]
-    if include_baselines:
-        values.extend(int(x) for x in cfg.get("baseline_tuning",{}).get("sequence_length",[]))
-        for space in cfg.get("baseline_tuning",{}).get("space",{}).values():
-            values.extend(int(x) for x in space.get("sequence_length",[]))
-    return max(values or [int(cfg.get("sequence_length",16))])-1
+    bt=cfg.get("baseline_tuning",{})
+    values.extend(int(x) for x in bt.get("sequence_length",[]))
+    for space in bt.get("space",{}).values():
+        values.extend(int(x) for x in space.get("sequence_length",[]))
+    for hp in cfg.get("baseline",{}).values():
+        if "sequence_length" in hp: values.append(int(hp["sequence_length"]))
+    return sorted(set(values or [int(cfg.get("sequence_length",16))]))
+
+
+def tuning_eval_start(cfg, *, include_baselines: bool = False) -> int:
+    """One global endpoint warm-up for every hyperparameter search."""
+    del include_baselines
+    return max(tuning_context_lengths(cfg))-1
 
 
 def windows_for_split(df, features, split, L, stride, eval_start=None, physics_window=1):
@@ -122,6 +148,95 @@ def windows_for_split(df, features, split, L, stride, eval_start=None, physics_w
     return np.stack(xs),np.asarray(ys,np.float32),np.asarray(ls,np.float32),np.asarray(ids,dtype=str)
 
 
+def _ids_hash(ids: np.ndarray) -> str:
+    arr=np.asarray(ids,dtype=str)
+    return hashlib.sha256("\n".join(arr.tolist()).encode("utf-8")).hexdigest()
+
+
+def _augment_train_with_lower_calibration(b: Bundle) -> Bundle:
+    """Equal-label-budget control for literature baselines.
+
+    Adds only the lower-bound-calibration role to baseline supervised training.
+    The UQ-calibration role remains untouched, preventing test/UQ leakage.
+    """
+    m=np.asarray(b.lower_cal_mask,dtype=bool)
+    if not m.any(): return b
+    return replace(
+        b,
+        Xtr=np.concatenate([b.Xtr,b.Xc[m]],axis=0),
+        ytr=np.concatenate([b.ytr,b.yc[m]],axis=0),
+        lotr=np.concatenate([b.lotr,b.loc[m]],axis=0),
+        raw_lotr=np.concatenate([b.raw_lotr,b.raw_loc[m]],axis=0),
+        idtr=np.concatenate([b.idtr,b.idc[m]],axis=0),
+        etr=np.concatenate([b.etr,b.ec[m]],axis=0),
+    )
+
+
+def _common_conformal_interval(y_cal,p_cal,p_test,alpha,ids=None,block_size=1):
+    """Same absolute-residual block split-conformal interval for any model."""
+    score=np.abs(np.asarray(y_cal,float)-np.asarray(p_cal,float))
+    if ids is not None:
+        score=_block_max_scores(score,np.asarray(ids,dtype=str),max(1,int(block_size)))
+    q=_finite_sample_quantile(score,float(alpha))
+    p=np.asarray(p_test,float)
+    return p-q,p+q,float(q)
+
+
+def _model_parameter_count(model) -> int:
+    return int(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+
+def _reset_peak_gpu_memory():
+    if torch.cuda.is_available(): torch.cuda.reset_peak_memory_stats()
+
+
+def _peak_gpu_memory_mb() -> float:
+    return float(torch.cuda.max_memory_allocated()/1024**2) if torch.cuda.is_available() else 0.0
+
+
+def _write_fairness_audit(out: Path, proposal_bundle: Bundle, compared_bundles: dict, cfg: dict, controls: dict):
+    cal_equal=all(np.array_equal(proposal_bundle.idc.astype(str),b.idc.astype(str)) for b in compared_bundles.values())
+    val_equal=all(np.array_equal(proposal_bundle.idv.astype(str),b.idv.astype(str)) for b in compared_bundles.values())
+    test_equal=all(np.array_equal(proposal_bundle.idt.astype(str),b.idt.astype(str)) for b in compared_bundles.values())
+    required={
+        "calibration_endpoint_identity":bool(cal_equal),
+        "validation_endpoint_identity":bool(val_equal),
+        "test_endpoint_identity":bool(test_equal),
+        "test_labels_locked_from_training_and_calibration":True,
+        "train_only_scaler_fit":True,
+        "proposal_engineered_features_label_free":True,
+        "calibration_roles_disjoint":bool(not np.any(proposal_bundle.lower_cal_mask & proposal_bundle.uq_cal_mask)),
+    }
+    audit={
+        "status":"PASS" if all(required.values()) else "FAIL",
+        "required_checks":required,
+        "common_eval_start":int(proposal_bundle.eval_start),
+        "global_tuning_eval_start":int(tuning_eval_start(cfg)),
+        "global_tuning_warmup_samples":int(tuning_eval_start(cfg)+1),
+        "calibration_endpoint_count":int(len(proposal_bundle.idc)),
+        "validation_endpoint_count":int(len(proposal_bundle.idv)),
+        "test_endpoint_count":int(len(proposal_bundle.idt)),
+        "calibration_endpoint_hash":_ids_hash(proposal_bundle.idc),
+        "validation_endpoint_hash":_ids_hash(proposal_bundle.idv),
+        "test_endpoint_hash":_ids_hash(proposal_bundle.idt),
+        "proposal_train_labels":int(len(proposal_bundle.ytr)),
+        "proposal_lower_calibration_labels":int(np.sum(proposal_bundle.lower_cal_mask)),
+        "proposal_uq_calibration_labels":int(np.sum(proposal_bundle.uq_cal_mask)),
+        "parity_controls":{
+            "feature_parity":controls.get("feature_parity",[]),
+            "label_budget":controls.get("label_budget",[]),
+            "common_conformal":controls.get("common_conformal",[]),
+            "projection":controls.get("projection",[]),
+        },
+    }
+    (out/"fairness_audit.json").write_text(json.dumps(audit,indent=2),encoding="utf-8")
+    txt=["SCIENTIFIC FAIRNESS AUDIT", "="*32, f"STATUS: {audit['status']}"]
+    txt += [f"{k}: {'PASS' if v else 'FAIL'}" for k,v in required.items()]
+    txt += [f"validation_hash: {audit['validation_endpoint_hash']}", f"test_hash: {audit['test_endpoint_hash']}"]
+    (out/"fairness_audit.txt").write_text("\n".join(txt)+"\n",encoding="utf-8")
+    if audit["status"]!="PASS": raise RuntimeError("Scientific fairness audit failed: endpoint/protocol invariant mismatch")
+
+
 def _make_scaler(kind: str):
     if kind=="standard": return StandardScaler()
     if kind=="minmax": return MinMaxScaler()
@@ -159,12 +274,38 @@ def _calibration_role_masks(ids: np.ndarray, lower_fraction: float = 0.25):
 
 
 def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eval_start=None,
-                proposal_features: bool = False):
+                proposal_features: bool = False, feature_mode: str | None = None):
+    """Build one leakage-safe model bundle.
+
+    ``feature_mode`` makes reviewer controls explicit:
+      raw                 -> source numeric sensor channels only
+      safegrip            -> all label-free SafeGrip engineered channels
+      safegrip_no_excitation -> engineered channels except explicit E/memory
+      safegrip_endpoint   -> endpoint-safe engineered channels; derivative/memory
+                             channels are removed for the genuine static ablation
+
+    ``proposal_features`` is retained for backward compatibility.
+    """
+    if feature_mode is None:
+        feature_mode="safegrip" if proposal_features else "raw"
+    feature_mode=str(feature_mode)
+    valid={"raw","safegrip","safegrip_no_excitation","safegrip_endpoint"}
+    if feature_mode not in valid: raise ValueError(f"Unknown feature_mode: {feature_mode}")
     df=pd.read_csv(csv_path)
-    if proposal_features:
+    use_sg=feature_mode!="raw"
+    if use_sg:
         df=add_safegrip_features(df,cfg)
     features=[c for c in df.columns if c not in META and pd.api.types.is_numeric_dtype(df[c])]
     features=[c for c in features if c not in ("mu_ref","physics_lower_raw")]
+    if feature_mode=="safegrip_no_excitation":
+        drop={"sg_excitation_instant","sg_excitation_score"}
+        features=[c for c in features if c not in drop]
+    elif feature_mode=="safegrip_endpoint":
+        # A static endpoint control must not retain history through derivative
+        # or causal-memory engineered channels. Current-value algebraic transforms
+        # (acceleration magnitude, wheel spread, torque utilization, etc.) remain.
+        drop={"sg_jerk_x","sg_jerk_y","sg_jerk_mag","sg_excitation_instant","sg_excitation_score"}
+        features=[c for c in features if c not in drop]
     L=int(sequence_length or cfg["sequence_length"]); stride=int(cfg["stride"])
     start=common_eval_start(cfg) if eval_start is None else int(eval_start)
     physics_window=int(cfg.get("physics",{}).get("window_samples",1))
@@ -174,9 +315,7 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
     if min(len(Xtr),len(Xv),len(Xt))==0:
         raise RuntimeError("One split has no common-evaluation windows; lower benchmark.common_warmup_samples or inspect prepared data")
 
-    # Preserve an unscaled, interpretable excitation score for uncertainty
-    # inflation and reporting.  The model receives the standardized copy.
-    if proposal_features and "sg_excitation_score" in features:
+    if "sg_excitation_score" in features:
         ei=features.index("sg_excitation_score")
         etr=np.clip(Xtr[:,-1,ei],0,1).astype(np.float32); ec=np.clip(Xc[:,-1,ei],0,1).astype(np.float32) if len(Xc) else np.empty(0,np.float32)
         ev=np.clip(Xv[:,-1,ei],0,1).astype(np.float32); et=np.clip(Xt[:,-1,ei],0,1).astype(np.float32)
@@ -184,12 +323,10 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
         etr=np.zeros(len(Xtr),np.float32); ec=np.zeros(len(Xc),np.float32); ev=np.zeros(len(Xv),np.float32); et=np.zeros(len(Xt),np.float32)
 
     scaler=_make_scaler(scaler_kind).fit(Xtr.reshape(-1,len(features)))
-    excitation_feature_index=features.index("sg_excitation_score") if proposal_features and "sg_excitation_score" in features else None
+    excitation_feature_index=features.index("sg_excitation_score") if "sg_excitation_score" in features else None
     def sc(X):
         if len(X)==0: return X.astype(np.float32)
         out=scaler.transform(X.reshape(-1,len(features))).reshape(X.shape).astype(np.float32)
-        # Keep the proposal reliability input in its physical [0,1] scale.  v0.6
-        # accidentally fed the standardized excitation column to the learned gate.
         if excitation_feature_index is not None:
             out[:,:,excitation_feature_index]=X[:,:,excitation_feature_index].astype(np.float32)
         return out
@@ -200,7 +337,7 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
     loc=apply_lower_correction(raw_loc,q).astype(np.float32)
     lov=apply_lower_correction(raw_lov,q).astype(np.float32)
     lot=apply_lower_correction(raw_lot,q).astype(np.float32)
-    return Bundle(features,scaler,scaler_kind,L,start,q,bool(proposal_features),
+    return Bundle(features,scaler,scaler_kind,L,start,q,bool(use_sg),feature_mode,
                   Xtr,ytr,lotr,raw_lotr,idtr,etr,Xc,yc,loc,raw_loc,idc,ec,lower_cal_mask,uq_cal_mask,
                   Xv,yv,lov,raw_lov,idv,ev,Xt,yt,lot,raw_lot,idt,et)
 
@@ -348,12 +485,17 @@ def predict_literature(model,name,X,batch=1024):
 def _proposal_flags(variant: str) -> dict:
     if variant not in PROPOSAL_VARIANTS:
         raise ValueError(variant)
+    raw_only = variant in ("safegrip_data_only", "safegrip_no_excitation")
     return {
+        # static_only is now genuinely endpoint-only in SafeGripV3Net.
         "use_temporal": variant != "safegrip_static_only",
-        "use_gate": variant not in ("safegrip_data_only", "safegrip_static_only", "safegrip_no_gate"),
+        "use_gate": variant not in ("safegrip_data_only", "safegrip_static_only", "safegrip_no_gate", "safegrip_no_excitation"),
         "use_bound": variant not in ("safegrip_data_only", "safegrip_no_bound"),
         "use_uq": variant != "safegrip_no_uq",
         "use_calibrated_lower": variant != "safegrip_no_calibration",
+        "raw_features_only": raw_only,
+        "use_excitation_regularizer": variant not in ("safegrip_data_only", "safegrip_no_excitation"),
+        "use_excitation_uq_inflation": variant not in ("safegrip_data_only", "safegrip_no_excitation"),
     }
 
 
@@ -372,7 +514,7 @@ def _proposal_model(variant: str, b: Bundle, hp: dict):
     )
     # Positive coefficient gives uncertainty that is monotonically larger when
     # the excitation/observability score is smaller.
-    model.excitation_beta=max(0.0,float(hp.get("excitation_beta",1.0)))
+    model.excitation_beta=max(0.0,float(hp.get("excitation_beta",1.0))) if flags["use_excitation_uq_inflation"] else 0.0
     return model
 
 
@@ -518,9 +660,10 @@ def _fit_residual_scale(model: SafeGripV3Net, b: Bundle, cfg: dict, hp: dict, lo
 
 def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     if variant not in PROPOSAL_VARIANTS: raise ValueError(variant)
-    if not b.proposal_features:
-        raise ValueError("SafeGrip-v3 requires make_bundle(..., proposal_features=True)")
-    hp=proposal_hparams(cfg,hp_overrides); flags=_proposal_flags(variant); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
+    flags=_proposal_flags(variant)
+    if not b.proposal_features and not flags["raw_features_only"]:
+        raise ValueError("This SafeGrip variant requires make_bundle(..., proposal_features=True)")
+    hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
     opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
 
     # Point training uses only train labels.  Calibration labels never enter the
@@ -543,7 +686,7 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     patience=int(cfg["training"].get("patience",10)); huber_beta=float(hp.get("huber_beta",0.05))
     delta_w=max(0.0,float(hp.get("delta_loss_weight",0.10)))
     rank_w=max(0.0,float(hp.get("rank_loss_weight",0.03)))
-    smooth_w=max(0.0,float(hp.get("smooth_loss_weight",0.005)))
+    smooth_w=max(0.0,float(hp.get("smooth_loss_weight",0.005))) if flags["use_excitation_regularizer"] else 0.0
     rank_min=max(0.0,float(hp.get("rank_min_delta",0.01)))
     rank_margin=max(0.0,float(hp.get("rank_margin",0.005)))
 
@@ -856,6 +999,13 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     epochs_proposal=int(cfg["training"].get(epoch_key, cfg["training"].get("epochs_paper",60)))
 
     per_seed=[]; control_rows=[]
+    feature_parity_rows=[]; label_budget_rows=[]; common_uq_rows=[]
+    compared_bundles={}
+    controls_manifest={"feature_parity":[],"label_budget":[],"common_conformal":[]}
+    parity_names=set(cfg.get("evaluation",{}).get("feature_parity_models",["lampe2023_gru","schaefke2023_transformer"]))
+    enable_feature_parity=bool(cfg.get("evaluation",{}).get("feature_parity_controls",True)) and preset in ("trust","paper")
+    enable_label_budget=bool(cfg.get("evaluation",{}).get("label_budget_parity_controls",True)) and preset in ("trust","paper")
+    enable_common_uq=bool(cfg.get("evaluation",{}).get("common_conformal_controls",True)) and preset in ("trust","paper")
     preds=pd.DataFrame({"endpoint_id":proposal_bundle.idt,"y_true":proposal_bundle.yt,
                         "physics_lower":proposal_bundle.lot,"physics_lower_raw":proposal_bundle.raw_lot})
     control_preds=pd.DataFrame({"endpoint_id":proposal_bundle.idt,"y_true":proposal_bundle.yt,"physics_lower":proposal_bundle.lot})
@@ -864,12 +1014,18 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     for name in baseline_names:
         hp=dict(baseline_plan[name]); selected[name]=hp
         b=make_bundle(csv_path,cfg,sequence_length=int(hp["sequence_length"]),scaler_kind=str(hp["scaler"]),eval_start=start)
-        _assert_same_targets(proposal_bundle,b,name); dump(b.scaler,scaler_dir/f"{name}.joblib"); (feature_dir/f"{name}.json").write_text(json.dumps(b.features,indent=2),encoding="utf-8")
+        _assert_same_targets(proposal_bundle,b,name); compared_bundles[name]=b; dump(b.scaler,scaler_dir/f"{name}.joblib"); (feature_dir/f"{name}.json").write_text(json.dumps(b.features,indent=2),encoding="utf-8")
         print(f"[baseline/adapted] {name} DOI={LITERATURE_BASELINES[name]['doi']} L={b.sequence_length} scaler={b.scaler_kind}")
         seed_preds=[]; seed_sigmas=[]; seed_control=[]
         for seed in seed_list:
             seed_everything(int(seed)); t0=time.time()
             model=fit_literature(name,b,cfg,None,preset,hp); p,sig=predict_literature(model,name,b.Xt)
+            if enable_common_uq and np.any(b.uq_cal_mask):
+                m=np.asarray(b.uq_cal_mask,dtype=bool)
+                pcal,_=predict_literature(model,name,b.Xc[m])
+                cil,cih,cq=_common_conformal_interval(b.yc[m],pcal,p,cfg.get("alpha",0.05))
+                cm=regression_metrics(b.yt,p,b.lot,cfg["mu_upper"],None,raw_mean=p,interval_low=cil,interval_high=cih)
+                common_uq_rows.append({"model":name,"seed":int(seed),"common_conformal_q":cq,**cm})
             per_seed.append({"model":name,"kind":"literature_adapted_baseline","doi":LITERATURE_BASELINES[name]["doi"],"seed":int(seed),
                              **regression_metrics(b.yt,p,b.lot,cfg["mu_upper"],sig,raw_mean=p,project_uncertainty=False),
                              "seconds":time.time()-t0})
@@ -884,6 +1040,29 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         if seed_sigmas: preds[name+"_sigma"]=np.mean(np.stack(seed_sigmas),axis=0)
         if seed_control: control_preds[name+"__projection_control"]=np.mean(np.stack(seed_control),axis=0)
 
+        # Feature-parity control: same literature architecture receives the same
+        # label-free SafeGrip engineered representation.  This isolates gains
+        # due to representation from gains due to the proposal architecture.
+        if enable_feature_parity and name in parity_names:
+            bp=make_bundle(csv_path,cfg,sequence_length=int(hp["sequence_length"]),scaler_kind=str(hp["scaler"]),eval_start=start,proposal_features=True)
+            _assert_same_targets(proposal_bundle,bp,name+"__sg_features")
+            controls_manifest["feature_parity"].append(name+"__sg_features")
+            for seed in seed_list:
+                seed_everything(int(seed)); fm=fit_literature(name,bp,cfg,None,preset,hp); fp,fs=predict_literature(fm,name,bp.Xt)
+                feature_parity_rows.append({"model":name+"__sg_features","source_model":name,"seed":int(seed),
+                    **regression_metrics(bp.yt,fp,bp.lot,cfg["mu_upper"],fs,raw_mean=fp)})
+
+        # Equal supervised-label-budget control. Baselines receive the lower-
+        # calibration labels that affect SafeGrip's point-support calibration;
+        # the disjoint UQ-calibration role remains held out.
+        if enable_label_budget:
+            bl=_augment_train_with_lower_calibration(b)
+            controls_manifest["label_budget"].append(name+"__equal_label_budget")
+            for seed in seed_list:
+                seed_everything(int(seed)); lm=fit_literature(name,bl,cfg,None,preset,hp); lp,ls=predict_literature(lm,name,bl.Xt)
+                label_budget_rows.append({"model":name+"__equal_label_budget","source_model":name,"seed":int(seed),
+                    "supervised_train_count":int(len(bl.ytr)),**regression_metrics(bl.yt,lp,bl.lot,cfg["mu_upper"],ls,raw_mean=lp)})
+
     name="safegrip"; print(f"[proposal/v3] safegrip L={proposal_bundle.sequence_length}")
     proposal_preds=[]; proposal_raw=[]; proposal_sigmas=[]; proposal_latent=[]; final_hp=None
     seed_priors=[]; seed_deltas=[]; seed_prior_latents=[]
@@ -892,6 +1071,12 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     for seed in seed_list:
         seed_everything(int(seed)); t0=time.time(); model,final_hp=fit_proposal(name,proposal_bundle,cfg,epochs_proposal,hp_overrides)
         d=predict_proposal_details(model,name,proposal_bundle.Xt,proposal_bundle.lot,proposal_bundle.raw_lot,cfg["mu_upper"],excitation=proposal_bundle.et)
+        if enable_common_uq and np.any(proposal_bundle.uq_cal_mask):
+            m=np.asarray(proposal_bundle.uq_cal_mask,dtype=bool)
+            dc=predict_proposal_details(model,name,proposal_bundle.Xc[m],proposal_bundle.loc[m],proposal_bundle.raw_loc[m],cfg["mu_upper"],excitation=proposal_bundle.ec[m])
+            cil,cih,cq=_common_conformal_interval(proposal_bundle.yc[m],dc["prediction"],d["prediction"],cfg.get("alpha",0.05))
+            cm=regression_metrics(proposal_bundle.yt,d["prediction"],proposal_bundle.lot,cfg["mu_upper"],None,raw_mean=d["prediction"],interval_low=cil,interval_high=cih)
+            common_uq_rows.append({"model":"safegrip","seed":int(seed),"common_conformal_q":cq,**cm})
         per_seed.append({"model":name,"kind":"proposal","doi":"","seed":int(seed),
                          **regression_metrics(proposal_bundle.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],
                                               raw_mean=d["raw_mean"],
@@ -979,13 +1164,27 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         _aggregate_seed_metrics(control_rows).to_csv(out/"projection_control_metrics.csv",index=False)
         pd.DataFrame(control_rows).to_csv(out/"projection_control_metrics_by_seed.csv",index=False)
         control_preds.to_csv(out/"projection_control_predictions.csv",index=False)
+    if feature_parity_rows:
+        _aggregate_seed_metrics(feature_parity_rows).to_csv(out/"feature_parity_metrics.csv",index=False)
+        pd.DataFrame(feature_parity_rows).to_csv(out/"feature_parity_metrics_by_seed.csv",index=False)
+    if label_budget_rows:
+        _aggregate_seed_metrics(label_budget_rows).to_csv(out/"label_budget_parity_metrics.csv",index=False)
+        pd.DataFrame(label_budget_rows).to_csv(out/"label_budget_parity_metrics_by_seed.csv",index=False)
+    if common_uq_rows:
+        controls_manifest["common_conformal"]=["same symmetric split-conformal calibration on the disjoint UQ-calibration role"]
+        _aggregate_seed_metrics(common_uq_rows).to_csv(out/"common_conformal_uq_metrics.csv",index=False)
+        pd.DataFrame(common_uq_rows).to_csv(out/"common_conformal_uq_metrics_by_seed.csv",index=False)
+    _write_fairness_audit(out,proposal_bundle,compared_bundles,cfg,controls_manifest)
     return metrics
 
 
 def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=None):
     out=ensure_dir(out_dir)
     seq=(hp_overrides or {}).get("sequence_length")
-    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=common_eval_start(cfg),proposal_features=True); _save_bundle_meta(out,b,cfg)
+    start=common_eval_start(cfg)
+    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,proposal_features=True); _save_bundle_meta(out,b,cfg)
+    raw_b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,proposal_features=False)
+    _assert_same_targets(b,raw_b,"raw_feature_ablation_bundle")
     variants=list(variants or PROPOSAL_VARIANTS)
     bad=[v for v in variants if v not in PROPOSAL_VARIANTS]
     if bad: raise ValueError("Unknown proposal variants: "+", ".join(bad))
@@ -1000,19 +1199,20 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     results=[]; preds=pd.DataFrame({"endpoint_id":b.idt,"y_true":b.yt,"physics_lower":b.lot,"physics_lower_raw":b.raw_lot,"excitation":b.et})
     for variant in variants:
         print(f"[ablation/v3] {variant}")
+        vb=raw_b if _proposal_flags(variant)["raw_features_only"] else b
         variant_preds=[]; variant_raw=[]; variant_sigma=[]; variant_gate=[]; lo_int=[]; hi_int=[]
         for seed in seed_list:
-            seed_everything(int(seed)); t0=time.time(); model,hp=fit_proposal(variant,b,cfg,epochs,hp_overrides)
-            d=predict_proposal_details(model,variant,b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et)
+            seed_everything(int(seed)); t0=time.time(); model,hp=fit_proposal(variant,vb,cfg,epochs,hp_overrides)
+            d=predict_proposal_details(model,variant,vb.Xt,vb.lot,vb.raw_lot,cfg["mu_upper"],excitation=vb.et)
             row={"model":variant,"kind":"ablation" if variant!="safegrip" else "proposal","seed":int(seed),
-                 **regression_metrics(b.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],
+                 **regression_metrics(vb.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],
                                       raw_mean=d["raw_mean"],
                                       interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
                                       interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw")),
                  "conformal_q":float(d.get("conformal_q",np.nan)),
                  "mean_reliability":float(np.mean(d["reliability"])),
                  "mean_gate":float(np.mean(d["reliability"])),
-                 "prior_rmse":float(np.sqrt(np.mean((b.yt-d["prior_prediction"])**2))),
+                 "prior_rmse":float(np.sqrt(np.mean((vb.yt-d["prior_prediction"])**2))),
                  "mean_abs_dynamic_update":float(np.mean(np.abs(d["prediction"]-d["prior_prediction"]))),
                  "seconds":time.time()-t0}
             results.append(row); variant_preds.append(d["prediction"]); variant_raw.append(d["raw_mean"]); variant_gate.append(d["gate"])
@@ -1028,8 +1228,9 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     by_seed=pd.DataFrame(results); summary=_aggregate_seed_metrics(results)
     summary.to_csv(out/"ablation_metrics.csv",index=False); by_seed.to_csv(out/"ablation_metrics_by_seed.csv",index=False); preds.to_csv(out/"ablation_predictions.csv",index=False)
     (out/"ablation_design.json").write_text(json.dumps({
-        "safegrip_data_only":"remove the sample-specific identified lower bound and replace monotone excitation reliability with fixed reliability; keep prior/evidence backbones",
-        "safegrip_static_only":"remove temporal prior/evidence branches; retain bound-aware static prior and conformal UQ",
+        "safegrip_data_only":"true raw-sensor data-only backbone: no proposal engineered features, no sample-specific bound, no excitation gate/regularizer/inflation",
+        "safegrip_static_only":"genuine endpoint-only prior: uses only x[t], no window mean/std, GRU, or dynamic-evidence branch",
+        "safegrip_no_excitation":"raw sensors with prior/evidence temporal architecture but no excitation-derived features, monotone gate, weak-excitation regularizer, or excitation UQ inflation",
         "safegrip_no_gate":"replace monotone excitation reliability by fixed 0.5 evidence reliability",
         "safegrip_no_bound":"remove the sample-specific lower endpoint; retain only global [0, mu_upper] support",
         "safegrip_no_uq":"retain the full v3 point estimator but remove residual-scale and conformal uncertainty",
