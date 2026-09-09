@@ -1,5 +1,5 @@
-# SafeGrip v0.6.0 - trustworthy LiRA Kaggle run
-# Paste this entire file into one Kaggle cell AFTER pushing v0.6.0 to GitHub.
+# SafeGrip v0.7.0 - trustworthy LiRA Kaggle run
+# Paste this entire file into one Kaggle cell AFTER pushing v0.7.0 to GitHub.
 # Internet ON; T4 GPU recommended.
 import os, sys, json, shutil, subprocess
 from pathlib import Path
@@ -15,7 +15,7 @@ run('git clone --depth 1 https://github.com/tydeptrai21042004/quynh-method.git',
 SRC=REPO/'src'; sys.path.insert(0,str(SRC)); os.environ['PYTHONPATH']=str(SRC)+os.pathsep+os.environ.get('PYTHONPATH','')
 run(f'{sys.executable} -m pip install -q -e \".[dev]\"')
 import safegrip, pandas as pd
-assert safegrip.__version__ == '0.6.0', f'Expected corrected SafeGrip 0.6.0, got {safegrip.__version__}. Push the supplied ZIP to GitHub first.'
+assert safegrip.__version__ == '0.7.0', f'Expected corrected SafeGrip 0.7.0, got {safegrip.__version__}. Push the supplied ZIP to GitHub first.'
 run(f'{sys.executable} -m pytest -q')
 SG=f'{sys.executable} -m safegrip.cli --config configs/kaggle_trust.yaml'
 run(f'{SG} download --datasets lira')

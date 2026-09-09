@@ -75,17 +75,21 @@ Public repositories may change API metadata, guestbook requirements or authentic
 - New regression tests cover discontinuous-segment window safety, fixed-window maximum lower bounds, mandatory-signal failure, and LiRA Table-2 decoding.
 - `scripts/check_paper_readiness.py` is the authoritative automatic paper-output gate.
 
-## v0.6.0 SafeGrip-v2 audit
+## v0.7.0 SafeGrip-v3 audit
 
-The v0.6.0 test suite adds checks for:
+The v0.7.0 test suite includes checks for:
 
 - identified-set output parameterization (`lower <= prediction <= mu_upper`);
-- positive residual-scale outputs;
-- label-free excitation feature construction;
-- jerk calculation that does not cross split boundaries;
-- disjoint lower-bound-calibration and predictive-UQ calibration roles;
-- bounded `[0,1]` excitation scores.
+- monotone non-decreasing excitation reliability;
+- explicit prior/evidence/reliability outputs from the v3 estimator;
+- residual-scale positivity and initialization near the requested error scale;
+- label-free excitation feature construction and causal recent-excitation memory;
+- excitation memory and jerk calculations that reset at split/segment boundaries;
+- preservation of `sg_excitation_score` in physical `[0,1]` scale after proposal feature scaling;
+- same-segment relative-pair construction that never crosses trajectory boundaries;
+- conditional vector force-balance behavior in the physics lower bound;
+- disjoint lower-bound-calibration and predictive-UQ calibration roles.
 
-Repository audit performed for this release: **36 tests passed**. The two remaining runtime warnings are non-fatal upstream/PyTorch warnings already surfaced by the test output.
+Repository audit performed for this release: **43 tests passed**. The two remaining runtime warnings are non-fatal upstream/PyTorch warnings already surfaced by the test output. The package also installs successfully in offline verification mode with `pip install -e . --no-build-isolation --no-deps`, reports version `0.7.0`, and exposes the expected CLI commands.
 
-An end-to-end synthetic smoke run also completes the SafeGrip-v2 benchmark and controlled ablations. Scientific-health status is not forced to PASS; low-quality or under-covered runs remain REVIEW by design.
+An end-to-end synthetic smoke run completes the SafeGrip-v3 benchmark and controlled ablations and writes the new prior/evidence/reliability audit outputs. A same-budget synthetic regression check also showed the redesigned point core substantially lower RMSE than the v0.6 core; this is a software/regression diagnostic only and is not treated as paper evidence. Scientific-health status is never forced to PASS; low-quality or under-covered runs remain REVIEW by design.

@@ -1,34 +1,47 @@
-# SafeGrip v2 ablation and hyperparameter protocol
+# SafeGrip v3 ablation and hyperparameter protocol
 
 ## Controlled ablation
 
 All variants use the same data splits, endpoint identities, seed list and selected hyperparameters unless a removed component makes a parameter irrelevant.
 
-| Variant | Temporal GRU | Excitation gate | sample-specific bound | post-hoc UQ | lower-bound relaxation |
+| Variant | Temporal prior/evidence | Excitation reliability | sample-specific bound | post-hoc UQ | lower-bound relaxation |
 |---|---:|---:|---:|---:|---:|
-| `safegrip_data_only` | yes | no | no | yes | reported only |
-| `safegrip_static_only` | no | no | yes | yes | yes |
-| `safegrip_no_gate` | yes | no (fixed 50/50 fusion) | yes | yes | yes |
-| `safegrip_no_bound` | yes | yes | no; global `[0,mu_upper]` only | yes | n/a |
-| `safegrip_no_uq` | yes | yes | yes | no | yes |
-| `safegrip_no_calibration` | yes | yes | raw mechanics lower endpoint | yes | no |
-| `safegrip` | yes | yes | yes, by parameterization | yes | yes |
+| `safegrip_data_only` | yes | fixed 0.5 | no | yes | reported only |
+| `safegrip_static_only` | no | inactive | yes | yes | yes |
+| `safegrip_no_gate` | yes | fixed 0.5 | yes | yes | yes |
+| `safegrip_no_bound` | yes | monotone | no; global `[0,U]` only | yes | n/a |
+| `safegrip_no_uq` | yes | monotone | yes | no | yes |
+| `safegrip_no_calibration` | yes | monotone | raw mechanics lower endpoint | yes | no |
+| `safegrip` | yes | monotone | yes, by parameterization | yes | yes |
 
 The full point estimator is
 
 ```text
-mu_hat = lower + (mu_upper - lower) * sigmoid(z)
+q = q_prior + reliability(E) * evidence_delta
+mu_hat = lower + (mu_upper-lower) * sigmoid(q).
 ```
 
-and is trained with Huber/SmoothL1 loss. There is no soft physics-loss weight and no post-hoc point projection in the full method.
+There is no soft physics penalty and no post-hoc point projection in the full method.
 
-Predictive UQ is fitted only after the point network is frozen. Validation residuals train a positive scale head; a disjoint calibration subset determines the block-max conformal multiplier.
+## Point objective
+
+The primary objective is Huber/SmoothL1. Three low-weight temporal regularizers are available:
+
+- relative-change loss between same-segment endpoint pairs;
+- ranking loss for changes larger than `rank_min_delta`;
+- weak-excitation smoothness weighted by `(1-E)`.
+
+The test partition and calibration labels never enter point-model gradient training.
+
+## UQ
+
+Predictive UQ is fitted only after point-model selection. Validation residuals train a positive scale head initialized near the observed residual scale. A disjoint calibration subset determines the block-max conformal multiplier. Excitation inflation is monotone because `excitation_beta >= 0`.
 
 ## Hyperparameter search
 
 The proposal search is selected only by validation RMSE. The test partition is locked during search.
 
-| Parameter | Search |
+| Parameter | Search/default |
 |---|---|
 | `sequence_length` | {8, 16, 24, 32, 64} |
 | `hidden` | {32, 64, 96} |
@@ -38,10 +51,14 @@ The proposal search is selected only by validation RMSE. The test partition is l
 | `weight_decay` | log-uniform 1e-6–1e-3 |
 | `batch_size` | {128, 256, 512} |
 | `huber_beta` | {0.03, 0.05, 0.10} |
-| `excitation_beta` | {0.5, 1.0, 2.0} |
+| `evidence_window` | {4, 8, 12} |
+| `delta_scale` | {1, 2, 3} |
+| `delta_loss_weight` | {0.05, 0.15, 0.35} |
+| `rank_loss_weight` | {0, 0.03, 0.05} |
+| `excitation_beta` | {0.5, 1, 2} |
 
-The point hyperparameter search runs the `safegrip_no_uq` variant because UQ is post-hoc and must not influence selection of the point estimator. The final selected point configuration is then refit with the full UQ pipeline.
+Structural defaults not expanded in the normal 30-trial search include monotone-gate initialization, pair lag, weak-excitation smoothness weight and physical/calibration assumptions.
 
-**Not tuned against validation score:** `mu_upper`, conformal `alpha`, LiRA matching tolerances, physical uncertainty margins, and the fixed label-free excitation-feature reference scales.
+**Not tuned against validation score:** `mu_upper`, conformal `alpha`, LiRA matching tolerances, physical uncertainty margins and fixed label-free excitation reference scales.
 
 Literature comparators receive the same Optuna trial budget while preserving their recoverable source architecture/preprocessing constraints.

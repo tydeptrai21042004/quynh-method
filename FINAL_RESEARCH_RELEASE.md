@@ -1,34 +1,27 @@
-# SafeGrip-Open v0.6.0 — SafeGrip-v2 research release
+# SafeGrip-Open v0.7.0 — SafeGrip-v3 proposal release
 
-This release keeps the v0.5 leakage, LiRA decoding, trajectory segmentation, data-audit and literature-baseline safeguards, but replaces the proposal architecture after the v0.5 trust run correctly failed its scientific-health gate.
+v0.7.0 keeps the leakage, LiRA decoding, trajectory segmentation, data-audit, baseline-fidelity and scientific-health safeguards from v0.6.x, but redesigns the proposal in response to the v0.6 trust result.
 
-## Proposal changes
+## Main proposal changes
 
-- default proposal context reduced from 64 to 16 samples at 10 Hz;
-- label-free derived dynamics features: acceleration utilization, jerk, wheel-speed spread/imbalance, pressure spread and torque utilization;
-- explicit bounded excitation score in `[0,1]`;
-- window-statistics MLP + compact GRU branches;
-- excitation-aware learned fusion gate;
-- point estimate parameterized directly inside the identified set:
-  `lower + (mu_upper-lower)*sigmoid(z)`;
-- Huber/SmoothL1 point loss instead of joint Gaussian NLL;
-- uncertainty scale fitted only after the point network is frozen;
-- excitation-dependent uncertainty inflation;
-- disjoint calibration roles for lower-bound relaxation and predictive UQ;
-- block-max conformal calibration to mitigate overlapping-window dependence;
-- automatic health gate also checks predictive interval coverage.
+- replaces hidden static/GRU gated fusion with an explicit **long-context prior + short-context dynamic-evidence update**;
+- uses monotone excitation reliability, so stronger label-free excitation cannot reduce evidence weight;
+- preserves the excitation score in physical `[0,1]` scale instead of feeding a standardized gate input;
+- adds causal recent-excitation memory so a maneuver remains informative shortly after its peak;
+- retains identified-set output parameterization, now as `q_prior + reliability*evidence_delta`;
+- adds same-segment relative-change, ranking and weak-excitation smoothness regularization to reduce flat mean-regression behavior;
+- changes the vehicle lower-bound calculation to a conditional vector force balance with explicit uncertainty margins;
+- initializes the residual-scale head from validation residual magnitude rather than the oversized default softplus scale;
+- retains disjoint lower-bound/UQ calibration roles and block-max conformal calibration;
+- exports prior, evidence-delta and reliability diagnostics for direct audit.
 
-## Benchmark correction
+## What remains intentionally unchanged
 
-The benchmark warm-up no longer depends on unused sequence lengths listed in the tuning search space. It is the maximum of the configured benchmark warm-up and the context lengths of the methods actually evaluated. Hyperparameter search has its own fixed tuning warm-up.
-
-## What is intentionally unchanged
-
-- official LiRA decoding and preprocessing safeguards;
-- split-before-imputation and trajectory/segment-safe windows;
-- train-only feature scaling;
+- split-before-imputation and segment-safe temporal windows;
+- train-only fitting of feature scalers;
+- calibration labels excluded from point-model gradient training;
 - cited literature comparator architectures/provenance;
-- locked test partition during tuning;
-- five-seed paper mode and result-readiness gates.
+- test partition locked during tuning;
+- multi-seed trust/paper modes and result-readiness gates.
 
-A `PASS`/`PAPER_READY` status is still a reproducibility/sanity gate, not evidence that the method must outperform baselines. Negative results remain valid outputs and must not be rewritten as positive claims.
+A `PASS`/`PAPER_READY` status remains a reproducibility/sanity gate, not evidence that the method must outperform baselines. Negative results remain valid outputs and must not be rewritten as positive claims.

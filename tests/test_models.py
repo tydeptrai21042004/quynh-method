@@ -65,3 +65,35 @@ def test_every_paper_baseline_has_real_citation():
         assert LITERATURE_BASELINES[name]["title"]
         assert LITERATURE_BASELINES[name]["fidelity"]
         assert LITERATURE_BASELINES[name]["runnable"] is True
+
+
+def test_safegrip_v3_reliability_is_monotone_in_excitation():
+    from safegrip.models import SafeGripV3Net
+    model=SafeGripV3Net(6,excitation_index=1,hidden=16,gru_hidden=8,dropout=0.0,
+                        gate_init_slope=5.0,gate_init_threshold=0.3)
+    e=torch.linspace(0,1,21)
+    r=model.reliability(e)
+    assert torch.all(r[1:]>=r[:-1]-1e-8)
+    assert float(r[-1].detach())>float(r[0].detach())
+
+
+def test_safegrip_v3_reports_prior_and_dynamic_evidence():
+    from safegrip.models import SafeGripV3Net
+    x=torch.randn(4,16,7)
+    lo=torch.tensor([0.1,0.2,0.3,0.4])
+    e=torch.tensor([0.0,0.25,0.5,1.0])
+    model=SafeGripV3Net(7,excitation_index=2,hidden=16,gru_hidden=8,dropout=0.0)
+    d=model.forward_details(x,lo,1.3,excitation=e)
+    assert set(("prediction","prior_prediction","evidence_delta","reliability","latent")) <= set(d)
+    assert d["prediction"].shape==(4,)
+    assert torch.all(d["prediction"]>=lo-1e-7)
+    assert torch.all(d["prediction"]<=1.3+1e-7)
+    assert torch.all(d["reliability"][1:]>=d["reliability"][:-1]-1e-8)
+
+
+def test_residual_scale_can_initialize_near_error_scale():
+    from safegrip.models import ResidualScaleHead
+    h=torch.zeros(5,16)
+    head=ResidualScaleHead(16,floor=0.005,initial_scale=0.04)
+    s=head(h)
+    assert torch.allclose(s,torch.full_like(s,0.04),atol=1e-5)

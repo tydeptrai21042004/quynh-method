@@ -151,103 +151,227 @@ def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
     raise ValueError(name)
 
 
-class SafeGripV2Net(nn.Module):
-    """Excitation-aware partial-identification estimator.
+class SafeGripV3Net(nn.Module):
+    """SafeGrip-v3: prior + excitation-controlled dynamic evidence update.
 
-    The network combines a short GRU temporal representation with statistics of
-    the same window.  A learned gate is driven by the label-free excitation
-    feature.  When ``use_bound`` is enabled, the output is parameterized inside
-    the identified set rather than clipped after inference:
+    The proposal intentionally separates two roles that were conflated in v2:
 
-        mu_hat = lower + (upper - lower) * sigmoid(z).
+    * a *slow prior* estimates the persistent friction level from the complete
+      context window; and
+    * a *short evidence branch* predicts a bounded correction supported by the
+      most recent dynamics.
+
+    Dynamic evidence is admitted through a monotone reliability function
+
+        r(E) = sigmoid(softplus(a) * (E - sigmoid(tau)))
+
+    so increasing the label-free excitation score can never reduce the amount
+    of dynamic evidence used.  The update is performed in identified-set logit
+    coordinates:
+
+        q = q_prior + r(E) * delta
+        mu = lower + (upper - lower) * sigmoid(q)
+
+    which preserves ``lower <= mu <= upper`` by construction.  ``use_gate=False``
+    is the controlled fixed-reliability ablation and ``use_temporal=False``
+    removes the dynamic-evidence branch entirely.
     """
 
     def __init__(self, d: int, excitation_index: int | None, hidden: int = 64,
                  gru_hidden: int = 32, dropout: float = 0.1,
+                 evidence_window: int = 8, delta_scale: float = 2.0,
+                 gate_init_slope: float = 6.0, gate_init_threshold: float = 0.25,
                  use_temporal: bool = True, use_gate: bool = True,
                  use_bound: bool = True):
         super().__init__()
         self.d = int(d)
         self.excitation_index = excitation_index
+        self.hidden = int(hidden)
         self.use_temporal = bool(use_temporal)
-        self.use_gate = bool(use_gate) and self.use_temporal and excitation_index is not None
+        self.use_gate = bool(use_gate) and self.use_temporal
         self.use_bound = bool(use_bound)
+        self.evidence_window = max(2, int(evidence_window))
+        self.delta_scale = max(1e-4, float(delta_scale))
 
-        self.static = nn.Sequential(
-            nn.Linear(3 * d, hidden),
-            nn.SiLU(),
-            nn.LayerNorm(hidden),
-            nn.Dropout(dropout),
-            nn.Linear(hidden, hidden),
-            nn.SiLU(),
+        # Persistent/slow prior: summary statistics plus a full-window GRU.
+        self.prior_static = nn.Sequential(
+            nn.Linear(3 * d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+            nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
         )
         if self.use_temporal:
-            self.gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
-            self.temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
-        else:
-            self.gru = None
-            self.temporal_proj = None
-
-        if self.use_gate:
-            self.gate_net = nn.Sequential(
-                nn.Linear(1, 8), nn.SiLU(), nn.Linear(8, 1)
+            self.prior_gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
+            self.prior_temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
+            self.prior_fuse = nn.Sequential(
+                nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden)
             )
         else:
-            self.gate_net = None
+            self.prior_gru = None
+            self.prior_temporal_proj = None
+            self.prior_fuse = None
 
         inner = max(16, hidden // 2)
-        self.point_head = nn.Sequential(
+        self.prior_head = nn.Sequential(
             nn.Linear(hidden, inner), nn.SiLU(), nn.Dropout(dropout), nn.Linear(inner, 1)
+        )
+
+        # Short-window branch predicts *evidence/correction*, not absolute mu.
+        if self.use_temporal:
+            self.evidence_static = nn.Sequential(
+                nn.Linear(3 * d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+                nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
+            )
+            self.evidence_gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
+            self.evidence_temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
+            self.evidence_fuse = nn.Sequential(
+                nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden)
+            )
+            self.evidence_head = nn.Sequential(
+                nn.Linear(hidden, inner), nn.SiLU(), nn.Dropout(dropout), nn.Linear(inner, 1)
+            )
+        else:
+            self.evidence_static = None
+            self.evidence_gru = None
+            self.evidence_temporal_proj = None
+            self.evidence_fuse = None
+            self.evidence_head = None
+
+        # Monotone reliability parameters.  softplus(slope_raw)>0 guarantees
+        # dr/dE >= 0 for every parameter value during training.
+        init_slope = max(float(gate_init_slope), 1e-3)
+        init_thr = min(max(float(gate_init_threshold), 1e-4), 1.0 - 1e-4)
+        inv_sp = math.log(math.expm1(init_slope)) if init_slope < 20 else init_slope
+        self.reliability_slope_raw = nn.Parameter(torch.tensor(inv_sp, dtype=torch.float32))
+        self.reliability_threshold_raw = nn.Parameter(
+            torch.tensor(math.log(init_thr / (1.0 - init_thr)), dtype=torch.float32)
+        )
+
+        # Fixed-reliability ablations use this value rather than a learned gate.
+        self.fixed_reliability = 0.5
+
+        # UQ representation intentionally contains both slow and fast evidence.
+        self.uq_fuse = nn.Sequential(
+            nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden)
         )
         self.scale_head: ResidualScaleHead | None = None
         self.conformal_q: float | None = None
         self.conformal_block_size: int | None = None
         self.excitation_beta: float = 1.0
 
-    def encode(self, x: torch.Tensor):
-        last = x[:, -1, :]
-        mean = x.mean(dim=1)
-        std = x.std(dim=1, unbiased=False)
-        hs = self.static(torch.cat([last, mean, std], dim=-1))
+    @staticmethod
+    def _stats(x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([
+            x[:, -1, :],
+            x.mean(dim=1),
+            x.std(dim=1, unbiased=False),
+        ], dim=-1)
 
+    def reliability(self, excitation: torch.Tensor) -> torch.Tensor:
+        e = torch.clamp(excitation.reshape(-1), 0.0, 1.0)
         if not self.use_temporal:
-            gate = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
-            return hs, gate
+            return torch.zeros_like(e)
+        if not self.use_gate:
+            return torch.full_like(e, float(self.fixed_reliability))
+        slope = nn.functional.softplus(self.reliability_slope_raw) + 1e-4
+        threshold = torch.sigmoid(self.reliability_threshold_raw)
+        return torch.sigmoid(slope * (e - threshold))
 
-        y, _ = self.gru(x)
-        ht = self.temporal_proj(y[:, -1])
-        if self.use_gate:
-            e = x[:, -1, self.excitation_index:self.excitation_index + 1]
-            gate = torch.sigmoid(self.gate_net(e)).squeeze(-1)
+    def _excitation_from_input(self, x: torch.Tensor, excitation: torch.Tensor | None) -> torch.Tensor:
+        if excitation is not None:
+            return torch.clamp(excitation.reshape(-1).to(dtype=x.dtype, device=x.device), 0.0, 1.0)
+        if self.excitation_index is None:
+            return torch.zeros(x.shape[0], dtype=x.dtype, device=x.device)
+        # make_bundle preserves sg_excitation_score unscaled, so this fallback
+        # remains physically interpretable in [0, 1].
+        return torch.clamp(x[:, -1, self.excitation_index], 0.0, 1.0)
+
+    def encode(self, x: torch.Tensor, excitation: torch.Tensor | None = None):
+        prior_static = self.prior_static(self._stats(x))
+        if self.use_temporal:
+            y_long, _ = self.prior_gru(x)
+            prior_temporal = self.prior_temporal_proj(y_long[:, -1])
+            prior_h = self.prior_fuse(torch.cat([prior_static, prior_temporal], dim=-1))
         else:
-            gate = torch.full((x.shape[0],), 0.5, device=x.device, dtype=x.dtype)
-        h = (1.0 - gate.unsqueeze(-1)) * hs + gate.unsqueeze(-1) * ht
-        return h, gate
+            prior_h = prior_static
 
-    def forward(self, x: torch.Tensor, lower: torch.Tensor | None = None, upper: float | torch.Tensor = 1.3):
-        h, gate = self.encode(x)
-        latent = self.point_head(h).squeeze(-1)
-        upper_t = torch.as_tensor(upper, dtype=latent.dtype, device=latent.device)
+        q_prior = self.prior_head(prior_h).squeeze(-1)
+        e = self._excitation_from_input(x, excitation)
+
+        if self.use_temporal:
+            short = x[:, -min(self.evidence_window, x.shape[1]):, :]
+            ev_static = self.evidence_static(self._stats(short))
+            y_short, _ = self.evidence_gru(short)
+            ev_temporal = self.evidence_temporal_proj(y_short[:, -1])
+            evidence_h = self.evidence_fuse(torch.cat([ev_static, ev_temporal], dim=-1))
+            # Bounded correction prevents a poorly observed short maneuver from
+            # completely overwriting the persistent prior in one update.
+            delta = self.delta_scale * torch.tanh(self.evidence_head(evidence_h).squeeze(-1))
+            r = self.reliability(e)
+        else:
+            evidence_h = torch.zeros_like(prior_h)
+            delta = torch.zeros_like(q_prior)
+            r = torch.zeros_like(q_prior)
+
+        q = q_prior + r * delta
+        uq_h = self.uq_fuse(torch.cat([prior_h, evidence_h], dim=-1))
+        return uq_h, r, q_prior, delta, q
+
+    def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
+                        upper: float | torch.Tensor = 1.3,
+                        excitation: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+        h, reliability, q_prior, delta, q = self.encode(x, excitation=excitation)
+        upper_t = torch.as_tensor(upper, dtype=q.dtype, device=q.device)
         if self.use_bound:
             if lower is None:
-                raise ValueError("SafeGripV2Net requires lower when use_bound=True")
+                raise ValueError("SafeGripV3Net requires lower when use_bound=True")
             span = torch.clamp(upper_t - lower, min=1e-6)
-            pred = lower + span * torch.sigmoid(latent)
+            prior = lower + span * torch.sigmoid(q_prior)
+            pred = lower + span * torch.sigmoid(q)
         else:
-            # The no-bound/data-only ablation still respects the global support,
-            # but removes the sample-specific identified lower endpoint.
-            pred = upper_t * torch.sigmoid(latent)
-        return pred, latent, gate
+            prior = upper_t * torch.sigmoid(q_prior)
+            pred = upper_t * torch.sigmoid(q)
+        return {
+            "prediction": pred,
+            "prior_prediction": prior,
+            "latent": q,
+            "prior_latent": q_prior,
+            "evidence_delta": delta,
+            "reliability": reliability,
+            "features": h,
+        }
+
+    def forward(self, x: torch.Tensor, lower: torch.Tensor | None = None,
+                upper: float | torch.Tensor = 1.3,
+                excitation: torch.Tensor | None = None):
+        d = self.forward_details(x, lower=lower, upper=upper, excitation=excitation)
+        return d["prediction"], d["latent"], d["reliability"]
+
+
+# Backward-compatible import alias for notebooks built against v0.6.x.  The
+# implementation is v3; new code and documentation should use SafeGripV3Net.
+SafeGripV2Net = SafeGripV3Net
 
 
 class ResidualScaleHead(nn.Module):
-    """Positive residual-scale head trained after the point estimator is fixed."""
+    """Positive residual-scale head fitted after point-model selection.
 
-    def __init__(self, hidden: int, floor: float = 1e-2):
+    ``initial_scale`` initializes the last bias near the validation residual
+    magnitude.  This avoids the old softplus(0) ~= 0.69 initialization that was
+    orders of magnitude larger than LiRA errors and forced conformal calibration
+    to compensate for a poorly scaled head.
+    """
+
+    def __init__(self, hidden: int, floor: float = 1e-2, initial_scale: float | None = None):
         super().__init__()
         inner = max(8, hidden // 2)
-        self.net = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
+        self.fc1 = nn.Linear(hidden, inner)
+        self.fc2 = nn.Linear(inner, 1)
         self.floor = float(floor)
+        if initial_scale is not None:
+            target = max(float(initial_scale) - self.floor, 1e-6)
+            raw = math.log(math.expm1(target)) if target < 20 else target
+            nn.init.zeros_(self.fc2.weight)
+            nn.init.constant_(self.fc2.bias, raw)
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
-        return nn.functional.softplus(self.net(h).squeeze(-1)) + self.floor
+        z = nn.functional.silu(self.fc1(h))
+        return nn.functional.softplus(self.fc2(z).squeeze(-1)) + self.floor

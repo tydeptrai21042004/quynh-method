@@ -1,11 +1,10 @@
-# SafeGrip-Open v0.6.0
+# SafeGrip-Open v0.7.0
 
-## SafeGrip v2 (v0.6.0)
+## SafeGrip v3 (v0.7.0)
 
-v0.6.0 changes the proposal architecture rather than merely tuning the failed v0.5 trust run. The full method now uses a short static+GRU hybrid, a label-free excitation gate, identified-set output parameterization, Huber point training, and separately fitted block-conformal uncertainty. The benchmark warm-up is no longer inflated by unused tuning candidates, and the calibration split has disjoint lower-bound and predictive-UQ roles. See `SAFEGRIP_V2_METHOD.md`.
+v0.7.0 redesigns the proposal after the v0.6 trust run exposed flat predictions, weakly informative physics bounds and a learned gate whose behavior was difficult to interpret. The new method uses a **long-context friction prior + short-context dynamic-evidence update**, monotone excitation reliability, relative-change/ranking regularization, an improved conditional vector force-balance lower bound, and better-scaled post-hoc conformal UQ. See `SAFEGRIP_V3_METHOD.md`.
 
-The cited literature baselines are intentionally unchanged and do not receive SafeGrip-only engineered features.
-
+The literature baselines, LiRA leakage safeguards and paper-readiness gates remain intentionally independent of the proposal-only changes.
 
 ## Final research-release safeguards (v0.5.0)
 
@@ -15,7 +14,6 @@ v0.5.0 keeps the LiRA Table-2 CAN decoding introduced in v0.4.0 and adds the saf
 - reference traces and large temporal gaps are separated into `trajectory_id` / `segment_id`, so splitting, imputation, resampling and temporal windows cannot bridge discontinuous road pieces;
 - the physics lower endpoint is the trailing-window maximum used by the partial-identification theorem (`physics.window_samples`);
 - calibration labels are never used in gradient training; calibration only changes the inference-time admissible lower endpoint;
-- Gaussian NLL is evaluated at the raw probabilistic mean, while hard physics projection remains post-processing;
 - benchmark outputs include a SHA-256 reproducibility manifest and train-only constant sanity baselines;
 - `scripts/check_paper_readiness.py` verifies the scientific health gate, five-seed coverage, tuning records, preprocessing/physics audits and complete ablations;
 - `scripts/package_paper_results.py` refuses to create a paper-release ZIP unless every readiness check passes.
@@ -114,19 +112,24 @@ Paper-reported scores from non-matching protocols are stored as literature conte
 
 ## Proposal and ablations
 
-Full SafeGrip v2:
+Full SafeGrip v3:
 
 ```text
 raw sensor window
-   -> label-free dynamics features + excitation score
-   -> window-statistics MLP ---------\
-                                     -> excitation-aware gated fusion
-   -> short GRU temporal branch -----/
-   -> latent score z
-   -> mu = lower + (mu_upper-lower) * sigmoid(z)
-   -> frozen point estimator
-   -> residual-scale head
-   -> block-max conformal calibration
+   -> label-free SafeGrip dynamics features
+   -> causal recent-excitation score E in [0,1]
+
+full context -----------------> slow prior encoder -> q_prior
+short recent context ---------> evidence encoder  -> bounded delta
+E ----------------------------> monotone reliability r(E)
+
+q = q_prior + r(E) * delta
+mu = lower + (mu_upper-lower) * sigmoid(q)
+
+frozen selected point estimator
+   -> residual-scale head initialized near validation residual scale
+   -> monotone weak-excitation uncertainty inflation
+   -> block-max split-conformal calibration
    -> physical interval intersection
 ```
 
@@ -134,15 +137,15 @@ Controlled ablations:
 
 | Variant | What is removed? |
 |---|---|
-| `safegrip_data_only` | sample-specific bound + excitation gate |
-| `safegrip_static_only` | temporal GRU branch |
-| `safegrip_no_gate` | excitation-aware fusion (fixed 50/50 fusion instead) |
+| `safegrip_data_only` | sample-specific lower bound + monotone reliability (fixed reliability remains) |
+| `safegrip_static_only` | temporal prior/evidence branches |
+| `safegrip_no_gate` | monotone excitation reliability; uses fixed 0.5 evidence reliability |
 | `safegrip_no_bound` | sample-specific lower endpoint; global support remains |
 | `safegrip_no_uq` | residual-scale and conformal UQ |
 | `safegrip_no_calibration` | statistical relaxation of the mechanics lower endpoint |
-| `safegrip` | full v2 proposal |
+| `safegrip` | full v3 proposal |
 
-See `SAFEGRIP_V2_METHOD.md` and `ABLATION_AND_TUNING.md` for the exact formulation and calibration-role separation.
+See `SAFEGRIP_V3_METHOD.md` and `ABLATION_AND_TUNING.md` for the exact formulation, training losses and calibration-role separation.
 
 ## Fair validation tuning
 
@@ -163,13 +166,16 @@ The primary selection objective for both is **validation RMSE**. Each baseline m
 Tuned proposal parameters:
 
 - sequence length;
-- static/fusion hidden width;
+- prior/evidence hidden width;
 - GRU hidden width;
 - dropout;
 - learning rate;
 - weight decay;
 - batch size;
 - Huber transition (`huber_beta`);
+- short evidence-window length;
+- evidence-update scale;
+- relative-change/ranking loss weights;
 - excitation-dependent uncertainty inflation (`excitation_beta`).
 
 **Not tuned:** `mu_upper` and calibration coverage `alpha`. They are physical/safety assumptions, not validation-score knobs.
@@ -244,7 +250,7 @@ safegrip force-validate --dataset kit
 safegrip force-validate --dataset kuleuven
 ```
 
-`excitation` and `robustness` use the frozen paper predictions. `scarcity` retrains SafeGrip and the data-only TCN+UQ backbone over 10/25/50/75/100% training fractions. `cross-route` only runs when at least two explicit route IDs are available; it does not infer route names from GPS.
+`excitation` and `robustness` use the frozen paper predictions. `scarcity` retrains SafeGrip and the data-only prior/evidence backbone over 10/25/50/75/100% training fractions. `cross-route` only runs when at least two explicit route IDs are available; it does not infer route names from GPS.
 
 ## Quick/offline verification
 

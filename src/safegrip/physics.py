@@ -39,29 +39,45 @@ def vehicle_level_lower_bound(
 ):
     """Conditional conservative whole-vehicle lower grip bound.
 
-    The implementation uses
+    v0.7 uses a vector force balance instead of subtracting nominal road loads
+    from the *magnitude* of inertial acceleration.  For forward speed, the
+    nominal longitudinal tire-force demand is
 
-        ||sum F_tire|| >= max(0, m (||a_xy|| - eps_a) - F_external^max)
+        F_x,tire ~= m a_x + F_drag + F_rr,
+        F_y,tire ~= m a_y.
 
-    and the upper normal-load surrogate ``m g + vertical_force_margin``. Rolling
-    resistance, aerodynamic drag and an explicit external-force margin are
-    subtracted from the tangential demand. Therefore the returned value is a
-    *conditional* lower bound when the configured uncertainty margins dominate
-    omitted effects (grade, mass error, sensor bias, etc.).
+    If the horizontal acceleration-vector error is bounded by ``accel_error``
+    and the remaining unmodelled horizontal forces are bounded in norm by
+    ``external_force_margin``, reverse triangle inequality gives
+
+        ||F_tire|| >= max(0,
+            ||[m a_x + F_drag + F_rr, m a_y]||
+            - m*eps_a - eps_F).
+
+    Dividing by the conservative upper normal-load surrogate ``m g + eps_z``
+    yields a conditional lower bound on available friction.  The validity claim
+    remains conditional on a level-road/forward-motion approximation and on the
+    configured uncertainty margins dominating omitted effects such as grade,
+    mass error and sensor bias.  No arbitrary hard clipping is applied here so
+    unit/schema failures remain visible to the preprocessing audit.
     """
     ax = np.asarray(ax, float)
     ay = np.asarray(ay, float)
     speed = np.asarray(speed, float)
     mass = float(mass)
     g = float(g)
-    inertial = np.maximum(0.0, mass * (np.hypot(ax, ay) - abs(float(accel_error))))
-    drag = 0.5 * float(rho_air) * float(cdA) * np.square(np.nan_to_num(speed, nan=0.0))
-    ext = np.abs(drag) + abs(float(crr)) * mass * g + abs(float(external_force_margin))
-    tang = np.maximum(0.0, inertial - ext)
+    v = np.nan_to_num(speed, nan=0.0)
+    drag = 0.5 * float(rho_air) * float(cdA) * np.square(v)
+    rolling = abs(float(crr)) * mass * g
+    # Direction is relevant only for the nominal longitudinal road load.  LiRA
+    # uses positive forward speed; zero speed receives no signed road-load term.
+    direction = np.sign(v)
+    fx_nom = mass * np.nan_to_num(ax, nan=0.0) + direction * (drag + rolling)
+    fy_nom = mass * np.nan_to_num(ay, nan=0.0)
+    nominal_demand = np.hypot(fx_nom, fy_nom)
+    uncertainty = mass * abs(float(accel_error)) + abs(float(external_force_margin))
+    tang = np.maximum(0.0, nominal_demand - uncertainty)
     fz_up = mass * g + abs(float(vertical_force_margin))
-    # Do not hide a unit/schema problem with an arbitrary hard cap.  The caller
-    # must check compatibility with its assumed ``mu_upper`` before constructing
-    # an admissible interval.
     return np.maximum(0.0, tang / max(fz_up, 1e-6))
 
 

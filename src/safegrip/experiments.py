@@ -77,7 +77,8 @@ def _prediction_model_columns(pred: pd.DataFrame) -> list[str]:
         "endpoint_id", "y_true", "physics_lower", "physics_lower_raw",
     }
     suffixes = (
-        "_sigma", "_raw", "_latent", "_gate", "_excitation",
+        "_sigma", "_raw", "_latent", "_gate", "_reliability", "_excitation",
+        "_prior", "_evidence_delta", "_prior_latent",
         "_pi95_low_physics", "_pi95_high_physics", "_pi95_low_raw", "_pi95_high_raw",
     )
     return [c for c in pred.columns if c not in reserved and not c.endswith(suffixes) and "_latent_seed_" not in c]
@@ -154,7 +155,7 @@ def run_excitation_analysis(csv_path, results_dir, out_dir, cfg, bins: int = 4) 
     summary.to_csv(out / "excitation_metrics.csv", index=False)
     frame.to_csv(out / "excitation_samples.csv", index=False)
     (out / "excitation_protocol.json").write_text(json.dumps({
-        "score": "SafeGrip-v2 label-free composite excitation score (acceleration, relative wheel spread, torque and jerk)",
+        "score": "SafeGrip-v3 causal recent-excitation score built from the label-free composite (acceleration, relative wheel spread, torque and jerk)",
         "score_range": [0.0, 1.0],
         "physics_window_samples": int(cfg.get("physics", {}).get("window_samples", 1)),
         "bins": int(bins),
@@ -196,7 +197,7 @@ def run_robustness_analysis(csv_path, results_dir, out_dir, cfg) -> pd.DataFrame
     out = ensure_dir(out_dir)
     pred = pd.read_csv(Path(results_dir) / "predictions.csv")
     if "safegrip_latent" not in pred:
-        raise RuntimeError("Run the SafeGrip-v2 benchmark first; predictions.csv must contain safegrip_latent")
+        raise RuntimeError("Run the SafeGrip-v3 benchmark first; predictions.csv must contain safegrip_latent")
     base = _bundle_for_results(csv_path, results_dir, cfg)
     latent_cols=[c for c in pred.columns if c.startswith("safegrip_latent_seed_")]
     latents=[pred[c].to_numpy(float) for c in latent_cols] or [pred.safegrip_latent.to_numpy(float)]

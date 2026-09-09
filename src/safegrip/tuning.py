@@ -33,6 +33,10 @@ def suggest_safegrip(trial, cfg):
         "weight_decay":trial.suggest_float("weight_decay",*space.get("weight_decay",[1e-6,1e-3]),log=True),
         "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[128,256,512])),
         "huber_beta":trial.suggest_categorical("huber_beta",space.get("huber_beta",[0.03,0.05,0.10])),
+        "evidence_window":trial.suggest_categorical("evidence_window",space.get("evidence_window",[4,8,12])),
+        "delta_scale":trial.suggest_categorical("delta_scale",space.get("delta_scale",[1.0,2.0,3.0])),
+        "delta_loss_weight":trial.suggest_categorical("delta_loss_weight",space.get("delta_loss_weight",[0.05,0.15,0.35])),
+        "rank_loss_weight":trial.suggest_categorical("rank_loss_weight",space.get("rank_loss_weight",[0.0,0.03,0.05])),
         "excitation_beta":trial.suggest_categorical("excitation_beta",space.get("excitation_beta",[0.5,1.0,2.0])),
     }
     return hp
@@ -68,7 +72,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_v060_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_v070_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)

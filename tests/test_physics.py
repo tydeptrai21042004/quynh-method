@@ -49,3 +49,12 @@ def test_window_identified_lower_matches_trailing_maximum():
     from safegrip.physics import window_identified_lower
     x=window_identified_lower([.1,.3,.2,.5,.4],3)
     assert np.allclose(x,[.1,.3,.3,.5,.5])
+
+
+def test_vehicle_bound_uses_vector_force_balance():
+    from safegrip.physics import vehicle_level_lower_bound
+    # At forward speed, overcoming nominal drag/rolling resistance requires tire
+    # force even when measured longitudinal acceleration is modest.
+    low_speed=vehicle_level_lower_bound([0.5],[0.0],[0.0],external_force_margin=0.0,accel_error=0.0)[0]
+    high_speed=vehicle_level_lower_bound([0.5],[0.0],[30.0],external_force_margin=0.0,accel_error=0.0)[0]
+    assert high_speed>low_speed

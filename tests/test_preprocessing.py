@@ -74,3 +74,11 @@ def test_segment_builder_breaks_reference_trace_and_large_time_gaps():
     z=add_lira_trajectory_segments(df,{"lira":{"segment_gap_s":1.0}})
     assert z.trajectory_id.nunique()==2
     assert z.segment_id.nunique()==3
+
+
+def test_relative_pair_indices_never_cross_segment():
+    from safegrip.benchmark import _previous_pair_indices
+    ids=np.asarray(["segA:train:0","segA:train:1","segB:train:2","segB:train:3"],dtype=str)
+    prev,valid=_previous_pair_indices(ids,1)
+    assert valid.tolist()==[False,True,False,True]
+    assert prev.tolist()==[0,0,2,2]

@@ -27,6 +27,32 @@ def _safe_group_derivative(df: pd.DataFrame, value: str) -> pd.Series:
     return out
 
 
+
+def _causal_peak_memory(df: pd.DataFrame, values: np.ndarray, half_life_samples: float = 8.0) -> np.ndarray:
+    """Boundary-safe causal peak memory for recent excitation.
+
+    The score remembers a recent informative maneuver but decays back toward
+    the instantaneous level.  It never looks forward and resets at every
+    segment/split boundary.
+    """
+    vals=np.clip(np.asarray(values,float),0.0,1.0)
+    out=np.zeros(len(df),dtype=float)
+    half=max(float(half_life_samples),1e-3)
+    decay=float(0.5 ** (1.0/half))
+    work=df.copy()
+    work["__sg_position__"]=np.arange(len(work),dtype=int)
+    group_cols=[c for c in ("segment_id","split") if c in work]
+    if not group_cols:
+        group_cols=[c for c in ("trip_id","split") if c in work]
+    groups=work.groupby(group_cols,sort=False,dropna=False) if group_cols else [("all",work)]
+    for _,g in groups:
+        g=g.sort_values("time",kind="stable") if "time" in g and g["time"].notna().any() else g.sort_values("__sg_position__",kind="stable")
+        state=0.0
+        for pos in g["__sg_position__"].to_numpy(int):
+            state=max(float(vals[pos]), decay*state)
+            out[pos]=state
+    return out
+
 def add_safegrip_features(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Add label-free, boundary-safe dynamics features for the SafeGrip proposal only.
 
@@ -99,8 +125,15 @@ def add_safegrip_features(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     if not np.isfinite(weights).all() or weights.sum() <= 0:
         weights = np.asarray([0.45, 0.25, 0.15, 0.15], dtype=float)
     weights = weights / weights.sum()
-    score = weights[0] * acc_term + weights[1] * wheel_term + weights[2] * torque_term + weights[3] * jerk_term
-    z["sg_excitation_score"] = np.clip(score, 0.0, 1.0)
+    score = np.clip(weights[0] * acc_term + weights[1] * wheel_term + weights[2] * torque_term + weights[3] * jerk_term, 0.0, 1.0)
+    z["sg_excitation_instant"] = score
+    # The proposal should react to a maneuver that occurred shortly before the
+    # endpoint, not only to the final sample.  A causal peak memory keeps the
+    # score label-free and segment-safe while making observability persistent
+    # over the evidence window.
+    z["sg_excitation_score"] = _causal_peak_memory(
+        z, score, half_life_samples=float(fcfg.get("excitation_half_life_samples", 8.0))
+    )
 
     engineered = [c for c in z.columns if c.startswith(ENGINEERED_PREFIX)]
     z[engineered] = z[engineered].replace([np.inf, -np.inf], np.nan).fillna(0.0)

@@ -1,3 +1,17 @@
+# Implemented improvements
+
+## v0.7.0 proposal redesign
+
+- long-context friction prior separated from short-context dynamic evidence;
+- monotone excitation reliability with positive slope by construction;
+- excitation score preserved in physical `[0,1]` scale;
+- causal recent-excitation memory with segment/split reset;
+- relative-change, ranking and weak-excitation smoothness regularization;
+- conditional vector force-balance lower bound;
+- residual-scale initialization from validation residual magnitude;
+- auditable prior/evidence/reliability prediction outputs;
+- expanded unit tests for v3 invariants.
+
 # Implemented correction summary
 
 This version keeps the existing SafeGrip proposal and literature baseline set, but strengthens the parts most likely to be challenged in review.
@@ -34,7 +48,7 @@ This version keeps the existing SafeGrip proposal and literature baseline set, b
 - Main predictions now export SafeGrip raw mean, projected mean, sigma and physics-truncated interval endpoints.
 - Added excitation-stratified analysis.
 - Added frozen-network physics-layer robustness analysis for mass, acceleration-error and `mu_upper` assumptions.
-- Added training-data scarcity experiments comparing SafeGrip with its data-only TCN+UQ backbone.
+- Added training-data scarcity experiments comparing SafeGrip with its data-only prior/evidence backbone.
 - Added explicit leave-one-route-out evaluation when route IDs are available.
 - Added KIT/KU Leuven force-mechanics validation command.
 
