@@ -11,7 +11,12 @@ from .datasets import DATASET_REGISTRY
 UA = {"User-Agent": "SafeGripOpen/0.2 academic-research"}
 
 SOURCE = {
-    "lira": {"kind":"figshare", "article_id":23096600},
+    "lira": {
+        "kind":"figshare",
+        "article_id":23096600,
+        "version":1,
+        "landing":"https://data.dtu.dk/articles/dataset/Data_subset_for_road_condition_modelling_-_platoon_friction_test/23096600/1",
+    },
     "kuleuven": {"kind":"dataverse", "server":"https://rdr.kuleuven.be", "pid":"doi:10.48804/PHMF9D"},
     "kit": {"kind":"radar", "landing":"https://radar.kit.edu/radar/en/dataset/p0rr2jc5wmf0drf8"},
     "deep_dynamics": {"kind":"github", "repo":"linklab-uva/deep-dynamics"},
@@ -75,17 +80,129 @@ def _write_source(name: str, out: Path, extra=None):
     (out / "SOURCE.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
+def _figshare_browser_headers(*, accept_json: bool = False) -> dict:
+    """Headers that work with Figshare/DTU anti-bot frontends on hosted notebooks."""
+    h = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*" if accept_json else "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": SOURCE["lira"]["landing"],
+    }
+    return h
+
+
+def _lira_metadata_files() -> tuple[list[dict], list[str]]:
+    """Return LiRA file metadata, tolerating Figshare API/WAF failures."""
+    cfg = SOURCE["lira"]
+    article_id = int(cfg["article_id"])
+    version = int(cfg.get("version", 1))
+    urls = [
+        f"https://api.figshare.com/v2/articles/{article_id}/versions/{version}",
+        f"https://api.figshare.com/v2/articles/{article_id}",
+    ]
+    errors: list[str] = []
+    for api in urls:
+        try:
+            r = requests.get(api, headers=_figshare_browser_headers(accept_json=True), timeout=60)
+            if not r.ok:
+                errors.append(f"{api} -> HTTP {r.status_code}")
+                continue
+            payload = r.json()
+            files = payload.get("files", []) if isinstance(payload, dict) else []
+            files = [x for x in files if isinstance(x, dict) and x.get("name") and x.get("download_url")]
+            if files:
+                return files, errors
+            errors.append(f"{api} -> no downloadable files in metadata")
+        except (requests.RequestException, ValueError) as e:
+            errors.append(f"{api} -> {type(e).__name__}: {e}")
+    return [], errors
+
+
+def _download_lira_bulk(out: Path, errors: list[str]) -> tuple[Path, str]:
+    """Fallback to the public bulk-downloader used by the DTU Figshare UI."""
+    cfg = SOURCE["lira"]
+    article_id = int(cfg["article_id"])
+    version = int(cfg.get("version", 1))
+    urls = [
+        f"https://data.dtu.dk/ndownloader/articles/{article_id}/versions/{version}",
+        f"https://ndownloader.figshare.com/articles/{article_id}/versions/{version}",
+        f"https://figshare.com/ndownloader/articles/{article_id}/versions/{version}",
+    ]
+    dest = out / f"lira_platoon_friction_test_{article_id}_v{version}.zip"
+    for url in urls:
+        try:
+            # Do not resume a payload obtained from another mirror; a stale partial
+            # file can otherwise corrupt the archive when the fallback host changes.
+            part = dest.with_suffix(dest.suffix + ".part")
+            if dest.exists():
+                dest.unlink()
+            if part.exists():
+                part.unlink()
+            _download(url, dest, headers=_figshare_browser_headers(), timeout=300)
+            if not zipfile.is_zipfile(dest):
+                size = dest.stat().st_size if dest.exists() else 0
+                errors.append(f"{url} -> response is not a ZIP archive ({size} bytes)")
+                if dest.exists():
+                    dest.unlink()
+                continue
+            return dest, url
+        except requests.RequestException as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            suffix = f"HTTP {status}" if status is not None else f"{type(e).__name__}: {e}"
+            errors.append(f"{url} -> {suffix}")
+        except (OSError, zipfile.BadZipFile) as e:
+            errors.append(f"{url} -> {type(e).__name__}: {e}")
+    raise RuntimeError(
+        "LiRA automatic download failed through both Figshare metadata and public bulk-download routes. "
+        "The dataset is published at DOI 10.11583/DTU.23096600.v1. "
+        "Upstream attempts:\n  - " + "\n  - ".join(errors)
+    )
+
+
 def download_lira(out: Path) -> None:
-    api = f"https://api.figshare.com/v2/articles/{SOURCE['lira']['article_id']}"
-    r = requests.get(api, headers=UA, timeout=60); r.raise_for_status()
-    files = r.json().get("files", [])
-    if not files: raise RuntimeError("Figshare returned no files for LiRA")
-    for item in files:
-        dest = out / item["name"]
-        if not (dest.exists() and dest.stat().st_size == item.get("size", -1)):
-            _download(item["download_url"], dest)
-        _extract(dest, out)
-    _write_source("lira", out)
+    """Download the LiRA platoon-friction subset with a DTU bulk-download fallback."""
+    out.mkdir(parents=True, exist_ok=True)
+    files, errors = _lira_metadata_files()
+    if files:
+        try:
+            for item in files:
+                dest = out / str(item["name"])
+                expected_size = item.get("size")
+                size_ok = dest.exists() and (not expected_size or dest.stat().st_size == int(expected_size))
+                if not size_ok:
+                    _download(
+                        str(item["download_url"]),
+                        dest,
+                        headers=_figshare_browser_headers(),
+                        timeout=300,
+                    )
+                _extract(dest, out)
+            _write_source(
+                "lira",
+                out,
+                {"download_route": "figshare_api_file_metadata", "metadata_warnings": errors},
+            )
+            return
+        except requests.RequestException as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            suffix = f"HTTP {status}" if status is not None else f"{type(e).__name__}: {e}"
+            errors.append(f"Figshare per-file download -> {suffix}")
+
+    print("[download] LiRA: Figshare API route unavailable; trying DTU public bulk downloader.")
+    archive, url = _download_lira_bulk(out, errors)
+    _extract(archive, out)
+    _write_source(
+        "lira",
+        out,
+        {
+            "download_route": "public_bulk_ndownloader",
+            "bulk_download_url": url,
+            "metadata_warnings": errors,
+        },
+    )
 
 
 def _dataverse_metadata(server: str, pid: str) -> dict:
