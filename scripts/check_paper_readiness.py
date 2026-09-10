@@ -52,7 +52,7 @@ else:
 if (ABL / "ablation_metrics_by_seed.csv").exists():
     a = pd.read_csv(ABL / "ablation_metrics_by_seed.csv")
     counts = a.groupby("model")["seed"].nunique().to_dict() if "seed" in a else {}
-    expected_abl = {"safegrip_data_only", "safegrip_static_only", "safegrip_no_gate", "safegrip_no_bound", "safegrip_no_uq", "safegrip_no_calibration", "safegrip"}
+    expected_abl = {"safegrip_backbone_raw", "safegrip_persistent", "safegrip_neural_innovation", "safegrip_no_identifiability", "safegrip_excitation_proxy", "safegrip_no_acceptance", "safegrip_no_innovation_supervision", "safegrip_no_bound", "safegrip_no_uq", "safegrip"}
     checks["all_ablation_variants_present"] = expected_abl.issubset(set(a["model"].astype(str)))
     checks["five_seeds_each_ablation"] = all(int(counts.get(name, 0)) >= 5 for name in expected_abl)
 else:

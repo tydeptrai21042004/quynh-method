@@ -23,9 +23,8 @@ def require_optuna():
 
 def suggest_safegrip(trial, cfg):
     space=cfg.get("tuning",{}).get("space",{})
-    seq_choices=space.get("sequence_length",[8,16,24,32,64])
-    hp={
-        "sequence_length":trial.suggest_categorical("sequence_length",seq_choices),
+    return {
+        "sequence_length":trial.suggest_categorical("sequence_length",space.get("sequence_length",[8,16,24,32,64])),
         "hidden":trial.suggest_categorical("hidden",space.get("hidden",[32,64,96])),
         "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[16,32,64])),
         "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
@@ -34,13 +33,16 @@ def suggest_safegrip(trial, cfg):
         "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[128,256,512])),
         "huber_beta":trial.suggest_categorical("huber_beta",space.get("huber_beta",[0.03,0.05,0.10])),
         "evidence_window":trial.suggest_categorical("evidence_window",space.get("evidence_window",[4,8,12])),
-        "delta_scale":trial.suggest_categorical("delta_scale",space.get("delta_scale",[1.0,2.0,3.0])),
-        "delta_loss_weight":trial.suggest_categorical("delta_loss_weight",space.get("delta_loss_weight",[0.05,0.15,0.35])),
-        "rank_loss_weight":trial.suggest_categorical("rank_loss_weight",space.get("rank_loss_weight",[0.0,0.03,0.05])),
-        "excitation_beta":trial.suggest_categorical("excitation_beta",space.get("excitation_beta",[0.5,1.0,2.0])),
+        "delta_scale":trial.suggest_categorical("delta_scale",space.get("delta_scale",[0.5,1.0,1.5])),
+        "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.04,0.08,0.12])),
+        "identifiability_lambda":trial.suggest_categorical("identifiability_lambda",space.get("identifiability_lambda",[0.05,0.2,0.5])),
+        "acceptance_temperature":trial.suggest_categorical("acceptance_temperature",space.get("acceptance_temperature",[6.0,12.0,20.0])),
+        "innovation_loss_weight":trial.suggest_categorical("innovation_loss_weight",space.get("innovation_loss_weight",[0.15,0.35,0.6])),
+        "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
+        "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.02,0.05,0.10])),
+        "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.05,0.10,0.20])),
+        "information_beta":trial.suggest_categorical("information_beta",space.get("information_beta",[0.5,1.0,2.0])),
     }
-    return hp
-
 
 def _gaussian_nll(y,p,s):
     s=np.maximum(np.asarray(s),1e-5)
@@ -55,14 +57,14 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
     start=tuning_eval_start(cfg,include_baselines=True); cache={}
 
     def bundle(seq):
-        if seq not in cache: cache[seq]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,proposal_features=True)
+        if seq not in cache: cache[seq]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,feature_mode="raw")
         return cache[seq]
 
     def objective(trial):
         hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"])
         seed_everything(int(cfg["seed"])+trial.number)
         model,_=fit_proposal("safegrip_no_uq",b,cfg,epochs,hp)
-        d=predict_proposal_details(model,"safegrip_no_uq",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev)
+        d=predict_proposal_details(model,"safegrip_no_uq",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev,ids=b.idv)
         p=d["prediction"]
         rmse=float(np.sqrt(np.mean((b.yv-p)**2)))
         lower_violation=float(np.mean(b.lov>b.yv))
@@ -72,7 +74,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_v070_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v080_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)
@@ -94,7 +96,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
              "fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"]}}
     if evaluate_test:
         b=bundle(int(best["sequence_length"])); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
-        d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et)
+        d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et,ids=b.idt)
         p,s,bound=d["prediction"],d["sigma"],d["bound"]
         summary["final_test_metrics"]=regression_metrics(
             b.yt,p,bound,cfg["mu_upper"],s,raw_mean=d["raw_mean"],
@@ -225,17 +227,17 @@ def tune_ablation_variants(csv_path, out_dir, cfg, variants=None, trials=15, epo
     summaries={}; best_all={}
     for vi,variant in enumerate(variants):
         vo=ensure_dir(out/variant); cache={}
-        raw=_proposal_flags(variant)["raw_features_only"]
+        mode=_proposal_flags(variant)["feature_mode"]
         def bundle(seq):
             key=int(seq)
             if key not in cache:
-                cache[key]=make_bundle(csv_path,cfg,sequence_length=key,scaler_kind="standard",eval_start=start,proposal_features=not raw)
+                cache[key]=make_bundle(csv_path,cfg,sequence_length=key,scaler_kind="standard",eval_start=start,feature_mode=mode)
             return cache[key]
         def objective(trial):
             hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"])
             seed_everything(int(cfg["seed"])+100000*vi+trial.number)
             model,_=fit_proposal(variant,b,cfg,epochs,hp)
-            d=predict_proposal_details(model,variant,b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev)
+            d=predict_proposal_details(model,variant,b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev,ids=b.idv)
             return float(np.sqrt(np.mean((b.yv-d["prediction"])**2)))
         study=optuna.create_study(direction="minimize",study_name=f"{variant}_retuned_rmse",
             storage=f"sqlite:///{vo/'optuna.sqlite3'}",load_if_exists=True,

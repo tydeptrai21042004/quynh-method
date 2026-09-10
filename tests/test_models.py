@@ -67,7 +67,7 @@ def test_every_paper_baseline_has_real_citation():
         assert LITERATURE_BASELINES[name]["runnable"] is True
 
 
-def test_safegrip_v3_reliability_is_monotone_in_excitation():
+def test_safegrip_ci_legacy_excitation_proxy_is_monotone_only_for_proxy_ablation():
     from safegrip.models import SafeGripV3Net
     model=SafeGripV3Net(6,excitation_index=1,hidden=16,gru_hidden=8,dropout=0.0,
                         gate_init_slope=5.0,gate_init_threshold=0.3)
@@ -77,18 +77,47 @@ def test_safegrip_v3_reliability_is_monotone_in_excitation():
     assert float(r[-1].detach())>float(r[0].detach())
 
 
-def test_safegrip_v3_reports_prior_and_dynamic_evidence():
+def test_safegrip_ci_reports_counterfactual_components_and_respects_bound():
     from safegrip.models import SafeGripV3Net
     x=torch.randn(4,16,7)
     lo=torch.tensor([0.1,0.2,0.3,0.4])
-    e=torch.tensor([0.0,0.25,0.5,1.0])
-    model=SafeGripV3Net(7,excitation_index=2,hidden=16,gru_hidden=8,dropout=0.0)
-    d=model.forward_details(x,lo,1.3,excitation=e)
-    assert set(("prediction","prior_prediction","evidence_delta","reliability","latent")) <= set(d)
+    model=SafeGripV3Net(7,hidden=16,gru_hidden=8,dropout=0.0,dynamics_indices=[0,1,2])
+    d=model.forward_details(x,lo,1.3)
+    required={"prediction","prior_prediction","candidate_prediction","innovation","authority",
+              "identifiability","acceptance","information_raw","latent"}
+    assert required <= set(d)
     assert d["prediction"].shape==(4,)
     assert torch.all(d["prediction"]>=lo-1e-7)
     assert torch.all(d["prediction"]<=1.3+1e-7)
-    assert torch.all(d["reliability"][1:]>=d["reliability"][:-1]-1e-8)
+    assert torch.all((d["authority"]>=0)&(d["authority"]<=1))
+    assert torch.all((d["identifiability"]>=0)&(d["identifiability"]<=1))
+    assert torch.all((d["acceptance"]>=0)&(d["acceptance"]<=1))
+
+
+def test_safegrip_ci_zero_dynamics_sensitivity_blocks_update():
+    from safegrip.models import SafeGripV3Net
+    torch.manual_seed(0)
+    model=SafeGripV3Net(5,hidden=16,gru_hidden=8,dropout=0.0,dynamics_indices=[0,1])
+    for p in model.dynamics_head.parameters():
+        torch.nn.init.zeros_(p)
+    x=torch.randn(3,12,5); lo=torch.tensor([0.1,0.1,0.1])
+    d=model.forward_details(x,lo,1.3)
+    assert torch.allclose(d["information_raw"],torch.zeros_like(d["information_raw"]),atol=1e-8)
+    assert torch.allclose(d["identifiability"],torch.zeros_like(d["identifiability"]),atol=1e-8)
+    assert torch.allclose(d["authority"],torch.zeros_like(d["authority"]),atol=1e-8)
+    assert torch.allclose(d["prediction"],d["prior_prediction"],atol=1e-7)
+
+
+def test_safegrip_ci_persistent_prior_is_used_when_supplied():
+    from safegrip.models import SafeGripV3Net
+    model=SafeGripV3Net(5,hidden=16,gru_hidden=8,dropout=0.0,use_innovation=False)
+    x=torch.randn(2,10,5); lo=torch.tensor([0.1,0.2]); prior=torch.tensor([0.55,0.75])
+    mask=torch.tensor([True,True])
+    d_state=model.forward_details(x,lo,1.3,prior_mu=prior,prior_mask=mask)
+    d_ctx=model.forward_details(x,lo,1.3)
+    expected=model.state_persistence*prior+(1.0-model.state_persistence)*d_ctx["context_prior_prediction"]
+    assert torch.allclose(d_state["prior_prediction"],expected,atol=2e-5)
+    assert torch.all(d_state["persistent_state_used"]==1)
 
 
 def test_residual_scale_can_initialize_near_error_scale():
@@ -102,13 +131,11 @@ def test_residual_scale_can_initialize_near_error_scale():
 def test_static_ablation_is_endpoint_only():
     from safegrip.models import SafeGripV3Net
     torch.manual_seed(0)
-    model=SafeGripV3Net(4,excitation_index=None,hidden=16,gru_hidden=8,dropout=0.0,use_temporal=False,use_gate=False)
+    model=SafeGripV3Net(4,excitation_index=None,hidden=16,gru_hidden=8,dropout=0.0,
+                        use_temporal=False,use_gate=False,use_innovation=False)
     model.eval()
-    x1=torch.randn(2,8,4)
-    x2=x1.clone()
-    x2[:,:-1,:]=torch.randn_like(x2[:,:-1,:])*100.0
+    x1=torch.randn(2,8,4); x2=x1.clone(); x2[:,:-1,:]=torch.randn_like(x2[:,:-1,:])*100.0
     lo=torch.tensor([0.1,0.2])
     with torch.no_grad():
-        p1,_,_=model(x1,lo,1.3)
-        p2,_,_=model(x2,lo,1.3)
+        p1,_,_=model(x1,lo,1.3); p2,_,_=model(x2,lo,1.3)
     assert torch.allclose(p1,p2,atol=1e-7)

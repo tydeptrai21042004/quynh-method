@@ -151,133 +151,161 @@ def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
     raise ValueError(name)
 
 
-class SafeGripV3Net(nn.Module):
-    """SafeGrip-v3: prior + excitation-controlled dynamic evidence update.
+class SafeGripCINet(nn.Module):
+    """SafeGrip-CI: counterfactual-identifiability friction state estimator.
 
-    The proposal intentionally separates two roles that were conflated in v2:
+    The proposal has one central principle: a learned friction innovation is
+    allowed to update the persistent friction state only when the current
+    vehicle response can *counterfactually distinguish* nearby friction
+    hypotheses and when the candidate state explains the observed dynamics
+    better than the prior state.
 
-    * a *slow prior* estimates the persistent friction level from the complete
-      context window; and
-    * a *short evidence branch* predicts a bounded correction supported by the
-      most recent dynamics.
+    For prior friction ``mu_prior`` and candidate innovation ``nu``:
 
-    Dynamic evidence is admitted through a monotone reliability function
+        q_cand = q_prior + nu
+        I      = local sensitivity of G(context, mu) to mu
+        A      = sigmoid(gamma * (R_prior - R_cand - margin))
+        K      = A * I / (I + lambda)
+        q      = q_prior + K * nu
+        mu     = L + (U-L) * sigmoid(q)
 
-        r(E) = sigmoid(softplus(a) * (E - sigmoid(tau)))
+    ``G`` is a friction-conditioned dynamics model trained jointly with the
+    estimator.  It predicts a selected subset of standardized vehicle-dynamic
+    channels at the current endpoint from the causal prefix of the window and a
+    friction hypothesis.  ``I`` is therefore a local counterfactual
+    identifiability certificate rather than a hand-crafted excitation proxy.
 
-    so increasing the label-free excitation score can never reduce the amount
-    of dynamic evidence used.  The update is performed in identified-set logit
-    coordinates:
-
-        q = q_prior + r(E) * delta
-        mu = lower + (upper - lower) * sigmoid(q)
-
-    which preserves ``lower <= mu <= upper`` by construction.  ``use_gate=False``
-    is the controlled fixed-reliability ablation and ``use_temporal=False``
-    removes the dynamic-evidence branch entirely.
+    A previous predicted friction can be passed through ``prior_mu``.  This is
+    how benchmark inference maintains a real persistent state inside a segment.
+    At a segment boundary the estimator falls back to its learned context prior.
     """
 
-    def __init__(self, d: int, excitation_index: int | None, hidden: int = 64,
-                 gru_hidden: int = 32, dropout: float = 0.1,
-                 evidence_window: int = 8, delta_scale: float = 2.0,
-                 gate_init_slope: float = 6.0, gate_init_threshold: float = 0.25,
+    def __init__(self, d: int, excitation_index: int | None = None,
+                 dynamics_indices: list[int] | tuple[int, ...] | None = None,
+                 hidden: int = 64, gru_hidden: int = 32, dropout: float = 0.1,
+                 evidence_window: int = 8, delta_scale: float = 1.5,
+                 counterfactual_delta: float = 0.08,
+                 identifiability_lambda: float = 0.20,
+                 acceptance_temperature: float = 12.0,
+                 acceptance_margin: float = 0.0,
+                 gate_init_slope: float | None = None, gate_init_threshold: float | None = None,
                  use_temporal: bool = True, use_gate: bool = True,
-                 use_bound: bool = True, endpoint_only: bool = False):
+                 use_bound: bool = True, endpoint_only: bool = False,
+                 use_identifiability: bool = True,
+                 use_acceptance: bool = True,
+                 use_persistent_state: bool = True,
+                 use_excitation_proxy: bool = False,
+                 use_innovation: bool = True, state_persistence: float = 0.85):
         super().__init__()
         self.d = int(d)
         self.excitation_index = excitation_index
         self.hidden = int(hidden)
         self.use_temporal = bool(use_temporal)
-        self.use_gate = bool(use_gate) and self.use_temporal
         self.use_bound = bool(use_bound)
         self.endpoint_only = bool(endpoint_only)
+        self.use_identifiability = bool(use_identifiability) and self.use_temporal
+        self.use_acceptance = bool(use_acceptance) and self.use_temporal
+        self.use_persistent_state = bool(use_persistent_state)
+        self.use_excitation_proxy = bool(use_excitation_proxy)
+        self.use_innovation = bool(use_innovation) and self.use_temporal
+        self.state_persistence = min(max(float(state_persistence),0.0),1.0)
+        # ``use_gate`` is kept for API compatibility; in CI it means use the
+        # counterfactual authority mechanism rather than an unconditional update.
+        self.use_gate = bool(use_gate)
         self.evidence_window = max(2, int(evidence_window))
         self.delta_scale = max(1e-4, float(delta_scale))
+        self.counterfactual_delta = max(1e-4, float(counterfactual_delta))
+        self.identifiability_lambda = max(1e-6, float(identifiability_lambda))
+        self.acceptance_temperature = max(1e-3, float(acceptance_temperature))
+        self.acceptance_margin = float(acceptance_margin)
 
-        # Persistent/slow prior: summary statistics plus a full-window GRU.
-        self.prior_static = nn.Sequential(
-            nn.Linear((3 * d) if self.use_temporal else d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
-            nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
-        )
+        if dynamics_indices is None:
+            dynamics_indices = list(range(min(4, self.d)))
+        dynamics_indices = [int(i) for i in dynamics_indices if 0 <= int(i) < self.d]
+        if not dynamics_indices:
+            dynamics_indices = [0]
+        self.dynamics_indices = tuple(dict.fromkeys(dynamics_indices))
+        dyn_out = len(self.dynamics_indices)
+
+        # Context prior.  It is used only when a segment has no persistent state.
         if self.use_temporal:
-            self.prior_gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
-            self.prior_temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
-            self.prior_fuse = nn.Sequential(
-                nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden)
-            )
-        else:
-            self.prior_gru = None
-            self.prior_temporal_proj = None
-            self.prior_fuse = None
-
-        inner = max(16, hidden // 2)
-        self.prior_head = nn.Sequential(
-            nn.Linear(hidden, inner), nn.SiLU(), nn.Dropout(dropout), nn.Linear(inner, 1)
-        )
-
-        # Short-window branch predicts *evidence/correction*, not absolute mu.
-        if self.use_temporal:
-            self.evidence_static = nn.Sequential(
+            self.prior_static = nn.Sequential(
                 nn.Linear(3 * d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
                 nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
             )
-            self.evidence_gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
-            self.evidence_temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
-            self.evidence_fuse = nn.Sequential(
-                nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden)
-            )
-            self.evidence_head = nn.Sequential(
-                nn.Linear(hidden, inner), nn.SiLU(), nn.Dropout(dropout), nn.Linear(inner, 1)
-            )
+            self.prior_gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
+            self.prior_temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
+            self.prior_fuse = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden))
         else:
-            self.evidence_static = None
-            self.evidence_gru = None
-            self.evidence_temporal_proj = None
-            self.evidence_fuse = None
-            self.evidence_head = None
+            self.prior_static = nn.Sequential(
+                nn.Linear(d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+                nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
+            )
+            self.prior_gru = None
+            self.prior_temporal_proj = None
+            self.prior_fuse = None
+        inner = max(16, hidden // 2)
+        self.prior_head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
 
-        # Monotone reliability parameters.  softplus(slope_raw)>0 guarantees
-        # dr/dE >= 0 for every parameter value during training.
-        init_slope = max(float(gate_init_slope), 1e-3)
-        init_thr = min(max(float(gate_init_threshold), 1e-4), 1.0 - 1e-4)
-        inv_sp = math.log(math.expm1(init_slope)) if init_slope < 20 else init_slope
-        self.reliability_slope_raw = nn.Parameter(torch.tensor(inv_sp, dtype=torch.float32))
-        self.reliability_threshold_raw = nn.Parameter(
-            torch.tensor(math.log(init_thr / (1.0 - init_thr)), dtype=torch.float32)
+        # Candidate innovation branch.  It never receives a hand-crafted
+        # excitation score in the full proposal; it learns direction from raw
+        # dynamics and is supervised directly in latent friction coordinates.
+        if self.use_temporal:
+            self.innovation_static = nn.Sequential(
+                nn.Linear(3 * d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+                nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
+            )
+            self.innovation_gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
+            self.innovation_temporal_proj = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
+            self.innovation_fuse = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden))
+            self.innovation_head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
+        else:
+            self.innovation_static = None
+            self.innovation_gru = None
+            self.innovation_temporal_proj = None
+            self.innovation_fuse = None
+            self.innovation_head = None
+
+        # Friction-conditioned counterfactual dynamics model G(context, mu).
+        # Only the causal prefix x[:,:-1] is encoded, preventing trivial copying
+        # of the endpoint response used in the residual check.
+        self.dynamics_gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
+        self.dynamics_context = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden))
+        self.dynamics_head = nn.Sequential(
+            nn.Linear(hidden + 1, hidden), nn.SiLU(), nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2 if hidden >= 16 else hidden), nn.SiLU(),
+            nn.Linear(hidden // 2 if hidden >= 16 else hidden, dyn_out),
         )
 
-        # Fixed-reliability ablations use this value rather than a learned gate.
-        self.fixed_reliability = 0.5
-
-        # UQ representation intentionally contains both slow and fast evidence.
-        self.uq_fuse = nn.Sequential(
-            nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden)
-        )
+        # Native UQ representation combines state, innovation and dynamics context.
+        self.uq_fuse = nn.Sequential(nn.Linear(3 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden))
         self.scale_head: ResidualScaleHead | None = None
         self.conformal_q: float | None = None
         self.conformal_block_size: int | None = None
-        self.excitation_beta: float = 1.0
+        self.information_beta: float = 1.0
+
+        # Legacy monotone excitation proxy kept only for an explicit ablation.
+        proxy_slope = 4.0 if gate_init_slope is None else max(float(gate_init_slope), 1e-3)
+        proxy_thr = 0.5 if gate_init_threshold is None else min(max(float(gate_init_threshold), 1e-4), 1.0-1e-4)
+        inv_sp = math.log(math.expm1(proxy_slope)) if proxy_slope < 20 else proxy_slope
+        self.proxy_slope_raw = nn.Parameter(torch.tensor(inv_sp, dtype=torch.float32))
+        self.proxy_threshold_raw = nn.Parameter(torch.tensor(math.log(proxy_thr/(1.0-proxy_thr)), dtype=torch.float32))
+
+    @staticmethod
+    def _logit(p: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+        p = torch.clamp(p, eps, 1.0 - eps)
+        return torch.log(p) - torch.log1p(-p)
 
     def _stats(self, x: torch.Tensor) -> torch.Tensor:
-        # Endpoint-only is a genuine static ablation: no window mean/std are
-        # available to the estimator. Temporal engineered channels are also
-        # removed by the matching feature bundle in benchmark.py.
-        if self.endpoint_only:
+        if self.endpoint_only or not self.use_temporal:
             return x[:, -1, :]
-        return torch.cat([
-            x[:, -1, :],
-            x.mean(dim=1),
-            x.std(dim=1, unbiased=False),
-        ], dim=-1)
+        return torch.cat([x[:, -1, :], x.mean(dim=1), x.std(dim=1, unbiased=False)], dim=-1)
 
     def reliability(self, excitation: torch.Tensor) -> torch.Tensor:
+        """Legacy monotone proxy used only by ``safegrip_excitation_proxy``."""
         e = torch.clamp(excitation.reshape(-1), 0.0, 1.0)
-        if not self.use_temporal:
-            return torch.zeros_like(e)
-        if not self.use_gate:
-            return torch.full_like(e, float(self.fixed_reliability))
-        slope = nn.functional.softplus(self.reliability_slope_raw) + 1e-4
-        threshold = torch.sigmoid(self.reliability_threshold_raw)
+        slope = nn.functional.softplus(self.proxy_slope_raw) + 1e-4
+        threshold = torch.sigmoid(self.proxy_threshold_raw)
         return torch.sigmoid(slope * (e - threshold))
 
     def _excitation_from_input(self, x: torch.Tensor, excitation: torch.Tensor | None) -> torch.Tensor:
@@ -285,88 +313,193 @@ class SafeGripV3Net(nn.Module):
             return torch.clamp(excitation.reshape(-1).to(dtype=x.dtype, device=x.device), 0.0, 1.0)
         if self.excitation_index is None:
             return torch.zeros(x.shape[0], dtype=x.dtype, device=x.device)
-        # make_bundle preserves sg_excitation_score unscaled, so this fallback
-        # remains physically interpretable in [0, 1].
         return torch.clamp(x[:, -1, self.excitation_index], 0.0, 1.0)
 
-    def encode(self, x: torch.Tensor, excitation: torch.Tensor | None = None):
-        # The non-temporal ablation is genuinely endpoint-only: it cannot use
-        # window means/stds and therefore contains no hidden temporal summary.
-        prior_input = self._stats(x) if self.use_temporal else x[:, -1, :]
-        prior_static = self.prior_static(prior_input)
-        if self.use_temporal:
-            y_long, _ = self.prior_gru(x)
-            prior_temporal = self.prior_temporal_proj(y_long[:, -1])
-            prior_h = self.prior_fuse(torch.cat([prior_static, prior_temporal], dim=-1))
+    def _support_to_latent(self, mu: torch.Tensor, lower: torch.Tensor | None,
+                           upper: float | torch.Tensor) -> torch.Tensor:
+        upper_t = torch.as_tensor(upper, dtype=mu.dtype, device=mu.device)
+        if self.use_bound:
+            if lower is None:
+                raise ValueError("SafeGripCINet requires lower when use_bound=True")
+            span = torch.clamp(upper_t - lower, min=1e-6)
+            frac = (torch.clamp(mu, min=0.0) - lower) / span
         else:
-            prior_h = prior_static
+            frac = torch.clamp(mu, min=0.0) / torch.clamp(upper_t, min=1e-6)
+        return self._logit(frac)
 
-        q_prior = self.prior_head(prior_h).squeeze(-1)
-        e = self._excitation_from_input(x, excitation)
-
-        if self.use_temporal:
-            short = x[:, -min(self.evidence_window, x.shape[1]):, :]
-            ev_static = self.evidence_static(self._stats(short))
-            y_short, _ = self.evidence_gru(short)
-            ev_temporal = self.evidence_temporal_proj(y_short[:, -1])
-            evidence_h = self.evidence_fuse(torch.cat([ev_static, ev_temporal], dim=-1))
-            # Bounded correction prevents a poorly observed short maneuver from
-            # completely overwriting the persistent prior in one update.
-            delta = self.delta_scale * torch.tanh(self.evidence_head(evidence_h).squeeze(-1))
-            r = self.reliability(e)
-        else:
-            evidence_h = torch.zeros_like(prior_h)
-            delta = torch.zeros_like(q_prior)
-            r = torch.zeros_like(q_prior)
-
-        q = q_prior + r * delta
-        uq_h = self.uq_fuse(torch.cat([prior_h, evidence_h], dim=-1))
-        return uq_h, r, q_prior, delta, q
-
-    def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
-                        upper: float | torch.Tensor = 1.3,
-                        excitation: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
-        h, reliability, q_prior, delta, q = self.encode(x, excitation=excitation)
+    def _latent_to_support(self, q: torch.Tensor, lower: torch.Tensor | None,
+                           upper: float | torch.Tensor) -> torch.Tensor:
         upper_t = torch.as_tensor(upper, dtype=q.dtype, device=q.device)
         if self.use_bound:
             if lower is None:
-                raise ValueError("SafeGripV3Net requires lower when use_bound=True")
+                raise ValueError("SafeGripCINet requires lower when use_bound=True")
             span = torch.clamp(upper_t - lower, min=1e-6)
-            prior = lower + span * torch.sigmoid(q_prior)
-            pred = lower + span * torch.sigmoid(q)
+            return lower + span * torch.sigmoid(q)
+        return upper_t * torch.sigmoid(q)
+
+    def _encode_prior(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.use_temporal:
+            s = self.prior_static(self._stats(x))
+            y, _ = self.prior_gru(x)
+            t = self.prior_temporal_proj(y[:, -1])
+            h = self.prior_fuse(torch.cat([s, t], dim=-1))
         else:
-            prior = upper_t * torch.sigmoid(q_prior)
-            pred = upper_t * torch.sigmoid(q)
+            h = self.prior_static(x[:, -1, :])
+        return h, self.prior_head(h).squeeze(-1)
+
+    def _encode_innovation(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if not self.use_temporal:
+            z = torch.zeros((x.shape[0], self.hidden), dtype=x.dtype, device=x.device)
+            return z, torch.zeros(x.shape[0], dtype=x.dtype, device=x.device)
+        short = x[:, -min(self.evidence_window, x.shape[1]):, :]
+        s = self.innovation_static(torch.cat([
+            short[:, -1, :], short.mean(dim=1), short.std(dim=1, unbiased=False)
+        ], dim=-1))
+        y, _ = self.innovation_gru(short)
+        t = self.innovation_temporal_proj(y[:, -1])
+        h = self.innovation_fuse(torch.cat([s, t], dim=-1))
+        nu = self.delta_scale * torch.tanh(self.innovation_head(h).squeeze(-1))
+        return h, nu
+
+    def _encode_dynamics_context(self, x: torch.Tensor) -> torch.Tensor:
+        prefix = x[:, :-1, :] if x.shape[1] > 1 else x
+        y, _ = self.dynamics_gru(prefix)
+        return self.dynamics_context(y[:, -1])
+
+    def dynamics_prediction_from_context(self, context_h: torch.Tensor, mu: torch.Tensor,
+                                         upper: float | torch.Tensor = 1.3) -> torch.Tensor:
+        upper_t = torch.as_tensor(upper, dtype=mu.dtype, device=mu.device)
+        mu_norm = (mu / torch.clamp(upper_t, min=1e-6)).reshape(-1, 1)
+        return self.dynamics_head(torch.cat([context_h, mu_norm], dim=-1))
+
+    def dynamics_prediction(self, x: torch.Tensor, mu: torch.Tensor,
+                            upper: float | torch.Tensor = 1.3) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self._encode_dynamics_context(x)
+        pred = self.dynamics_prediction_from_context(h, mu, upper)
+        idx = torch.as_tensor(self.dynamics_indices, dtype=torch.long, device=x.device)
+        target = torch.index_select(x[:, -1, :], 1, idx)
+        return pred, target
+
+    def _counterfactual_authority(self, x: torch.Tensor, dyn_h: torch.Tensor,
+                                  prior_mu: torch.Tensor, cand_mu: torch.Tensor,
+                                  upper: float | torch.Tensor,
+                                  excitation: torch.Tensor | None = None) -> tuple[torch.Tensor, ...]:
+        idx = torch.as_tensor(self.dynamics_indices, dtype=torch.long, device=x.device)
+        observed = torch.index_select(x[:, -1, :], 1, idx)
+        upper_t = torch.as_tensor(upper, dtype=prior_mu.dtype, device=prior_mu.device)
+        dmu = float(self.counterfactual_delta)
+        mu_plus = torch.clamp(prior_mu + dmu, min=0.0, max=float(upper_t.detach().cpu()))
+        mu_minus = torch.clamp(prior_mu - dmu, min=0.0, max=float(upper_t.detach().cpu()))
+        g_plus = self.dynamics_prediction_from_context(dyn_h, mu_plus, upper)
+        g_minus = self.dynamics_prediction_from_context(dyn_h, mu_minus, upper)
+        denom = torch.clamp((mu_plus - mu_minus).reshape(-1, 1), min=1e-4)
+        sensitivity = (g_plus - g_minus) / denom
+        information_raw = torch.mean(sensitivity.square(), dim=-1)
+        info_gain = information_raw / (information_raw + self.identifiability_lambda)
+
+        g_prior = self.dynamics_prediction_from_context(dyn_h, prior_mu, upper)
+        g_cand = self.dynamics_prediction_from_context(dyn_h, cand_mu, upper)
+        residual_prior = torch.mean((observed - g_prior).square(), dim=-1)
+        residual_candidate = torch.mean((observed - g_cand).square(), dim=-1)
+        improvement = residual_prior - residual_candidate
+        acceptance = torch.sigmoid(
+            self.acceptance_temperature * (improvement - self.acceptance_margin)
+        )
+
+        if not self.use_identifiability:
+            info_gain = torch.ones_like(info_gain)
+        if not self.use_acceptance:
+            acceptance = torch.ones_like(acceptance)
+
+        if self.use_excitation_proxy:
+            e = self._excitation_from_input(x, excitation)
+            info_gain = self.reliability(e)
+
+        if not self.use_gate:
+            authority = torch.ones_like(info_gain)
+        else:
+            authority = torch.clamp(info_gain * acceptance, 0.0, 1.0)
+        return authority, info_gain, acceptance, information_raw, residual_prior, residual_candidate
+
+    def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
+                        upper: float | torch.Tensor = 1.3,
+                        excitation: torch.Tensor | None = None,
+                        prior_mu: torch.Tensor | None = None,
+                        prior_mask: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+        prior_h, q_context = self._encode_prior(x)
+        context_prior = self._latent_to_support(q_context, lower, upper)
+
+        if prior_mu is None or not self.use_persistent_state:
+            q_prior = q_context
+            prior_prediction = context_prior
+            persistent_mask = torch.zeros_like(q_context, dtype=torch.bool)
+        else:
+            pmu = prior_mu.reshape(-1).to(dtype=x.dtype, device=x.device)
+            if prior_mask is None:
+                persistent_mask = torch.ones_like(q_context, dtype=torch.bool)
+            else:
+                persistent_mask = prior_mask.reshape(-1).to(device=x.device, dtype=torch.bool)
+            mixed_mu = self.state_persistence * pmu + (1.0-self.state_persistence) * context_prior
+            q_state = self._support_to_latent(mixed_mu, lower, upper)
+            q_prior = torch.where(persistent_mask, q_state, q_context)
+            state_prior = self._latent_to_support(q_prior, lower, upper)
+            prior_prediction = state_prior
+
+        innovation_h, innovation = self._encode_innovation(x)
+        if not self.use_innovation:
+            innovation = torch.zeros_like(innovation)
+        q_candidate = q_prior + innovation
+        candidate_prediction = self._latent_to_support(q_candidate, lower, upper)
+        dyn_h = self._encode_dynamics_context(x)
+
+        authority, info_gain, acceptance, information_raw, r_prior, r_candidate = self._counterfactual_authority(
+            x, dyn_h, prior_prediction, candidate_prediction, upper, excitation=excitation
+        )
+        effective_innovation = authority * innovation
+        q = q_prior + effective_innovation
+        pred = self._latent_to_support(q, lower, upper)
+        uq_h = self.uq_fuse(torch.cat([prior_h, innovation_h, dyn_h], dim=-1))
+
         return {
             "prediction": pred,
-            "prior_prediction": prior,
+            "prior_prediction": prior_prediction,
+            "context_prior_prediction": context_prior,
+            "candidate_prediction": candidate_prediction,
             "latent": q,
             "prior_latent": q_prior,
-            "evidence_delta": delta,
-            "reliability": reliability,
-            "features": h,
+            "evidence_delta": innovation,
+            "innovation": innovation,
+            "effective_innovation": effective_innovation,
+            "reliability": authority,
+            "authority": authority,
+            "identifiability": info_gain,
+            "acceptance": acceptance,
+            "information_raw": information_raw,
+            "dynamics_residual_prior": r_prior,
+            "dynamics_residual_candidate": r_candidate,
+            "persistent_state_used": persistent_mask.to(dtype=x.dtype),
+            "features": uq_h,
         }
 
     def forward(self, x: torch.Tensor, lower: torch.Tensor | None = None,
                 upper: float | torch.Tensor = 1.3,
-                excitation: torch.Tensor | None = None):
-        d = self.forward_details(x, lower=lower, upper=upper, excitation=excitation)
+                excitation: torch.Tensor | None = None,
+                prior_mu: torch.Tensor | None = None,
+                prior_mask: torch.Tensor | None = None):
+        d = self.forward_details(
+            x, lower=lower, upper=upper, excitation=excitation,
+            prior_mu=prior_mu, prior_mask=prior_mask,
+        )
         return d["prediction"], d["latent"], d["reliability"]
 
 
-# Backward-compatible import alias for notebooks built against v0.6.x.  The
-# implementation is v3; new code and documentation should use SafeGripV3Net.
-SafeGripV2Net = SafeGripV3Net
+# Public/backward-compatible names.  v0.8 uses the CI implementation.
+SafeGripV3Net = SafeGripCINet
+SafeGripV2Net = SafeGripCINet
 
 
 class SafeGripBackboneNet(nn.Module):
-    """Data-only control with the proposal's temporal capacity but no physics/gate.
-
-    This network deliberately has no sample-specific lower bound, no explicit
-    excitation reliability mechanism, and no proposal-specific relative/ranking
-    regularizers.  It can be fed raw sensors (``safegrip_backbone_raw``) or the
-    same label-free engineered representation (``safegrip_features_only``).
-    """
+    """Raw data-only temporal regression control with no CI mechanism."""
     def __init__(self, d: int, hidden: int = 64, gru_hidden: int = 32, dropout: float = 0.1):
         super().__init__()
         self.hidden = int(hidden)
@@ -377,42 +510,49 @@ class SafeGripBackboneNet(nn.Module):
         self.gru = nn.GRU(d, gru_hidden, num_layers=1, batch_first=True)
         self.temporal = nn.Sequential(nn.Linear(gru_hidden, hidden), nn.SiLU())
         self.fuse = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden))
-        inner=max(16, hidden // 2)
-        self.head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Dropout(dropout), nn.Linear(inner, 1))
+        inner = max(16, hidden // 2)
+        self.head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
         self.scale_head: ResidualScaleHead | None = None
         self.conformal_q: float | None = None
         self.conformal_block_size: int | None = None
-        self.excitation_beta: float = 0.0
+        self.information_beta: float = 0.0
 
     @staticmethod
     def _stats(x: torch.Tensor) -> torch.Tensor:
         return torch.cat([x[:, -1, :], x.mean(dim=1), x.std(dim=1, unbiased=False)], dim=-1)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        s=self.static(self._stats(x))
-        y,_=self.gru(x)
-        t=self.temporal(y[:, -1])
-        return self.fuse(torch.cat([s,t],dim=-1))
+        s = self.static(self._stats(x))
+        y, _ = self.gru(x)
+        t = self.temporal(y[:, -1])
+        return self.fuse(torch.cat([s, t], dim=-1))
 
     def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
                         upper: float | torch.Tensor = 1.3,
-                        excitation: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
-        h=self.encode(x)
-        q=self.head(h).squeeze(-1)
-        upper_t=torch.as_tensor(upper,dtype=q.dtype,device=q.device)
-        pred=upper_t*torch.sigmoid(q)
-        zero=torch.zeros_like(pred)
+                        excitation: torch.Tensor | None = None, **kwargs) -> dict[str, torch.Tensor]:
+        h = self.encode(x)
+        q = self.head(h).squeeze(-1)
+        upper_t = torch.as_tensor(upper, dtype=q.dtype, device=q.device)
+        pred = upper_t * torch.sigmoid(q)
+        zero = torch.zeros_like(pred)
+        one = torch.ones_like(pred)
         return {
-            "prediction":pred, "prior_prediction":pred, "latent":q,
-            "prior_latent":q, "evidence_delta":zero, "reliability":zero,
-            "features":h,
+            "prediction": pred, "prior_prediction": pred,
+            "context_prior_prediction": pred, "candidate_prediction": pred,
+            "latent": q, "prior_latent": q, "evidence_delta": zero,
+            "innovation": zero, "effective_innovation": zero,
+            "reliability": zero, "authority": zero,
+            "identifiability": zero, "acceptance": one,
+            "information_raw": zero, "dynamics_residual_prior": zero,
+            "dynamics_residual_candidate": zero,
+            "persistent_state_used": zero, "features": h,
         }
 
     def forward(self, x: torch.Tensor, lower: torch.Tensor | None = None,
-                upper: float | torch.Tensor = 1.3,
-                excitation: torch.Tensor | None = None):
-        d=self.forward_details(x,lower=lower,upper=upper,excitation=excitation)
-        return d["prediction"],d["latent"],d["reliability"]
+                upper: float | torch.Tensor = 1.3, excitation: torch.Tensor | None = None,
+                **kwargs):
+        d = self.forward_details(x, lower=lower, upper=upper, excitation=excitation)
+        return d["prediction"], d["latent"], d["reliability"]
 
 
 class ResidualScaleHead(nn.Module):

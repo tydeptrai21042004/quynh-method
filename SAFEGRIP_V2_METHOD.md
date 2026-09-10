@@ -1,5 +1,8 @@
-# SafeGrip v2 method — historical note
+# SafeGrip v2 method — historical
 
-SafeGrip v2 was the v0.6.x proposal. It used static/GRU hidden-feature fusion with a learned excitation gate and is retained only for release-history context.
+SafeGrip-v2 is retained only for historical context. It is not the active method.
 
-**It is not the current method.** SafeGrip-Open v0.7.0 uses the prior + dynamic-evidence architecture documented in `SAFEGRIP_V3_METHOD.md`. Do not use this historical file to describe current experiments or manuscript methods.
+- v0.7.0 replaced v2 with the prior/evidence SafeGrip-v3 estimator.
+- v0.8.0 replaces the v3 handcrafted-excitation authority mechanism with **SafeGrip-CI**, documented in `SAFEGRIP_CI_METHOD.md`.
+
+Do not use this file to describe current experiments or manuscript methods.

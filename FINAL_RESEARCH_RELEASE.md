@@ -1,27 +1,20 @@
-# SafeGrip-Open v0.7.0 — SafeGrip-v3 proposal release
+# SafeGrip-Open v0.8.0 — SafeGrip-CI proposal release
 
-v0.7.0 keeps the leakage, LiRA decoding, trajectory segmentation, data-audit, baseline-fidelity and scientific-health safeguards from v0.6.x, but redesigns the proposal in response to the v0.6 trust result.
+v0.8.0 keeps the LiRA decoding, trajectory segmentation, leakage controls, baseline provenance, split-role separation, physics-bound audit, and scientific-health gate from v0.7.0, while replacing the proposal core.
 
-## Main proposal changes
+## Proposal change
 
-- replaces hidden static/GRU gated fusion with an explicit **long-context prior + short-context dynamic-evidence update**;
-- uses monotone excitation reliability, so stronger label-free excitation cannot reduce evidence weight;
-- preserves the excitation score in physical `[0,1]` scale instead of feeding a standardized gate input;
-- adds causal recent-excitation memory so a maneuver remains informative shortly after its peak;
-- retains identified-set output parameterization, now as `q_prior + reliability*evidence_delta`;
-- adds same-segment relative-change, ranking and weak-excitation smoothness regularization to reduce flat mean-regression behavior;
-- changes the vehicle lower-bound calculation to a conditional vector force balance with explicit uncertainty margins;
-- initializes the residual-scale head from validation residual magnitude rather than the oversized default softplus scale;
-- retains disjoint lower-bound/UQ calibration roles and block-max conformal calibration;
-- exports prior, evidence-delta and reliability diagnostics for direct audit.
+The full proposal now uses raw sensors and a persistent friction state. A neural branch proposes a latent friction innovation. A friction-conditioned dynamics model provides two independent checks before that innovation is accepted: local counterfactual identifiability and improvement of dynamics consistency relative to the prior. Handcrafted excitation is no longer part of the full estimator and is retained only as an explicit comparator ablation.
 
-## What remains intentionally unchanged
+## Training safeguards
 
-- split-before-imputation and segment-safe temporal windows;
-- train-only fitting of feature scalers;
-- calibration labels excluded from point-model gradient training;
-- cited literature comparator architectures/provenance;
-- test partition locked during tuning;
-- multi-seed trust/paper modes and result-readiness gates.
+- previous predicted friction is carried only within a trajectory segment;
+- the context prior remains trainable during state blending;
+- dynamics-model warm-start prevents a random zero-sensitivity gate;
+- innovation direction is supervised directly in latent friction coordinates;
+- UQ is still trained after point selection;
+- lower-bound and UQ calibration roles remain disjoint;
+- test labels remain excluded from training/tuning/calibration;
+- primary ablation semantics are unit-tested.
 
-A `PASS`/`PAPER_READY` status remains a reproducibility/sanity gate, not evidence that the method must outperform baselines. Negative results remain valid outputs and must not be rewritten as positive claims.
+A `PASS` health gate is a reproducibility/scientific-sanity condition, not a novelty or publication guarantee.

@@ -66,17 +66,20 @@ proposal:
   uq_epochs: 100
   uq_lr: 0.001
   uq_scale_floor: 0.005
-  excitation_beta: 1.0
   evidence_window: 8
-  delta_scale: 2.0
-  gate_init_slope: 6.0
-  gate_init_threshold: 0.25
-  delta_loss_weight: 0.1
-  rank_loss_weight: 0.03
-  smooth_loss_weight: 0.005
-  rank_min_delta: 0.01
-  rank_margin: 0.005
-  pair_lag: 1
+  delta_scale: 0.3
+  state_persistence: 0.8
+  counterfactual_delta: 0.08
+  identifiability_lambda: 0.001
+  acceptance_temperature: 12.0
+  acceptance_margin: 0.0
+  innovation_loss_weight: 0.35
+  dynamics_loss_weight: 0.1
+  counterfactual_loss_weight: 0.05
+  do_no_harm_weight: 0.1
+  counterfactual_margin: 0.02
+  dynamics_pretrain_epochs: 8
+  information_beta: 1.0
 baseline:
   todorovic2022_cnn:
     sequence_length: 100
@@ -260,26 +263,46 @@ tuning:
     - 0.03
     - 0.05
     - 0.1
-    excitation_beta:
-    - 0.5
-    - 1.0
-    - 2.0
     evidence_window:
     - 4
     - 8
     - 12
     delta_scale:
-    - 1.0
-    - 2.0
-    - 3.0
-    delta_loss_weight:
-    - 0.05
+    - 0.2
+    - 0.3
+    - 0.5
+    counterfactual_delta:
+    - 0.04
+    - 0.08
+    - 0.12
+    identifiability_lambda:
+    - 0.0001
+    - 0.001
+    - 0.01
+    acceptance_temperature:
+    - 6.0
+    - 12.0
+    - 20.0
+    innovation_loss_weight:
     - 0.15
     - 0.35
-    rank_loss_weight:
-    - 0.0
-    - 0.03
+    - 0.6
+    dynamics_loss_weight:
     - 0.05
+    - 0.1
+    - 0.2
+    counterfactual_loss_weight:
+    - 0.02
+    - 0.05
+    - 0.1
+    do_no_harm_weight:
+    - 0.05
+    - 0.1
+    - 0.2
+    information_beta:
+    - 0.5
+    - 1.0
+    - 2.0
 physics_audit:
   max_bound_above_upper_rate: 0.01
 health:

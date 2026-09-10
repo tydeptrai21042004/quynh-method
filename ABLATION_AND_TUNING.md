@@ -1,64 +1,42 @@
-# SafeGrip v3 ablation and hyperparameter protocol
+# SafeGrip-CI ablation and hyperparameter protocol
 
-## Controlled ablation
+## Controlled primary ablation
 
-All variants use the same data splits, endpoint identities, seed list and selected hyperparameters unless a removed component makes a parameter irrelevant.
+All primary variants use identical split definitions, endpoint identities, seeds, and the same fixed full-model hyperparameters unless the optional retuned-ablation study is requested.
 
-| Variant | Temporal prior/evidence | Excitation reliability | sample-specific bound | post-hoc UQ | lower-bound relaxation |
-|---|---:|---:|---:|---:|---:|
-| `safegrip_data_only` | yes | fixed 0.5 | no | yes | reported only |
-| `safegrip_static_only` | no | inactive | yes | yes | yes |
-| `safegrip_no_gate` | yes | fixed 0.5 | yes | yes | yes |
-| `safegrip_no_bound` | yes | monotone | no; global `[0,U]` only | yes | n/a |
-| `safegrip_no_uq` | yes | monotone | yes | no | yes |
-| `safegrip_no_calibration` | yes | monotone | raw mechanics lower endpoint | yes | no |
-| `safegrip` | yes | monotone | yes, by parameterization | yes | yes |
+The primary set is:
 
-The full point estimator is
+- `safegrip_backbone_raw`
+- `safegrip_persistent`
+- `safegrip_neural_innovation`
+- `safegrip_no_identifiability`
+- `safegrip_excitation_proxy`
+- `safegrip_no_acceptance`
+- `safegrip_no_innovation_supervision`
+- `safegrip_no_bound`
+- `safegrip_no_uq`
+- `safegrip`
 
-```text
-q = q_prior + reliability(E) * evidence_delta
-mu_hat = lower + (mu_upper-lower) * sigmoid(q).
-```
+The scientifically central comparison is `safegrip_excitation_proxy` versus `safegrip`: it tests whether counterfactual friction identifiability is more useful than a conventional handcrafted excitation proxy.
 
-There is no soft physics penalty and no post-hoc point projection in the full method.
+The ablation registry is explicit rather than inferred from names. Tests require every primary variant to have distinct semantics.
 
 ## Point objective
 
-The primary objective is Huber/SmoothL1. Three low-weight temporal regularizers are available:
-
-- relative-change loss between same-segment endpoint pairs;
-- ranking loss for changes larger than `rank_min_delta`;
-- weak-excitation smoothness weighted by `(1-E)`.
-
-The test partition and calibration labels never enter point-model gradient training.
-
-## UQ
-
-Predictive UQ is fitted only after point-model selection. Validation residuals train a positive scale head initialized near the observed residual scale. A disjoint calibration subset determines the block-max conformal multiplier. Excitation inflation is monotone because `excitation_beta >= 0`.
+The full model is trained with Huber point error, direct latent innovation supervision, friction-conditioned dynamics reconstruction, counterfactual ranking, and a do-no-harm update penalty. UQ is fitted only after point-model selection.
 
 ## Hyperparameter search
 
-The proposal search is selected only by validation RMSE. The test partition is locked during search.
+Validation-only tuning may search:
 
-| Parameter | Search/default |
-|---|---|
-| `sequence_length` | {8, 16, 24, 32, 64} |
-| `hidden` | {32, 64, 96} |
-| `gru_hidden` | {16, 32, 64} |
-| `dropout` | 0–0.30 |
-| `lr` | log-uniform 1e-4–3e-3 |
-| `weight_decay` | log-uniform 1e-6–1e-3 |
-| `batch_size` | {128, 256, 512} |
-| `huber_beta` | {0.03, 0.05, 0.10} |
-| `evidence_window` | {4, 8, 12} |
-| `delta_scale` | {1, 2, 3} |
-| `delta_loss_weight` | {0.05, 0.15, 0.35} |
-| `rank_loss_weight` | {0, 0.03, 0.05} |
-| `excitation_beta` | {0.5, 1, 2} |
+- sequence length and encoder sizes;
+- evidence window;
+- innovation scale;
+- state persistence;
+- counterfactual friction displacement;
+- identifiability scale;
+- acceptance temperature;
+- innovation/dynamics/counterfactual/do-no-harm loss weights;
+- post-hoc information-conditioned UQ inflation.
 
-Structural defaults not expanded in the normal 30-trial search include monotone-gate initialization, pair lag, weak-excitation smoothness weight and physical/calibration assumptions.
-
-**Not tuned against validation score:** `mu_upper`, conformal `alpha`, LiRA matching tolerances, physical uncertainty margins and fixed label-free excitation reference scales.
-
-Literature comparators receive the same Optuna trial budget while preserving their recoverable source architecture/preprocessing constraints.
+The test set is locked during search. Proposal and literature-comparator tuning preserve the common endpoint-hash parity checks already used by the repository.

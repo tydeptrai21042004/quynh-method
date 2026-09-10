@@ -289,47 +289,40 @@ def _subset_training_bundle(bundle, fraction: float, seed: int):
 
 
 def run_scarcity_analysis(csv_path, out_dir, cfg, *, preset="paper", hp_overrides=None, fractions=None) -> pd.DataFrame:
-    """Compare SafeGrip with its data-only backbone as training data decrease."""
+    """Compare SafeGrip-CI with the raw temporal backbone as labels decrease."""
+    from .benchmark import _proposal_flags
     out = ensure_dir(out_dir)
     fractions = list(fractions or [0.10, 0.25, 0.50, 0.75, 1.00])
     seq = int((hp_overrides or {}).get("sequence_length", cfg["sequence_length"]))
-    b = make_bundle(csv_path, cfg, sequence_length=seq, scaler_kind="standard", eval_start=common_eval_start(cfg), proposal_features=True)
+    variants=("safegrip_backbone_raw","safegrip")
+    bundles={v:make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",
+                           eval_start=common_eval_start(cfg),feature_mode=_proposal_flags(v)["feature_mode"])
+             for v in variants}
+    ref=bundles[variants[0]]
     seeds = list(cfg.get("evaluation", {}).get("seeds", [cfg["seed"]])) if preset == "paper" else [int(cfg["seed"])]
     epochs = int(cfg["training"]["epochs_quick" if preset == "quick" else "epochs_paper"])
-    rows = []
+    rows=[]
     for fraction in fractions:
         for seed in seeds:
-            sb = _subset_training_bundle(b, fraction, int(seed) + 773)
-            for variant in ("safegrip_data_only", "safegrip"):
-                seed_everything(int(seed))
-                model, _ = fit_proposal(variant, sb, cfg, epochs, hp_overrides)
-                d = predict_proposal_details(model, variant, sb.Xt, sb.lot, sb.raw_lot, cfg["mu_upper"], excitation=sb.et)
-                rows.append({
-                    "training_fraction": float(fraction),
-                    "training_windows": int(len(sb.Xtr)),
-                    "model": variant,
-                    "seed": int(seed),
-                    **regression_metrics(
-                        sb.yt, d["prediction"], d["bound"], cfg["mu_upper"], d["sigma"],
-                        raw_mean=d["raw_mean"],
-                        interval_low=d.get("pi95_low_physics"), interval_high=d.get("pi95_high_physics"),
-                        interval_low_raw=d.get("pi95_low_raw"), interval_high_raw=d.get("pi95_high_raw"),
-                    ),
-                })
-    by_seed = pd.DataFrame(rows)
-    numeric = [c for c in by_seed.columns if pd.api.types.is_numeric_dtype(by_seed[c]) and c not in ("seed", "training_fraction", "training_windows")]
-    summary_rows = []
-    for (fraction, model), g in by_seed.groupby(["training_fraction", "model"], sort=True):
-        row = {"training_fraction": float(fraction), "model": model, "n_seeds": int(g.seed.nunique()), "training_windows": int(round(g.training_windows.mean()))}
+            for variant in variants:
+                sb=_subset_training_bundle(bundles[variant],fraction,int(seed)+773)
+                seed_everything(int(seed)); model,_=fit_proposal(variant,sb,cfg,epochs,hp_overrides)
+                d=predict_proposal_details(model,variant,sb.Xt,sb.lot,sb.raw_lot,cfg["mu_upper"],excitation=sb.et,ids=sb.idt)
+                rows.append({"training_fraction":float(fraction),"training_windows":int(len(sb.Xtr)),
+                    "model":variant,"seed":int(seed),
+                    **regression_metrics(sb.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],raw_mean=d["raw_mean"],
+                        interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
+                        interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw"))})
+    by_seed=pd.DataFrame(rows)
+    numeric=[c for c in by_seed.columns if pd.api.types.is_numeric_dtype(by_seed[c]) and c not in ("seed","training_fraction","training_windows")]
+    summary_rows=[]
+    for (fraction,model),g in by_seed.groupby(["training_fraction","model"],sort=True):
+        row={"training_fraction":float(fraction),"model":model,"n_seeds":int(g.seed.nunique()),"training_windows":int(round(g.training_windows.mean()))}
         for c in numeric:
-            row[c] = float(g[c].mean())
-            row[c + "_std"] = float(g[c].std(ddof=1)) if len(g) > 1 else 0.0
+            row[c]=float(g[c].mean()); row[c+"_std"]=float(g[c].std(ddof=1)) if len(g)>1 else 0.0
         summary_rows.append(row)
-    summary = pd.DataFrame(summary_rows)
-    by_seed.to_csv(out / "scarcity_metrics_by_seed.csv", index=False)
-    summary.to_csv(out / "scarcity_metrics.csv", index=False)
+    summary=pd.DataFrame(summary_rows); by_seed.to_csv(out/"scarcity_metrics_by_seed.csv",index=False); summary.to_csv(out/"scarcity_metrics.csv",index=False)
     return summary
-
 
 def run_cross_route_analysis(csv_path, out_dir, cfg, *, preset="quick", hp_overrides=None) -> pd.DataFrame:
     """Leave one explicit route out for the final test while keeping calibration/validation on other routes."""

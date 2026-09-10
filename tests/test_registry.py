@@ -26,3 +26,32 @@ def test_no_excitation_ablation_is_registered():
     assert flags["use_gate"] is False
     assert flags["use_excitation_regularizer"] is False
     assert flags["use_excitation_uq_inflation"] is False
+
+
+
+def test_primary_ci_ablations_have_distinct_semantics():
+    from safegrip.benchmark import PRIMARY_ABLATION_VARIANTS, _proposal_flags
+    specs={v:tuple(sorted((k,str(val)) for k,val in _proposal_flags(v).items()
+                          if k not in {"canonical_variant","raw_features_only","use_gate","use_excitation_regularizer","use_excitation_uq_inflation"}))
+           for v in PRIMARY_ABLATION_VARIANTS}
+    assert len(set(specs.values()))==len(PRIMARY_ABLATION_VARIANTS)
+
+
+def test_full_ci_uses_raw_features_and_counterfactual_authority():
+    from safegrip.benchmark import _proposal_flags
+    f=_proposal_flags("safegrip")
+    assert f["feature_mode"]=="raw"
+    assert f["use_persistent_state"] is True
+    assert f["use_identifiability"] is True
+    assert f["use_acceptance"] is True
+    assert f["use_excitation_proxy"] is False
+    assert f["use_innovation_supervision"] is True
+
+
+def test_excitation_proxy_is_explicit_comparator_not_full_method():
+    from safegrip.benchmark import _proposal_flags
+    proxy=_proposal_flags("safegrip_excitation_proxy")
+    full=_proposal_flags("safegrip")
+    assert proxy["use_excitation_proxy"] is True
+    assert proxy["feature_mode"]=="safegrip"
+    assert full["use_excitation_proxy"] is False

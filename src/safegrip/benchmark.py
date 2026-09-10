@@ -27,28 +27,35 @@ META={
 }
 PROPOSAL_VARIANTS=(
     "safegrip_backbone_raw",
+    "safegrip_persistent",
+    "safegrip_neural_innovation",
+    "safegrip_no_identifiability",
+    "safegrip_excitation_proxy",
+    "safegrip_no_acceptance",
+    "safegrip_no_innovation_supervision",
+    "safegrip_no_bound",
+    "safegrip_no_uq",
+    "safegrip",
+    # Backward-compatible names retained for old notebooks.
     "safegrip_features_only",
     "safegrip_prior_evidence",
     "safegrip_no_excitation",
     "safegrip_endpoint_only",
     "safegrip_no_gate",
-    "safegrip_no_bound",
-    "safegrip_no_uq",
     "safegrip_no_calibration",
-    "safegrip",
-    "safegrip_data_only",       # legacy alias -> safegrip_backbone_raw
-    "safegrip_static_only",     # legacy alias -> safegrip_endpoint_only
+    "safegrip_data_only",
+    "safegrip_static_only",
 )
 PRIMARY_ABLATION_VARIANTS=(
     "safegrip_backbone_raw",
-    "safegrip_features_only",
-    "safegrip_prior_evidence",
-    "safegrip_no_excitation",
-    "safegrip_endpoint_only",
-    "safegrip_no_gate",
+    "safegrip_persistent",
+    "safegrip_neural_innovation",
+    "safegrip_no_identifiability",
+    "safegrip_excitation_proxy",
+    "safegrip_no_acceptance",
+    "safegrip_no_innovation_supervision",
     "safegrip_no_bound",
     "safegrip_no_uq",
-    "safegrip_no_calibration",
     "safegrip",
 )
 
@@ -483,38 +490,120 @@ def predict_literature(model,name,X,batch=1024):
 
 
 def _proposal_flags(variant: str) -> dict:
-    if variant not in PROPOSAL_VARIANTS:
-        raise ValueError(variant)
-    raw_only = variant in ("safegrip_data_only", "safegrip_no_excitation")
-    return {
-        # static_only is now genuinely endpoint-only in SafeGripV3Net.
-        "use_temporal": variant != "safegrip_static_only",
-        "use_gate": variant not in ("safegrip_data_only", "safegrip_static_only", "safegrip_no_gate", "safegrip_no_excitation"),
-        "use_bound": variant not in ("safegrip_data_only", "safegrip_no_bound"),
-        "use_uq": variant != "safegrip_no_uq",
-        "use_calibrated_lower": variant != "safegrip_no_calibration",
-        "raw_features_only": raw_only,
-        "use_excitation_regularizer": variant not in ("safegrip_data_only", "safegrip_no_excitation"),
-        "use_excitation_uq_inflation": variant not in ("safegrip_data_only", "safegrip_no_excitation"),
+    """Explicit ablation registry.
+
+    v0.7 inferred behavior from variant names and accidentally made several
+    nominally different ablations identical.  v0.8 uses an explicit semantic
+    specification so every primary ablation changes a concrete model path.
+    """
+    aliases={
+        "safegrip_data_only":"safegrip_backbone_raw",
+        "safegrip_prior_evidence":"safegrip_neural_innovation",
+        "safegrip_no_excitation":"safegrip_neural_innovation",
+        "safegrip_no_gate":"safegrip_neural_innovation",
+        "safegrip_static_only":"safegrip_endpoint_only",
     }
+    canonical=aliases.get(variant,variant)
+    specs={
+        "safegrip_backbone_raw": dict(model_kind="backbone", feature_mode="raw", use_temporal=True,
+            use_innovation=False, use_persistent_state=False, use_identifiability=False, use_acceptance=False,
+            use_excitation_proxy=False, use_innovation_supervision=False, use_dynamics_loss=False,
+            use_counterfactual_loss=False, use_bound=False, use_uq=False, use_calibrated_lower=True),
+        "safegrip_features_only": dict(model_kind="backbone", feature_mode="safegrip_no_excitation", use_temporal=True,
+            use_innovation=False, use_persistent_state=False, use_identifiability=False, use_acceptance=False,
+            use_excitation_proxy=False, use_innovation_supervision=False, use_dynamics_loss=False,
+            use_counterfactual_loss=False, use_bound=False, use_uq=False, use_calibrated_lower=True),
+        "safegrip_persistent": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=False, use_persistent_state=True, use_identifiability=False, use_acceptance=False,
+            use_excitation_proxy=False, use_innovation_supervision=False, use_dynamics_loss=True,
+            use_counterfactual_loss=False, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_neural_innovation": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=False, use_acceptance=False,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_no_identifiability": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=False, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_excitation_proxy": dict(model_kind="ci", feature_mode="safegrip", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=False,
+            use_excitation_proxy=True, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_no_acceptance": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=False,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_no_innovation_supervision": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=False, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_no_bound": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=False, use_uq=True, use_calibrated_lower=True),
+        "safegrip_no_uq": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=False, use_calibrated_lower=True),
+        "safegrip_endpoint_only": dict(model_kind="ci", feature_mode="raw", use_temporal=False,
+            use_innovation=False, use_persistent_state=False, use_identifiability=False, use_acceptance=False,
+            use_excitation_proxy=False, use_innovation_supervision=False, use_dynamics_loss=False,
+            use_counterfactual_loss=False, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_no_calibration": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=False),
+        "safegrip": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
+    }
+    if canonical not in specs:
+        raise ValueError(variant)
+    out=dict(specs[canonical])
+    out["canonical_variant"]=canonical
+    out["raw_features_only"]=out["feature_mode"]=="raw"
+    # Compatibility fields used by old notebooks/tests.
+    out["use_gate"]=bool(out["use_identifiability"] or out["use_acceptance"] or out["use_excitation_proxy"])
+    out["use_excitation_regularizer"]=False
+    out["use_excitation_uq_inflation"]=False
+    return out
+
+
+def _dynamics_indices(features: list[str]) -> list[int]:
+    preferred=("ax","ay","wheel_fl","wheel_fr","wheel_rl","wheel_rr")
+    idx=[features.index(c) for c in preferred if c in features]
+    if not idx:
+        idx=list(range(min(4,len(features))))
+    return idx
 
 
 def _proposal_model(variant: str, b: Bundle, hp: dict):
     flags=_proposal_flags(variant)
+    if flags["model_kind"]=="backbone":
+        model=SafeGripBackboneNet(
+            len(b.features), hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]),
+            dropout=float(hp["dropout"]),
+        )
+        model.variant_spec=flags
+        return model
     exc_idx=b.features.index("sg_excitation_score") if "sg_excitation_score" in b.features else None
     model=SafeGripV3Net(
-        len(b.features), excitation_index=exc_idx,
-        hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]),
-        dropout=float(hp["dropout"]), evidence_window=int(hp.get("evidence_window",8)),
-        delta_scale=float(hp.get("delta_scale",2.0)),
-        gate_init_slope=float(hp.get("gate_init_slope",6.0)),
-        gate_init_threshold=float(hp.get("gate_init_threshold",0.25)),
-        use_temporal=flags["use_temporal"], use_gate=flags["use_gate"],
-        use_bound=flags["use_bound"],
+        len(b.features), excitation_index=exc_idx, dynamics_indices=_dynamics_indices(b.features),
+        hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]), dropout=float(hp["dropout"]),
+        evidence_window=int(hp.get("evidence_window",8)), delta_scale=float(hp.get("delta_scale",1.5)),
+        counterfactual_delta=float(hp.get("counterfactual_delta",0.08)),
+        identifiability_lambda=float(hp.get("identifiability_lambda",0.001)),
+        acceptance_temperature=float(hp.get("acceptance_temperature",12.0)),
+        acceptance_margin=float(hp.get("acceptance_margin",0.0)),
+        use_temporal=flags["use_temporal"], use_gate=flags["use_gate"], use_bound=flags["use_bound"],
+        endpoint_only=not flags["use_temporal"], use_identifiability=flags["use_identifiability"],
+        use_acceptance=flags["use_acceptance"], use_persistent_state=flags["use_persistent_state"],
+        use_excitation_proxy=flags["use_excitation_proxy"], use_innovation=flags["use_innovation"],
+        state_persistence=float(hp.get("state_persistence",0.85)),
     )
-    # Positive coefficient gives uncertainty that is monotonically larger when
-    # the excitation/observability score is smaller.
-    model.excitation_beta=max(0.0,float(hp.get("excitation_beta",1.0))) if flags["use_excitation_uq_inflation"] else 0.0
+    model.information_beta=max(0.0,float(hp.get("information_beta",1.0)))
+    model.variant_spec=flags
     return model
 
 
@@ -524,16 +613,17 @@ def proposal_hparams(cfg, overrides=None):
         "hidden":tr.get("hidden",64), "gru_hidden":32, "dropout":tr.get("dropout",.1),
         "lr":tr.get("lr",1e-3), "weight_decay":tr.get("weight_decay",1e-4),
         "batch_size":tr.get("batch_size",256), "huber_beta":0.05,
-        "evidence_window":8, "delta_scale":2.0,
-        "gate_init_slope":6.0, "gate_init_threshold":0.25,
-        "delta_loss_weight":0.10, "rank_loss_weight":0.03,
-        "smooth_loss_weight":0.005, "rank_min_delta":0.01,
-        "rank_margin":0.005, "pair_lag":1,
+        "evidence_window":8, "delta_scale":0.5,
+        "counterfactual_delta":0.08, "identifiability_lambda":0.001,
+        "state_persistence":0.85, "dynamics_pretrain_epochs":8,
+        "acceptance_temperature":12.0, "acceptance_margin":0.0,
+        "innovation_loss_weight":0.35, "dynamics_loss_weight":0.10,
+        "counterfactual_loss_weight":0.05, "do_no_harm_weight":0.10,
+        "counterfactual_margin":0.02,
         "uq_epochs":100, "uq_lr":1e-3, "uq_scale_floor":0.005,
-        "excitation_beta":1.0,
+        "information_beta":1.0,
     }
     defaults.update(p); defaults.update(overrides or {}); return defaults
-
 
 def _finite_sample_quantile(values, alpha: float) -> float:
     values=np.asarray(values,float)
@@ -594,181 +684,255 @@ def _previous_pair_indices(ids: np.ndarray, lag: int = 1) -> tuple[np.ndarray, n
     return prev,valid
 
 
-def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False, excitation=None):
+def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False,
+                   excitation=None, ids=None, stateful=True):
+    """Predict proposal endpoints, optionally carrying friction state by segment."""
     dev=device(); model.eval()
-    pred=[]; latent=[]; rel=[]; feats=[]; priors=[]; deltas=[]; prior_latents=[]
+    keys=("prediction","latent","reliability","features","prior_prediction","evidence_delta",
+          "prior_latent","identifiability","acceptance","information_raw","candidate_prediction",
+          "dynamics_residual_prior","dynamics_residual_candidate","persistent_state_used")
+    store={k:[] for k in keys}
     excitation_arr=None if excitation is None else np.asarray(excitation,dtype=np.float32)
+    X=np.asarray(X,dtype=np.float32); lower=np.asarray(lower,dtype=np.float32)
+    ids_arr=None if ids is None else np.asarray(ids,dtype=str)
+    use_state=bool(stateful and ids_arr is not None and getattr(model,"use_persistent_state",False))
+
+    def append_details(d):
+        for k in keys:
+            v=d.get(k)
+            if v is None:
+                continue
+            store[k].append(v.detach().cpu().numpy())
+
     with torch.no_grad():
-        for i in range(0,len(X),batch):
-            xb=torch.from_numpy(X[i:i+batch]).to(dev)
-            lb=torch.from_numpy(np.asarray(lower[i:i+batch],dtype=np.float32)).to(dev)
-            eb=None if excitation_arr is None else torch.from_numpy(excitation_arr[i:i+batch]).to(dev)
-            d=model.forward_details(xb,lb,float(mu_upper),excitation=eb)
-            pred.append(d["prediction"].cpu().numpy())
-            latent.append(d["latent"].cpu().numpy())
-            rel.append(d["reliability"].cpu().numpy())
-            priors.append(d["prior_prediction"].cpu().numpy())
-            deltas.append(d["evidence_delta"].cpu().numpy())
-            prior_latents.append(d["prior_latent"].cpu().numpy())
-            if return_features:
-                feats.append(d["features"].cpu().numpy())
-    base=(np.concatenate(pred),np.concatenate(latent),np.concatenate(rel))
+        if use_state:
+            state_mu=None; last_key=None
+            for i in range(len(X)):
+                key=_segment_key(ids_arr[i])
+                if key!=last_key:
+                    state_mu=None; last_key=key
+                xb=torch.from_numpy(X[i:i+1]).to(dev)
+                lb=torch.from_numpy(lower[i:i+1]).to(dev)
+                eb=None if excitation_arr is None else torch.from_numpy(excitation_arr[i:i+1]).to(dev)
+                if state_mu is None:
+                    d=model.forward_details(xb,lb,float(mu_upper),excitation=eb)
+                else:
+                    pm=torch.tensor([state_mu],dtype=xb.dtype,device=dev)
+                    mask=torch.ones(1,dtype=torch.bool,device=dev)
+                    d=model.forward_details(xb,lb,float(mu_upper),excitation=eb,prior_mu=pm,prior_mask=mask)
+                state_mu=float(d["prediction"].detach().cpu().item())
+                append_details(d)
+        else:
+            for i in range(0,len(X),batch):
+                xb=torch.from_numpy(X[i:i+batch]).to(dev)
+                lb=torch.from_numpy(lower[i:i+batch]).to(dev)
+                eb=None if excitation_arr is None else torch.from_numpy(excitation_arr[i:i+batch]).to(dev)
+                d=model.forward_details(xb,lb,float(mu_upper),excitation=eb)
+                append_details(d)
+
+    def cat(k, fallback=None):
+        if store[k]: return np.concatenate(store[k],axis=0)
+        return fallback
+    pred=cat("prediction",np.empty(0,np.float32))
+    latent=cat("latent",np.empty_like(pred)); rel=cat("reliability",np.zeros_like(pred))
     if return_features:
-        return base+(np.concatenate(feats),np.concatenate(priors),np.concatenate(deltas),np.concatenate(prior_latents))
-    return base
+        return (
+            pred,latent,rel,cat("features"),cat("prior_prediction",pred.copy()),
+            cat("evidence_delta",np.zeros_like(pred)),cat("prior_latent",latent.copy()),
+            cat("identifiability",np.zeros_like(pred)),cat("acceptance",np.ones_like(pred)),
+            cat("information_raw",np.zeros_like(pred)),cat("candidate_prediction",pred.copy()),
+            cat("dynamics_residual_prior",np.zeros_like(pred)),cat("dynamics_residual_candidate",np.zeros_like(pred)),
+            cat("persistent_state_used",np.zeros_like(pred)),
+        )
+    return pred,latent,rel
 
-
-def _fit_residual_scale(model: SafeGripV3Net, b: Bundle, cfg: dict, hp: dict, lower_val: np.ndarray):
-    """Fit heteroscedastic residual scale after point-model selection.
-
-    The validation residual median initializes the scale head near the correct
-    numerical range.  Excitation inflation is monotone and external to the head,
-    preserving the clean separation between point estimation and UQ.
-    """
+def _fit_residual_scale(model, b: Bundle, cfg: dict, hp: dict, lower_val: np.ndarray):
+    """Fit post-hoc residual scale; low identifiability inflates uncertainty."""
+    if not hasattr(model,"forward_details"):
+        return
     dev=device(); model.eval()
-    p,_,_,h,_,_,_=_forward_point(
-        model,b.Xv,lower_val,float(cfg["mu_upper"]),return_features=True,excitation=b.ev
+    vals=_forward_point(
+        model,b.Xv,lower_val,float(cfg["mu_upper"]),return_features=True,
+        excitation=b.ev,ids=b.idv,stateful=True
     )
+    p,_,_,h,_,_,_,ident,_,_,_,_,_,_=vals
     target=np.maximum(np.abs(np.asarray(b.yv,float)-p),float(hp["uq_scale_floor"]))
-    e=np.clip(np.asarray(b.ev,float),0.0,1.0)
-    inflation=1.0+max(0.0,float(hp.get("excitation_beta",1.0)))*(1.0-e)
+    info=np.clip(np.asarray(ident,float),0.0,1.0)
+    beta=max(0.0,float(hp.get("information_beta",1.0)))
+    inflation=1.0+beta*(1.0-info)
     base_target=np.maximum(target/np.maximum(inflation,1e-6),float(hp["uq_scale_floor"]))
     init_scale=float(np.median(base_target)) if len(base_target) else float(hp["uq_scale_floor"])*2.0
-    head=ResidualScaleHead(
-        int(hp["hidden"]),floor=float(hp["uq_scale_floor"]),initial_scale=init_scale
-    ).to(dev)
+    head=ResidualScaleHead(int(hp["hidden"]),floor=float(hp["uq_scale_floor"]),initial_scale=init_scale).to(dev)
     opt=torch.optim.AdamW(head.parameters(),lr=float(hp["uq_lr"]),weight_decay=float(hp["weight_decay"]))
-    ht=torch.from_numpy(h.astype(np.float32)).to(dev)
-    tgt=torch.from_numpy(base_target.astype(np.float32)).to(dev)
+    ht=torch.from_numpy(h.astype(np.float32)).to(dev); tgt=torch.from_numpy(base_target.astype(np.float32)).to(dev)
     best=None; bestloss=float("inf"); stale=0
     max_epochs=int(hp.get("uq_epochs",100)); patience=max(10,min(30,max_epochs//4))
     for _ in range(max_epochs):
-        head.train(); opt.zero_grad()
-        base=head(ht)
+        head.train(); opt.zero_grad(); base=head(ht)
         loss=nn.functional.smooth_l1_loss(torch.log(base),torch.log(tgt),beta=0.25)
         loss.backward(); torch.nn.utils.clip_grad_norm_(head.parameters(),5.0); opt.step()
         val=float(loss.detach().cpu())
         if val<bestloss-1e-6:
             bestloss=val; best={k:v.detach().cpu().clone() for k,v in head.state_dict().items()}; stale=0
-        else:
-            stale+=1
+        else: stale+=1
         if stale>=patience: break
     if best: head.load_state_dict(best)
-    model.scale_head=head
-    model.uq_scale_initialization=init_scale
+    model.scale_head=head; model.uq_scale_initialization=init_scale
+
+
+def _target_latent(y: torch.Tensor, lower: torch.Tensor, upper: float, use_bound: bool) -> torch.Tensor:
+    eps=1e-5
+    if use_bound:
+        span=torch.clamp(torch.as_tensor(upper,dtype=y.dtype,device=y.device)-lower,min=1e-6)
+        frac=(y-lower)/span
+    else:
+        frac=y/max(float(upper),1e-6)
+    frac=torch.clamp(frac,eps,1.0-eps)
+    return torch.log(frac)-torch.log1p(-frac)
 
 
 def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     if variant not in PROPOSAL_VARIANTS: raise ValueError(variant)
     flags=_proposal_flags(variant)
-    if not b.proposal_features and not flags["raw_features_only"]:
-        raise ValueError("This SafeGrip variant requires make_bundle(..., proposal_features=True)")
+    if getattr(b,"feature_mode",None) != flags["feature_mode"]:
+        raise ValueError(f"{variant} requires feature_mode={flags['feature_mode']}, got {getattr(b,'feature_mode',None)}")
     hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
     opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
-
-    # Point training uses only train labels.  Calibration labels never enter the
-    # gradient path.  Relative losses use previous endpoints from the same stable
-    # trajectory segment and therefore never cross a split/segment boundary.
     lo_train=b.raw_lotr
     lo_val=b.lov if flags["use_calibrated_lower"] else b.raw_lov
-    prev_idx,pair_valid=_previous_pair_indices(b.idtr,int(hp.get("pair_lag",1)))
+    prev_idx,pair_valid=_previous_pair_indices(b.idtr,1)
     dataset=TensorDataset(
-        torch.from_numpy(b.Xtr), torch.from_numpy(b.ytr), torch.from_numpy(lo_train), torch.from_numpy(b.etr),
-        torch.from_numpy(b.Xtr[prev_idx]), torch.from_numpy(b.ytr[prev_idx]),
-        torch.from_numpy(lo_train[prev_idx]), torch.from_numpy(b.etr[prev_idx]),
+        torch.from_numpy(b.Xtr),torch.from_numpy(b.ytr),torch.from_numpy(lo_train),torch.from_numpy(b.etr),
+        torch.from_numpy(b.Xtr[prev_idx]),torch.from_numpy(lo_train[prev_idx]),
         torch.from_numpy(pair_valid.astype(np.bool_)),
     )
     dl=DataLoader(dataset,batch_size=int(hp["batch_size"]),shuffle=True)
-    xv=torch.from_numpy(b.Xv).to(dev); yv=torch.from_numpy(b.yv).to(dev)
-    lov=torch.from_numpy(np.asarray(lo_val,dtype=np.float32)).to(dev)
-    ev=torch.from_numpy(np.asarray(b.ev,dtype=np.float32)).to(dev)
     mu_u=float(cfg["mu_upper"]); best=None; bestloss=float("inf"); bad=0
     patience=int(cfg["training"].get("patience",10)); huber_beta=float(hp.get("huber_beta",0.05))
-    delta_w=max(0.0,float(hp.get("delta_loss_weight",0.10)))
-    rank_w=max(0.0,float(hp.get("rank_loss_weight",0.03)))
-    smooth_w=max(0.0,float(hp.get("smooth_loss_weight",0.005))) if flags["use_excitation_regularizer"] else 0.0
-    rank_min=max(0.0,float(hp.get("rank_min_delta",0.01)))
-    rank_margin=max(0.0,float(hp.get("rank_margin",0.005)))
+    innov_w=float(hp.get("innovation_loss_weight",0.35)) if flags["use_innovation_supervision"] else 0.0
+    dyn_w=float(hp.get("dynamics_loss_weight",0.10)) if flags["use_dynamics_loss"] else 0.0
+    cf_w=float(hp.get("counterfactual_loss_weight",0.05)) if flags["use_counterfactual_loss"] else 0.0
+    harm_w=max(0.0,float(hp.get("do_no_harm_weight",0.10))) if flags["use_innovation"] else 0.0
+    cf_margin=max(0.0,float(hp.get("counterfactual_margin",0.02)))
+
+    # Warm-start the friction-conditioned dynamics model before it is allowed
+    # to control the estimator.  Without this stage, a randomly initialized G
+    # has near-zero friction sensitivity, which would correctly but uselessly
+    # suppress every innovation at the beginning of training.  Counterfactual
+    # ranking forces G to use friction rather than reconstructing the endpoint
+    # from context alone.
+    pre_epochs=int(hp.get("dynamics_pretrain_epochs",8)) if flags["model_kind"]=="ci" and flags["use_dynamics_loss"] else 0
+    if pre_epochs>0:
+        dyn_params=list(model.dynamics_gru.parameters())+list(model.dynamics_context.parameters())+list(model.dynamics_head.parameters())
+        dyn_opt=torch.optim.AdamW(dyn_params,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
+        for _pre in range(min(pre_epochs,max(1,int(epochs)))):
+            model.train()
+            for xb,yb,lb,eb,xp,lp,pair_mask in dl:
+                xb=xb.to(dev); yb=yb.to(dev); dyn_opt.zero_grad()
+                dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
+                dloss=nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
+                if flags["use_counterfactual_loss"]:
+                    true_err=torch.mean((dyn_true-dyn_target).square(),dim=-1)
+                    delta=float(hp.get("counterfactual_delta",0.08))
+                    wrong_lo=torch.clamp(yb-delta,min=0.0,max=mu_u); wrong_hi=torch.clamp(yb+delta,min=0.0,max=mu_u)
+                    p_lo,_=model.dynamics_prediction(xb,wrong_lo,mu_u); p_hi,_=model.dynamics_prediction(xb,wrong_hi,mu_u)
+                    wrong_err=0.5*(torch.mean((p_lo-dyn_target).square(),dim=-1)+torch.mean((p_hi-dyn_target).square(),dim=-1))
+                    dloss=dloss+max(cf_w,0.05)*torch.relu(cf_margin+true_err-wrong_err).mean()
+                dloss.backward(); torch.nn.utils.clip_grad_norm_(dyn_params,5.0); dyn_opt.step()
 
     for _ in range(int(epochs)):
         model.train()
-        for xb,yb,lb,eb,xp,yp,lp,ep,pair_mask in dl:
+        for xb,yb,lb,eb,xp,lp,pair_mask in dl:
             xb=xb.to(dev); yb=yb.to(dev); lb=lb.to(dev); eb=eb.to(dev)
-            xp=xp.to(dev); yp=yp.to(dev); lp=lp.to(dev); ep=ep.to(dev); pair_mask=pair_mask.to(dev)
+            xp=xp.to(dev); lp=lp.to(dev); pair_mask=pair_mask.to(dev)
             opt.zero_grad()
-            pred,_,_=model(xb,lb,mu_u,excitation=eb)
+            if flags["model_kind"]=="backbone":
+                d=model.forward_details(xb,None,mu_u,excitation=eb)
+            else:
+                with torch.no_grad():
+                    pd=model.forward_details(xp,lp,mu_u,excitation=eb)
+                    prior_mu=pd["prediction"].detach()
+                d=model.forward_details(xb,lb,mu_u,excitation=eb,prior_mu=prior_mu,prior_mask=pair_mask)
+            pred=d["prediction"]
             loss=nn.functional.smooth_l1_loss(pred,yb,beta=huber_beta)
-            if pair_mask.any() and (delta_w>0 or rank_w>0 or smooth_w>0):
-                prev_pred,_,_=model(xp,lp,mu_u,excitation=ep)
-                dp=pred-prev_pred; dy=yb-yp
-                m=pair_mask
-                if delta_w>0:
-                    loss=loss+delta_w*nn.functional.smooth_l1_loss(dp[m],dy[m],beta=huber_beta)
-                if rank_w>0:
-                    rm=m & (torch.abs(dy)>=rank_min)
-                    if rm.any():
-                        sign=torch.sign(dy[rm])
-                        rank_loss=torch.relu(rank_margin-sign*dp[rm]).mean()
-                        loss=loss+rank_w*rank_loss
-                if smooth_w>0:
-                    # Weak excitation should not cause gratuitous local jumps;
-                    # high excitation automatically relaxes this regularizer.
-                    smooth=((1.0-eb[m])*torch.abs(dp[m])).mean()
-                    loss=loss+smooth_w*smooth
+
+            if flags["model_kind"]=="ci":
+                if innov_w>0:
+                    target_q=_target_latent(yb,lb,mu_u,flags["use_bound"])
+                    desired=(target_q-d["prior_latent"].detach())
+                    loss=loss+innov_w*nn.functional.smooth_l1_loss(
+                        d["effective_innovation"],desired,beta=max(huber_beta,0.1)
+                    )
+                if dyn_w>0:
+                    dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
+                    loss=loss+dyn_w*nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
+                if cf_w>0:
+                    dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
+                    true_err=torch.mean((dyn_true-dyn_target).square(),dim=-1)
+                    delta=float(hp.get("counterfactual_delta",0.08))
+                    wrong_lo=torch.clamp(yb-delta,min=0.0,max=mu_u)
+                    wrong_hi=torch.clamp(yb+delta,min=0.0,max=mu_u)
+                    d_lo,_=model.dynamics_prediction(xb,wrong_lo,mu_u)
+                    d_hi,_=model.dynamics_prediction(xb,wrong_hi,mu_u)
+                    wrong_err=0.5*(torch.mean((d_lo-dyn_target).square(),dim=-1)+torch.mean((d_hi-dyn_target).square(),dim=-1))
+                    loss=loss+cf_w*torch.relu(cf_margin+true_err-wrong_err).mean()
+                if harm_w>0:
+                    harm=torch.relu(torch.abs(pred-yb)-torch.abs(d["prior_prediction"]-yb)).mean()
+                    loss=loss+harm_w*harm
+
             loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step()
 
-        model.eval()
-        with torch.no_grad():
-            pv,_,_=model(xv,lov,mu_u,excitation=ev)
-            vl=nn.functional.mse_loss(pv,yv).item()
+        # Early stopping uses the same stateful evaluation path used at test time.
+        v=_forward_point(model,b.Xv,np.asarray(lo_val,np.float32),mu_u,return_features=False,
+                         excitation=b.ev,ids=b.idv,stateful=True)[0]
+        vl=float(np.mean((np.asarray(v,float)-np.asarray(b.yv,float))**2))
         if vl<bestloss-1e-7:
             bestloss=vl; best={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}; bad=0
-        else:
-            bad+=1
+        else: bad+=1
         if bad>=patience: break
     if best: model.load_state_dict(best)
 
-    # UQ is deliberately fitted after point estimation, so uncertainty learning
-    # cannot trade away RMSE. Validation fits the scale function; the disjoint
-    # calibration split determines the block-conformal multiplier.
-    if flags["use_uq"]:
+    if flags["use_uq"] and flags["model_kind"]=="ci":
         _fit_residual_scale(model,b,cfg,hp,lo_val)
         lo_cal=b.loc if flags["use_calibrated_lower"] else b.raw_loc
         mask=np.asarray(b.uq_cal_mask,dtype=bool)
         Xcal=b.Xc[mask]; ycal=b.yc[mask]; idcal=b.idc[mask]; ecal=b.ec[mask]; lower_cal=lo_cal[mask]
         if len(Xcal):
-            pcal,_,_,hcal,_,_,_=_forward_point(
-                model,Xcal,lower_cal,mu_u,return_features=True,excitation=ecal
-            )
+            vals=_forward_point(model,Xcal,lower_cal,mu_u,return_features=True,
+                                excitation=ecal,ids=idcal,stateful=True)
+            pcal,_,_,hcal,_,_,_,ident,_,_,_,_,_,_=vals
             model.scale_head.eval()
             with torch.no_grad():
                 base=model.scale_head(torch.from_numpy(hcal.astype(np.float32)).to(dev)).cpu().numpy()
-            inflation=1.0+max(0.0,float(hp.get("excitation_beta",1.0)))*(1.0-np.asarray(ecal,float))
-            scale=base*inflation
+            beta=max(0.0,float(hp.get("information_beta",1.0)))
+            scale=base*(1.0+beta*(1.0-np.clip(np.asarray(ident,float),0.0,1.0)))
             scores=np.abs(np.asarray(ycal,float)-pcal)/np.maximum(scale,float(hp["uq_scale_floor"]))
             block=int(cfg.get("uq",{}).get("block_size",0))
-            if block<=0:
-                block=max(1,int(np.ceil(float(b.sequence_length)/max(float(cfg.get("stride",1)),1.0))))
+            if block<=0: block=max(1,int(np.ceil(float(b.sequence_length)/max(float(cfg.get("stride",1)),1.0))))
             block_scores=_block_max_scores(scores,idcal,block)
             model.conformal_q=_finite_sample_quantile(block_scores,cfg.get("alpha",0.05))
-            model.conformal_block_size=block
-            model.uq_calibration_count=int(len(Xcal)); model.uq_block_count=int(len(block_scores))
+            model.conformal_block_size=block; model.uq_calibration_count=int(len(Xcal)); model.uq_block_count=int(len(block_scores))
         else:
-            model.conformal_q=1.96
-            model.conformal_block_size=1
+            model.conformal_q=1.96; model.conformal_block_size=1
     return model,hp
 
-
-def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excitation=None):
+def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excitation=None,ids=None):
     flags=_proposal_flags(variant)
     bound=np.asarray(lo if flags["use_calibrated_lower"] else raw_lo,dtype=np.float32)
-    prediction,latent,reliability,h,prior,delta,prior_latent=_forward_point(
-        model,X,bound,mu_upper,batch=batch,return_features=True,excitation=excitation
+    vals=_forward_point(
+        model,X,bound,mu_upper,batch=batch,return_features=True,excitation=excitation,
+        ids=ids,stateful=True
     )
+    (prediction,latent,authority,h,prior,innovation,prior_latent,ident,acceptance,info_raw,
+     candidate,r_prior,r_candidate,persistent_used)=vals
     details={
         "prediction":prediction,"raw_mean":prediction.copy(),"latent_score":latent,
-        "prior_latent":prior_latent,"prior_prediction":prior,"evidence_delta":delta,
-        "gate":reliability,"reliability":reliability,"sigma":None,"bound":bound,
+        "prior_latent":prior_latent,"prior_prediction":prior,"candidate_prediction":candidate,
+        "evidence_delta":innovation,"innovation":innovation,
+        "gate":authority,"reliability":authority,"authority":authority,
+        "identifiability":ident,"acceptance":acceptance,"information_raw":info_raw,
+        "dynamics_residual_prior":r_prior,"dynamics_residual_candidate":r_candidate,
+        "persistent_state_used":persistent_used,"sigma":None,"bound":bound,
     }
     if flags["use_uq"] and getattr(model,"scale_head",None) is not None:
         dev=device(); model.scale_head.eval(); scales=[]
@@ -776,12 +940,9 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
             for i in range(0,len(h),batch):
                 scales.append(model.scale_head(torch.from_numpy(h[i:i+batch].astype(np.float32)).to(dev)).cpu().numpy())
         base=np.concatenate(scales)
-        if excitation is None:
-            excitation=np.clip(reliability,0.0,1.0)
-        excitation=np.clip(np.asarray(excitation,float),0.0,1.0)
-        scale=base*(1.0+max(0.0,float(getattr(model,"excitation_beta",1.0)))*(1.0-excitation))
-        q=float(getattr(model,"conformal_q",1.96) or 1.96)
-        radius=q*scale
+        beta=max(0.0,float(getattr(model,"information_beta",1.0)))
+        scale=base*(1.0+beta*(1.0-np.clip(np.asarray(ident,float),0.0,1.0)))
+        q=float(getattr(model,"conformal_q",1.96) or 1.96); radius=q*scale
         low_raw=prediction-radius; high_raw=prediction+radius
         if flags["use_bound"]:
             low=np.maximum(low_raw,bound); high=np.minimum(high_raw,float(mu_upper))
@@ -789,16 +950,16 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
             low=np.maximum(low_raw,0.0); high=np.minimum(high_raw,float(mu_upper))
         low=np.minimum(low,prediction); high=np.maximum(high,prediction)
         details.update({
-            "sigma":scale.astype(np.float32), "conformal_q":q,
-            "pi95_low_raw":low_raw.astype(np.float32), "pi95_high_raw":high_raw.astype(np.float32),
-            "pi95_low_physics":low.astype(np.float32), "pi95_high_physics":high.astype(np.float32),
+            "sigma":scale.astype(np.float32),"conformal_q":q,
+            "pi95_low_raw":low_raw.astype(np.float32),"pi95_high_raw":high_raw.astype(np.float32),
+            "pi95_low_physics":low.astype(np.float32),"pi95_high_physics":high.astype(np.float32),
         })
     return details
 
-def predict_proposal(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excitation=None):
-    d=predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=batch,excitation=excitation)
-    return d["prediction"],d["sigma"],d["bound"]
 
+def predict_proposal(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excitation=None,ids=None):
+    d=predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=batch,excitation=excitation,ids=ids)
+    return d["prediction"],d["sigma"],d["bound"]
 
 def _export_literature_manifest(out:Path,names):
     rows=[]
@@ -884,12 +1045,10 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
     mpiw=float(row.get("mpiw95",np.nan))
     target_coverage=1.0-alpha
     interval_tol=max(0.03,2.0*np.sqrt(max(target_coverage*(1-target_coverage),1e-12)/max(len(y),1)))
-    excitation=np.asarray(preds.get("safegrip_excitation",bundle.et),float)
     reliability=np.asarray(preds.get("safegrip_reliability",preds.get("safegrip_gate",np.zeros_like(y))),float)
-    if len(excitation)==len(reliability) and np.std(excitation)>1e-10 and np.std(reliability)>1e-10:
-        reliability_corr=float(np.corrcoef(excitation,reliability)[0,1])
-    else:
-        reliability_corr=float("nan")
+    ident=np.asarray(preds.get("safegrip_identifiability",np.zeros_like(y)),float)
+    acceptance=np.asarray(preds.get("safegrip_acceptance",np.ones_like(y)),float)
+    information_raw=np.asarray(preds.get("safegrip_information_raw",np.zeros_like(y)),float)
     prior=np.asarray(preds.get("safegrip_prior",p),float)
     prior_rmse=float(np.sqrt(np.mean((y-prior)**2))) if len(prior)==len(y) else float("nan")
     n_segments=len({_segment_key(x) for x in np.asarray(bundle.idt,dtype=str)})
@@ -903,7 +1062,9 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
         "raw_bound_finite": bool(np.isfinite(raw_bound).all()),
         "calibrated_lower_coverage_consistent": bool(np.isfinite(lower_violation) and lower_violation <= alpha + coverage_tol),
         "predictive_interval_coverage_consistent": bool(np.isfinite(picp) and picp >= target_coverage-interval_tol),
-        "reliability_not_inversely_related_to_excitation": bool(not np.isfinite(reliability_corr) or reliability_corr >= -1e-6),
+        "counterfactual_authority_finite": bool(np.isfinite(reliability).all()),
+        "identifiability_finite": bool(np.isfinite(ident).all() and np.all((ident>=-1e-6)&(ident<=1.0+1e-6))),
+        "acceptance_finite": bool(np.isfinite(acceptance).all() and np.all((acceptance>=-1e-6)&(acceptance<=1.0+1e-6))),
     }
     return {
         "status": "PASS" if all(checks.values()) else "REVIEW",
@@ -934,7 +1095,10 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
             "physics_information_fraction_mean": float(np.mean(np.clip(raw_bound/max(float(cfg.get("mu_upper",1.3)),1e-12),0.0,1.0))),
             "prior_rmse": prior_rmse,
             "mean_abs_dynamic_update": float(np.mean(np.abs(p-prior))) if len(prior)==len(p) else float("nan"),
-            "excitation_reliability_correlation": reliability_corr,
+            "mean_counterfactual_authority": float(np.mean(reliability)) if len(reliability) else float("nan"),
+            "mean_identifiability": float(np.mean(ident)) if len(ident) else float("nan"),
+            "mean_acceptance": float(np.mean(acceptance)) if len(acceptance) else float("nan"),
+            "mean_information_raw": float(np.mean(information_raw)) if len(information_raw) else float("nan"),
         },
         "interpretation": "PASS means the run clears automatic degeneracy/sanity gates; it does not replace multi-seed statistical analysis or external validation.",
     }
@@ -986,7 +1150,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         proposal_seq - 1,
         max([int(hp["sequence_length"]) - 1 for hp in baseline_plan.values()] or [0]),
     )
-    proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind="standard",eval_start=start,proposal_features=True)
+    proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind="standard",eval_start=start,feature_mode="raw")
     _save_bundle_meta(out,proposal_bundle,cfg)
     if preset == "paper":
         seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]]))
@@ -1063,17 +1227,18 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
                 label_budget_rows.append({"model":name+"__equal_label_budget","source_model":name,"seed":int(seed),
                     "supervised_train_count":int(len(bl.ytr)),**regression_metrics(bl.yt,lp,bl.lot,cfg["mu_upper"],ls,raw_mean=lp)})
 
-    name="safegrip"; print(f"[proposal/v3] safegrip L={proposal_bundle.sequence_length}")
+    name="safegrip"; print(f"[proposal/CI] safegrip L={proposal_bundle.sequence_length}")
     proposal_preds=[]; proposal_raw=[]; proposal_sigmas=[]; proposal_latent=[]; final_hp=None
     seed_priors=[]; seed_deltas=[]; seed_prior_latents=[]
-    seed_gate_slopes=[]; seed_gate_thresholds=[]; seed_uq_initial_scales=[]
+    seed_ident=[]; seed_acceptance=[]; seed_info_raw=[]; seed_candidates=[]; seed_persistent=[]
+    seed_uq_initial_scales=[]
     seed_pi_low=[]; seed_pi_high=[]; seed_pi_low_raw=[]; seed_pi_high_raw=[]; seed_gates=[]; seed_q=[]; seed_blocks=[]; seed_uq_counts=[]
     for seed in seed_list:
         seed_everything(int(seed)); t0=time.time(); model,final_hp=fit_proposal(name,proposal_bundle,cfg,epochs_proposal,hp_overrides)
-        d=predict_proposal_details(model,name,proposal_bundle.Xt,proposal_bundle.lot,proposal_bundle.raw_lot,cfg["mu_upper"],excitation=proposal_bundle.et)
+        d=predict_proposal_details(model,name,proposal_bundle.Xt,proposal_bundle.lot,proposal_bundle.raw_lot,cfg["mu_upper"],excitation=proposal_bundle.et,ids=proposal_bundle.idt)
         if enable_common_uq and np.any(proposal_bundle.uq_cal_mask):
             m=np.asarray(proposal_bundle.uq_cal_mask,dtype=bool)
-            dc=predict_proposal_details(model,name,proposal_bundle.Xc[m],proposal_bundle.loc[m],proposal_bundle.raw_loc[m],cfg["mu_upper"],excitation=proposal_bundle.ec[m])
+            dc=predict_proposal_details(model,name,proposal_bundle.Xc[m],proposal_bundle.loc[m],proposal_bundle.raw_loc[m],cfg["mu_upper"],excitation=proposal_bundle.ec[m],ids=proposal_bundle.idc[m])
             cil,cih,cq=_common_conformal_interval(proposal_bundle.yc[m],dc["prediction"],d["prediction"],cfg.get("alpha",0.05))
             cm=regression_metrics(proposal_bundle.yt,d["prediction"],proposal_bundle.lot,cfg["mu_upper"],None,raw_mean=d["prediction"],interval_low=cil,interval_high=cih)
             common_uq_rows.append({"model":"safegrip","seed":int(seed),"common_conformal_q":cq,**cm})
@@ -1085,13 +1250,18 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
                          "conformal_q":float(d.get("conformal_q",np.nan)),
                          "mean_reliability":float(np.mean(d["reliability"])),
                          "mean_gate":float(np.mean(d["reliability"])),
+                         "mean_identifiability":float(np.mean(d["identifiability"])),
+                         "mean_acceptance":float(np.mean(d["acceptance"])),
+                         "mean_information_raw":float(np.mean(d["information_raw"])),
+                         "persistent_state_use_rate":float(np.mean(d["persistent_state_used"])),
                          "prior_rmse":float(np.sqrt(np.mean((proposal_bundle.yt-d["prior_prediction"])**2))),
+                         "candidate_rmse":float(np.sqrt(np.mean((proposal_bundle.yt-d["candidate_prediction"])**2))),
                          "mean_abs_dynamic_update":float(np.mean(np.abs(d["prediction"]-d["prior_prediction"]))),
                          "seconds":time.time()-t0})
         proposal_preds.append(d["prediction"]); proposal_raw.append(d["raw_mean"]); proposal_latent.append(d["latent_score"]); seed_gates.append(d["reliability"])
         seed_priors.append(d["prior_prediction"]); seed_deltas.append(d["evidence_delta"]); seed_prior_latents.append(d["prior_latent"])
-        seed_gate_slopes.append(float((nn.functional.softplus(model.reliability_slope_raw)+1e-4).detach().cpu()))
-        seed_gate_thresholds.append(float(torch.sigmoid(model.reliability_threshold_raw).detach().cpu()))
+        seed_ident.append(d["identifiability"]); seed_acceptance.append(d["acceptance"]); seed_info_raw.append(d["information_raw"])
+        seed_candidates.append(d["candidate_prediction"]); seed_persistent.append(d["persistent_state_used"])
         seed_uq_initial_scales.append(float(getattr(model,"uq_scale_initialization",np.nan)))
         if d["sigma"] is not None: proposal_sigmas.append(d["sigma"])
         if "pi95_low_physics" in d:
@@ -1108,7 +1278,11 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     preds[name+"_prior"]=np.mean(np.stack(seed_priors),axis=0)
     preds[name+"_evidence_delta"]=np.mean(np.stack(seed_deltas),axis=0)
     preds[name+"_prior_latent"]=np.mean(np.stack(seed_prior_latents),axis=0)
-    preds[name+"_excitation"]=proposal_bundle.et
+    preds[name+"_identifiability"]=np.mean(np.stack(seed_ident),axis=0)
+    preds[name+"_acceptance"]=np.mean(np.stack(seed_acceptance),axis=0)
+    preds[name+"_information_raw"]=np.mean(np.stack(seed_info_raw),axis=0)
+    preds[name+"_candidate"]=np.mean(np.stack(seed_candidates),axis=0)
+    preds[name+"_persistent_state_used"]=np.mean(np.stack(seed_persistent),axis=0)
     if proposal_sigmas: preds[name+"_sigma"]=np.mean(np.stack(proposal_sigmas),axis=0)
     if seed_pi_low:
         preds[name+"_pi95_low_physics"]=np.mean(np.stack(seed_pi_low),axis=0)
@@ -1117,14 +1291,13 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         preds[name+"_pi95_high_raw"]=np.mean(np.stack(seed_pi_high_raw),axis=0)
 
     (out/"proposal_reliability.json").write_text(json.dumps({
-        "form":"sigmoid(softplus(slope_raw)*(excitation-sigmoid(threshold_raw)))",
-        "monotone_by_construction":True,
-        "per_seed_slope":seed_gate_slopes,
-        "per_seed_threshold":seed_gate_thresholds,
+        "method":"counterfactual identifiability authority",
+        "authority":"K = acceptance * I/(I+lambda)",
+        "identifiability":"local sensitivity of friction-conditioned dynamics G(context, mu)",
+        "acceptance":"candidate must reduce observed dynamics residual relative to prior",
+        "handcrafted_excitation_used_by_full_proposal":False,
+        "persistent_state":"previous predicted friction is carried within each trajectory segment",
         "per_seed_uq_initial_scale":seed_uq_initial_scales,
-        "excitation_feature":"sg_excitation_score",
-        "excitation_feature_range":[0.0,1.0],
-        "excitation_preserved_unscaled":True,
     },indent=2),encoding="utf-8")
     (out/"proposal_uq.json").write_text(json.dumps({
         "method":"post-hoc residual scale + block-max split conformal",
@@ -1148,10 +1321,10 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
         "calibration_labels_used_in_gradient_training":False,
         "proposal_feature_engineering_label_free":True,
-        "proposal_point_loss":"Huber + same-segment relative-change + ranking + weak-excitation smoothness regularization",
-        "proposal_architecture":"long-context friction prior + short-context dynamic evidence update",
-        "proposal_reliability":"monotone sigmoid(softplus(slope)*(excitation-threshold))",
-        "proposal_bound_parameterization":"lower + (mu_upper-lower)*sigmoid(q_prior + reliability*evidence_delta)",
+        "proposal_point_loss":"Huber point loss + latent innovation supervision + friction-conditioned dynamics loss + counterfactual ranking + do-no-harm update penalty",
+        "proposal_architecture":"persistent friction state + raw-sensor neural innovation + counterfactual identifiability authority",
+        "proposal_reliability":"K = acceptance * I/(I+lambda), where I is friction-conditioned dynamics sensitivity",
+        "proposal_bound_parameterization":"lower + (mu_upper-lower)*sigmoid(q_prior + K*innovation)",
         "proposal_uq":"post-hoc residual scale + block-max split-conformal multiplier",
         "proposal_uq_dependence_note":"block-max calibration is a conservative dependence mitigation, not an arbitrary-dependence finite-sample guarantee",
         "physical_claim":"conditional on configured bounded-error and mu_upper assumptions",
@@ -1179,64 +1352,68 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
 
 
 def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=None):
-    out=ensure_dir(out_dir)
-    seq=(hp_overrides or {}).get("sequence_length")
-    start=common_eval_start(cfg)
-    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,proposal_features=True); _save_bundle_meta(out,b,cfg)
-    raw_b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,proposal_features=False)
-    _assert_same_targets(b,raw_b,"raw_feature_ablation_bundle")
-    variants=list(variants or PROPOSAL_VARIANTS)
+    out=ensure_dir(out_dir); seq=(hp_overrides or {}).get("sequence_length"); start=common_eval_start(cfg)
+    variants=list(variants or PRIMARY_ABLATION_VARIANTS)
     bad=[v for v in variants if v not in PROPOSAL_VARIANTS]
     if bad: raise ValueError("Unknown proposal variants: "+", ".join(bad))
-    epoch_key = "epochs_quick" if preset=="quick" else ("epochs_trust" if preset=="trust" else "epochs_paper")
-    epochs=int(cfg["training"].get(epoch_key, cfg["training"].get("epochs_paper",60)))
-    if preset == "paper":
-        seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]]))
-    elif preset == "trust":
-        seed_list=list(cfg.get("evaluation",{}).get("trust_seeds",[0,1,2]))
-    else:
-        seed_list=[int(cfg["seed"])]
-    results=[]; preds=pd.DataFrame({"endpoint_id":b.idt,"y_true":b.yt,"physics_lower":b.lot,"physics_lower_raw":b.raw_lot,"excitation":b.et})
+    # Cache one leakage-safe bundle for each actual representation required.
+    bundles={}
+    for v in variants:
+        mode=_proposal_flags(v)["feature_mode"]
+        if mode not in bundles:
+            bundles[mode]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,feature_mode=mode)
+    ref=bundles[_proposal_flags(variants[0])["feature_mode"]]
+    for mode,b in bundles.items(): _assert_same_targets(ref,b,f"ablation_bundle_{mode}")
+    _save_bundle_meta(out,ref,cfg)
+    epoch_key="epochs_quick" if preset=="quick" else ("epochs_trust" if preset=="trust" else "epochs_paper")
+    epochs=int(cfg["training"].get(epoch_key,cfg["training"].get("epochs_paper",60)))
+    if preset=="paper": seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]]))
+    elif preset=="trust": seed_list=list(cfg.get("evaluation",{}).get("trust_seeds",[0,1,2]))
+    else: seed_list=[int(cfg["seed"])]
+    results=[]; preds=pd.DataFrame({"endpoint_id":ref.idt,"y_true":ref.yt,"physics_lower":ref.lot,"physics_lower_raw":ref.raw_lot})
+    semantic={}
     for variant in variants:
-        print(f"[ablation/v3] {variant}")
-        vb=raw_b if _proposal_flags(variant)["raw_features_only"] else b
-        variant_preds=[]; variant_raw=[]; variant_sigma=[]; variant_gate=[]; lo_int=[]; hi_int=[]
+        flags=_proposal_flags(variant); vb=bundles[flags["feature_mode"]]
+        print(f"[ablation/CI] {variant} -> {flags['canonical_variant']} [{flags['feature_mode']}]")
+        variant_preds=[]; variant_raw=[]; variant_sigma=[]; variant_auth=[]; variant_ident=[]; variant_accept=[]; lo_int=[]; hi_int=[]
         for seed in seed_list:
             seed_everything(int(seed)); t0=time.time(); model,hp=fit_proposal(variant,vb,cfg,epochs,hp_overrides)
-            d=predict_proposal_details(model,variant,vb.Xt,vb.lot,vb.raw_lot,cfg["mu_upper"],excitation=vb.et)
+            d=predict_proposal_details(model,variant,vb.Xt,vb.lot,vb.raw_lot,cfg["mu_upper"],excitation=vb.et,ids=vb.idt)
             row={"model":variant,"kind":"ablation" if variant!="safegrip" else "proposal","seed":int(seed),
-                 **regression_metrics(vb.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],
-                                      raw_mean=d["raw_mean"],
-                                      interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
-                                      interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw")),
+                 **regression_metrics(vb.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],raw_mean=d["raw_mean"],
+                    interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
+                    interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw")),
                  "conformal_q":float(d.get("conformal_q",np.nan)),
                  "mean_reliability":float(np.mean(d["reliability"])),
                  "mean_gate":float(np.mean(d["reliability"])),
+                 "mean_identifiability":float(np.mean(d["identifiability"])),
+                 "mean_acceptance":float(np.mean(d["acceptance"])),
+                 "mean_information_raw":float(np.mean(d["information_raw"])),
+                 "persistent_state_use_rate":float(np.mean(d["persistent_state_used"])),
                  "prior_rmse":float(np.sqrt(np.mean((vb.yt-d["prior_prediction"])**2))),
+                 "candidate_rmse":float(np.sqrt(np.mean((vb.yt-d["candidate_prediction"])**2))),
                  "mean_abs_dynamic_update":float(np.mean(np.abs(d["prediction"]-d["prior_prediction"]))),
                  "seconds":time.time()-t0}
-            results.append(row); variant_preds.append(d["prediction"]); variant_raw.append(d["raw_mean"]); variant_gate.append(d["gate"])
+            results.append(row); variant_preds.append(d["prediction"]); variant_raw.append(d["raw_mean"])
+            variant_auth.append(d["authority"]); variant_ident.append(d["identifiability"]); variant_accept.append(d["acceptance"])
             if d["sigma"] is not None: variant_sigma.append(d["sigma"])
             if "pi95_low_physics" in d: lo_int.append(d["pi95_low_physics"]); hi_int.append(d["pi95_high_physics"])
-        preds[variant]=np.mean(np.stack(variant_preds),axis=0)
-        preds[variant+"_raw"]=np.mean(np.stack(variant_raw),axis=0)
-        preds[variant+"_gate"]=np.mean(np.stack(variant_gate),axis=0)
+        preds[variant]=np.mean(np.stack(variant_preds),axis=0); preds[variant+"_raw"]=np.mean(np.stack(variant_raw),axis=0)
+        preds[variant+"_authority"]=np.mean(np.stack(variant_auth),axis=0)
+        preds[variant+"_identifiability"]=np.mean(np.stack(variant_ident),axis=0)
+        preds[variant+"_acceptance"]=np.mean(np.stack(variant_accept),axis=0)
         if variant_sigma: preds[variant+"_sigma"]=np.mean(np.stack(variant_sigma),axis=0)
         if lo_int:
-            preds[variant+"_pi95_low_physics"]=np.mean(np.stack(lo_int),axis=0)
-            preds[variant+"_pi95_high_physics"]=np.mean(np.stack(hi_int),axis=0)
+            preds[variant+"_pi95_low_physics"]=np.mean(np.stack(lo_int),axis=0); preds[variant+"_pi95_high_physics"]=np.mean(np.stack(hi_int),axis=0)
+        semantic[variant]=flags
     by_seed=pd.DataFrame(results); summary=_aggregate_seed_metrics(results)
     summary.to_csv(out/"ablation_metrics.csv",index=False); by_seed.to_csv(out/"ablation_metrics_by_seed.csv",index=False); preds.to_csv(out/"ablation_predictions.csv",index=False)
     (out/"ablation_design.json").write_text(json.dumps({
-        "safegrip_data_only":"true raw-sensor data-only backbone: no proposal engineered features, no sample-specific bound, no excitation gate/regularizer/inflation",
-        "safegrip_static_only":"genuine endpoint-only prior: uses only x[t], no window mean/std, GRU, or dynamic-evidence branch",
-        "safegrip_no_excitation":"raw sensors with prior/evidence temporal architecture but no excitation-derived features, monotone gate, weak-excitation regularizer, or excitation UQ inflation",
-        "safegrip_no_gate":"replace monotone excitation reliability by fixed 0.5 evidence reliability",
-        "safegrip_no_bound":"remove the sample-specific lower endpoint; retain only global [0, mu_upper] support",
-        "safegrip_no_uq":"retain the full v3 point estimator but remove residual-scale and conformal uncertainty",
-        "safegrip_no_calibration":"use the raw mechanics lower endpoint instead of its one-sided calibration relaxation",
-        "safegrip":"full v3 prior + dynamic-evidence estimator with monotone excitation reliability and separately fitted block-conformal UQ",
-        "seeds":seed_list,"same_hyperparameters_across_variants":True,
+        "proposal":"SafeGrip-CI counterfactual-identifiability state estimator",
+        "primary_variants":variants,
+        "semantic_specs":semantic,
+        "key_comparison":"safegrip_excitation_proxy vs safegrip tests handcrafted excitation against learned counterfactual identifiability",
+        "same_hyperparameters_across_variants":True,"seeds":seed_list,
     },indent=2),encoding="utf-8")
     return summary
 

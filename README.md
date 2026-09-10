@@ -1,10 +1,12 @@
-# SafeGrip-Open v0.7.0
+# SafeGrip-Open v0.8.0
 
-## SafeGrip v3 (v0.7.0)
+## SafeGrip-CI (v0.8.0)
 
-v0.7.0 redesigns the proposal after the v0.6 trust run exposed flat predictions, weakly informative physics bounds and a learned gate whose behavior was difficult to interpret. The new method uses a **long-context friction prior + short-context dynamic-evidence update**, monotone excitation reliability, relative-change/ranking regularization, an improved conditional vector force-balance lower bound, and better-scaled post-hoc conformal UQ. See `SAFEGRIP_V3_METHOD.md`.
+SafeGrip-CI redesigns the proposal around **counterfactual friction identifiability** rather than handcrafted excitation. The full estimator maintains a persistent friction state, predicts a raw-sensor candidate innovation, and accepts that innovation only when a friction-conditioned dynamics model indicates that nearby friction hypotheses are distinguishable and the candidate explains the observed dynamics better than the prior.
 
-The literature baselines, LiRA leakage safeguards and paper-readiness gates remain intentionally independent of the proposal-only changes.
+The full point estimator uses raw sensors; the old handcrafted excitation score is retained only as an explicit comparator ablation. The mechanics lower endpoint remains a conditional feasibility constraint, and post-hoc block-conformal UQ remains separate from the novelty claim. See `SAFEGRIP_CI_METHOD.md`.
+
+The literature baselines, LiRA leakage safeguards and paper-readiness gates remain independent of proposal-only changes.
 
 ## Final research-release safeguards (v0.5.0)
 
@@ -41,7 +43,7 @@ Inspect `results/lira_trust/result_health.json`. `PASS` means automatic
 degeneracy/sanity gates passed; `REVIEW` means the run completed but should not
 be used as supporting paper evidence yet.
 
-Reproducible research code for **physics-constrained partial identification of tire-road friction under limited excitation**.
+Reproducible research code for **counterfactual-identifiability friction-state estimation with conditional physics constraints**.
 
 The repository follows two strict rules:
 
@@ -112,40 +114,44 @@ Paper-reported scores from non-matching protocols are stored as literature conte
 
 ## Proposal and ablations
 
-Full SafeGrip v3:
+Full SafeGrip-CI:
 
 ```text
 raw sensor window
-   -> label-free SafeGrip dynamics features
-   -> causal recent-excitation score E in [0,1]
+   -> context prior encoder
+   -> candidate innovation encoder
+   -> friction-conditioned dynamics model G(context, mu)
 
-full context -----------------> slow prior encoder -> q_prior
-short recent context ---------> evidence encoder  -> bounded delta
-E ----------------------------> monotone reliability r(E)
-
-q = q_prior + r(E) * delta
+previous friction state + context prior -> persistent prior mu^-
+G(mu^- +/- delta) ---------------------> local identifiability I
+G(mu^-), G(mu_candidate) --------------> candidate acceptance A
+K = A * I
+q = q_prior + K * innovation
 mu = lower + (mu_upper-lower) * sigmoid(q)
 
 frozen selected point estimator
-   -> residual-scale head initialized near validation residual scale
-   -> monotone weak-excitation uncertainty inflation
+   -> residual-scale head
+   -> low-identifiability uncertainty inflation
    -> block-max split-conformal calibration
    -> physical interval intersection
 ```
 
-Controlled ablations:
+Primary controlled ablations:
 
-| Variant | What is removed? |
+| Variant | Question |
 |---|---|
-| `safegrip_data_only` | sample-specific lower bound + monotone reliability (fixed reliability remains) |
-| `safegrip_static_only` | temporal prior/evidence branches |
-| `safegrip_no_gate` | monotone excitation reliability; uses fixed 0.5 evidence reliability |
-| `safegrip_no_bound` | sample-specific lower endpoint; global support remains |
-| `safegrip_no_uq` | residual-scale and conformal UQ |
-| `safegrip_no_calibration` | statistical relaxation of the mechanics lower endpoint |
-| `safegrip` | full v3 proposal |
+| `safegrip_backbone_raw` | does CI beat plain raw temporal regression? |
+| `safegrip_persistent` | is persistent state alone useful? |
+| `safegrip_neural_innovation` | does unconditional neural innovation help? |
+| `safegrip_no_identifiability` | is local counterfactual identifiability necessary? |
+| `safegrip_excitation_proxy` | is counterfactual identifiability better than handcrafted excitation? |
+| `safegrip_no_acceptance` | does candidate-consistency acceptance matter? |
+| `safegrip_no_innovation_supervision` | does direct innovation-direction supervision matter? |
+| `safegrip_no_bound` | what does the mechanics lower endpoint contribute? |
+| `safegrip_no_uq` | point estimator without post-hoc UQ |
+| `safegrip` | full SafeGrip-CI |
 
-See `SAFEGRIP_V3_METHOD.md` and `ABLATION_AND_TUNING.md` for the exact formulation, training losses and calibration-role separation.
+The ablation registry is explicit and unit-tested so primary variants cannot silently resolve to identical behavior. See `SAFEGRIP_CI_METHOD.md` and `ABLATION_AND_TUNING.md`.
 
 ## Fair validation tuning
 
@@ -165,18 +171,14 @@ The primary selection objective for both is **validation RMSE**. Each baseline m
 
 Tuned proposal parameters:
 
-- sequence length;
-- prior/evidence hidden width;
-- GRU hidden width;
-- dropout;
-- learning rate;
-- weight decay;
-- batch size;
-- Huber transition (`huber_beta`);
-- short evidence-window length;
-- evidence-update scale;
-- relative-change/ranking loss weights;
-- excitation-dependent uncertainty inflation (`excitation_beta`).
+- sequence length and encoder widths;
+- learning rate, weight decay, batch size and Huber transition;
+- candidate-innovation window and scale;
+- persistent-state blend;
+- counterfactual friction displacement and identifiability scale;
+- acceptance temperature;
+- innovation/dynamics/counterfactual/do-no-harm loss weights;
+- identifiability-conditioned uncertainty inflation.
 
 **Not tuned:** `mu_upper` and calibration coverage `alpha`. They are physical/safety assumptions, not validation-score knobs.
 
@@ -317,6 +319,7 @@ results/lira_baseline_tuning/
 
 ## Documentation
 
+- `SAFEGRIP_CI_METHOD.md` — active v0.8 counterfactual-identifiability formulation.
 - `RESEARCH_PROTOCOL.md` — exact claim boundaries and evaluation protocol.
 - `LITERATURE_BASELINES.md` — why every direct baseline is included and what is *not* directly comparable.
 - `DATASETS.md` — open-data inventory and auto-download behavior.
