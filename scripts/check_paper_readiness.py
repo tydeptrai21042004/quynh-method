@@ -33,8 +33,10 @@ required_abl = [
 PRIMARY_ABLATIONS = {
     "safegrip_backbone_raw", "safegrip_persistent", "safegrip_neural_innovation",
     "safegrip_no_identifiability", "safegrip_excitation_proxy", "safegrip_no_acceptance",
-    "safegrip_no_cf_agreement", "safegrip_no_innovation_supervision", "safegrip_no_bound",
-    "safegrip_no_uq", "safegrip",
+    "safegrip_no_cf_agreement", "safegrip_single_scale_cf",
+    "safegrip_no_linearity_consistency", "safegrip_no_agreement_veto",
+    "safegrip_no_counterfactual_ranking", "safegrip_no_innovation_supervision",
+    "safegrip_no_bound", "safegrip_no_uq", "safegrip",
 }
 PAPER_MODELS = {
     "todorovic2022_cnn", "lampe2023_lstm", "lampe2023_gru",
@@ -127,7 +129,7 @@ report = {
     "status": status,
     "checks": checks,
     "health": health,
-    "proposal": "SafeGrip-CI v0.9",
+    "proposal": "SafeGrip-CI v1.0",
     "note": (
         "PAPER_READY means the automatic scientific-health, fairness, endpoint-parity, "
         "multi-seed, ablation, preprocessing and statistics gates passed. It does not prove "

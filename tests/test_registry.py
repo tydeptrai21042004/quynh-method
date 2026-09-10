@@ -53,5 +53,20 @@ def test_excitation_proxy_is_explicit_comparator_not_full_method():
     proxy=_proposal_flags("safegrip_excitation_proxy")
     full=_proposal_flags("safegrip")
     assert proxy["use_excitation_proxy"] is True
-    assert proxy["feature_mode"]=="safegrip"
+    assert proxy["feature_mode"]=="raw"
+    assert proxy["use_acceptance"] is True
     assert full["use_excitation_proxy"] is False
+
+
+def test_v10_counterfactual_ablation_family_is_registered():
+    from safegrip.benchmark import PROPOSAL_VARIANTS, _proposal_flags
+    expected={
+        "safegrip_single_scale_cf", "safegrip_no_linearity_consistency",
+        "safegrip_no_agreement_veto", "safegrip_no_counterfactual_ranking",
+        "safegrip_no_state_update_loss", "safegrip_no_direction_loss",
+        "safegrip_no_dynamics_pretrain",
+    }
+    assert expected.issubset(PROPOSAL_VARIANTS)
+    assert _proposal_flags("safegrip")["use_multiscale_counterfactual"] is True
+    assert _proposal_flags("safegrip_single_scale_cf")["use_multiscale_counterfactual"] is False
+    assert _proposal_flags("safegrip_no_agreement_veto")["use_agreement_veto"] is False

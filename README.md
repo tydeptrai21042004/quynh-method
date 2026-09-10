@@ -1,12 +1,10 @@
-# SafeGrip-Open v0.9.0
+# SafeGrip-Open v1.0.0
 
-## SafeGrip-CI (v0.9.0)
+## SafeGrip-CI (v1.0.0)
 
-SafeGrip-CI v0.9 keeps the persistent friction state and counterfactual identifiability core, but replaces the nearly symmetric acceptance gate with an **asymmetric counterfactual trust-region veto**. The candidate innovation is supervised independently from update authority, and a local inverse-dynamics agreement objective provides an additional friction-space learning signal without becoming a handcrafted proposal input.
+SafeGrip-CI v1.0 is a **multi-scale counterfactual-observability friction-state estimator**. It keeps the persistent bounded state and independently supervised candidate innovation, but now tests friction sensitivity at multiple perturbation scales, discounts cross-scale inconsistency, and uses a corrected local inverse-dynamics agreement as a mild identifiability-aware inference veto. The full proposal still uses raw vehicle channels; handcrafted excitation remains an explicit ablation rather than a proposal input.
 
-The full point estimator uses raw sensors; handcrafted excitation is retained only as an explicit comparator ablation. The mechanics lower endpoint remains a conditional feasibility constraint, and post-hoc conformal UQ remains separate from the novelty claim. The evaluation pipeline also exports per-seed predictions and uses matched trajectory-aware resampling for statistical comparisons. See `SAFEGRIP_CI_METHOD.md` and `RELATED_WORK_V090.md`.
-
-The literature baselines, LiRA leakage safeguards and paper-readiness gates remain independent of proposal-only changes.
+The release also expands the proposal-only ablation family and point-model search space, and adds a validation-only hyperparameter sensitivity command. See `SAFEGRIP_CI_METHOD.md`, `ABLATION_AND_TUNING.md`, and `PROPOSAL_IMPROVEMENT_REPORT.md`.
 
 ## Final research-release safeguards (v0.5.0)
 
@@ -114,83 +112,53 @@ Paper-reported scores from non-matching protocols are stored as literature conte
 
 ## Proposal and ablations
 
-Full SafeGrip-CI:
+Full SafeGrip-CI v1.0:
 
 ```text
-raw sensor window
-   -> context prior encoder
-   -> candidate innovation encoder
+raw causal sensor window
+   -> context prior + persistent friction state
+   -> independently supervised neural innovation
    -> friction-conditioned dynamics model G(context, mu)
 
-previous friction state + context prior -> persistent prior mu^-
-G(mu^- +/- delta) ---------------------> local identifiability I
-G(mu^-), G(mu_candidate) --------------> candidate acceptance A
-K = A * I
+G(mu^- +/- delta_s), delta_s in {delta/c, delta, c*delta}
+   -> robust multi-scale information
+   -> cross-scale consistency / local-linearity discount
+
+G(mu^-), G(mu_candidate)
+   -> normalized asymmetric residual veto
+
+local inverse-dynamics correction vs neural correction
+   -> agreement-aware veto, weighted by identifiability
+
+K = identifiability * residual_trust * agreement_trust
 q = q_prior + K * innovation
 mu = lower + (mu_upper-lower) * sigmoid(q)
-
-frozen selected point estimator
-   -> residual-scale head
-   -> low-identifiability uncertainty inflation
-   -> block-max split-conformal calibration
-   -> physical interval intersection
 ```
 
-Primary controlled ablations:
+Primary controlled ablations include the existing backbone/state/innovation/bound/UQ controls plus four v1.0 mechanism tests: `safegrip_single_scale_cf`, `safegrip_no_linearity_consistency`, `safegrip_no_agreement_veto`, and `safegrip_no_counterfactual_ranking`. Supplementary optimization controls remove the state-update loss, direction loss, or dynamics pretraining.
 
-| Variant | Question |
-|---|---|
-| `safegrip_backbone_raw` | does CI beat plain raw temporal regression? |
-| `safegrip_persistent` | is persistent state alone useful? |
-| `safegrip_neural_innovation` | does unconditional neural innovation help? |
-| `safegrip_no_identifiability` | is local counterfactual identifiability necessary? |
-| `safegrip_excitation_proxy` | is counterfactual identifiability better than handcrafted excitation? |
-| `safegrip_no_acceptance` | does candidate-consistency acceptance matter? |
-| `safegrip_no_innovation_supervision` | does direct innovation-direction supervision matter? |
-| `safegrip_no_bound` | what does the mechanics lower endpoint contribute? |
-| `safegrip_no_uq` | point estimator without post-hoc UQ |
-| `safegrip` | full SafeGrip-CI |
-
-The ablation registry is explicit and unit-tested so primary variants cannot silently resolve to identical behavior. See `SAFEGRIP_CI_METHOD.md` and `ABLATION_AND_TUNING.md`.
+The ablation registry is explicit and unit-tested. See `SAFEGRIP_CI_METHOD.md` and `ABLATION_AND_TUNING.md`.
 
 ## Fair validation tuning
 
-Proposal:
+Proposal selection:
 
 ```bash
-safegrip tune --dataset lira --trials 30 --no-test
+safegrip tune --dataset lira --trials 80 --no-test
 ```
 
-Literature comparators (same trial budget):
+Literature comparators use their own source-compatible spaces under the same validation endpoint contract. The primary selection metric for both proposal and comparators is **validation RMSE**; the test partition is locked during search.
+
+The v1.0 proposal search covers architecture/optimizer settings, state persistence, innovation scale/window, multi-scale counterfactual displacement/span, identifiability regularization, cross-scale linearity penalty, residual-veto controls, inverse-dynamics ridge/trust-region size, agreement-veto controls, dynamics pretraining, ranking margin, and all point-training auxiliary loss weights. `mu_upper`, `alpha`, and UQ-only `information_beta` are not optimized against point RMSE.
+
+After choosing `best_hparams.yaml`, run a separate validation-only stability study:
 
 ```bash
-safegrip tune-baselines --dataset lira --trials 30
+safegrip sensitivity --dataset lira \
+  --proposal-hparams results/lira_tuning/best_hparams.yaml
 ```
 
-The primary selection objective for both is **validation RMSE**. Each baseline may use its own temporal context and source-appropriate train-only scaler; a common warm-up makes validation/test endpoints identical across methods.
-
-Tuned proposal parameters:
-
-- sequence length and encoder widths;
-- learning rate, weight decay, batch size and Huber transition;
-- candidate-innovation window and scale;
-- persistent-state blend;
-- counterfactual friction displacement and identifiability scale;
-- acceptance temperature;
-- innovation/dynamics/counterfactual/do-no-harm loss weights;
-- identifiability-conditioned uncertainty inflation.
-
-**Not tuned:** `mu_upper` and calibration coverage `alpha`. They are physical/safety assumptions, not validation-score knobs.
-
-Outputs:
-
-- `best_hparams.yaml`
-- `trials.csv`
-- `param_importance.json`
-- `tuning_summary.json`
-- Optuna SQLite study
-
-The test partition is locked during the search. A test result is produced only after a configuration has been selected, unless `--no-test` is used (the paper script uses `--no-test` and then evaluates the selected setup in the common benchmark).
+It exports `hyperparameter_sensitivity.csv` and a protocol JSON without touching test labels.
 
 ## Supported open data
 
@@ -319,7 +287,7 @@ results/lira_baseline_tuning/
 
 ## Documentation
 
-- `SAFEGRIP_CI_METHOD.md` — active v0.8 counterfactual-identifiability formulation.
+- `SAFEGRIP_CI_METHOD.md` — active v1.0 multi-scale counterfactual-observability formulation.
 - `RESEARCH_PROTOCOL.md` — exact claim boundaries and evaluation protocol.
 - `LITERATURE_BASELINES.md` — why every direct baseline is included and what is *not* directly comparable.
 - `DATASETS.md` — open-data inventory and auto-download behavior.
@@ -327,6 +295,8 @@ results/lira_baseline_tuning/
 - `references.bib` — citations used by the benchmark registry.
 - `VALIDATION.md` — commands executed on the packaged repository and current test status.
 - `IMPLEMENTED_IMPROVEMENTS.md` — concise map from the review issues to the implemented code changes.
+- `PROPOSAL_IMPROVEMENT_REPORT.md` — v1.0 novelty/performance analysis, new controls, and recommended experiment order.
+- `RELATED_WORK_V100.md` — current 2024–2026 novelty positioning and conservative contribution wording.
 
 ## 2026-09 fairness/ablation hardening
 

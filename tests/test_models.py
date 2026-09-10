@@ -196,3 +196,64 @@ def test_safegrip_ci_inverse_dynamics_correction_has_observed_direction():
     assert float(cf_delta)>0.0
     assert float(cf_delta)<=0.120001
     assert 0.5<float(agreement)<=1.0
+
+
+def test_safegrip_ci_multiscale_counterfactual_is_consistent_for_linear_dynamics():
+    from safegrip.models import SafeGripV3Net
+    import types
+    model=SafeGripV3Net(
+        3, hidden=16, gru_hidden=8, dropout=0.0, dynamics_indices=[0],
+        counterfactual_delta=0.08, counterfactual_scale_span=2.0,
+        use_multiscale_counterfactual=True, use_linearity_consistency=True,
+    )
+    def dyn(self, context_h, mu, upper=1.3):
+        return mu.reshape(-1,1)
+    model.dynamics_prediction_from_context=types.MethodType(dyn,model)
+    x=torch.zeros(2,6,3); x[:,-1,0]=0.6
+    h=torch.zeros(2,model.hidden); prior=torch.tensor([0.5,0.7]); cand=prior.clone()
+    out=model._counterfactual_authority(x,h,prior,cand,1.3)
+    info_cv, linearity = out[10], out[11]
+    assert torch.all(info_cv < 1e-5)
+    assert torch.all(linearity > 0.9999)
+
+
+def test_safegrip_ci_multiscale_linearity_discount_detects_curvature():
+    from safegrip.models import SafeGripV3Net
+    import types
+    model=SafeGripV3Net(
+        3, hidden=16, gru_hidden=8, dropout=0.0, dynamics_indices=[0],
+        counterfactual_delta=0.15, counterfactual_scale_span=2.5,
+        use_multiscale_counterfactual=True, use_linearity_consistency=True,
+        linearity_penalty=1.0,
+    )
+    def dyn(self, context_h, mu, upper=1.3):
+        return (mu**3).reshape(-1,1)
+    model.dynamics_prediction_from_context=types.MethodType(dyn,model)
+    x=torch.zeros(1,6,3); x[:,-1,0]=0.3
+    h=torch.zeros(1,model.hidden); prior=torch.tensor([0.45]); cand=torch.tensor([0.50])
+    out=model._counterfactual_authority(x,h,prior,cand,1.3)
+    assert float(out[10]) > 0.0
+    assert float(out[11]) < 1.0
+
+
+def test_safegrip_ci_agreement_veto_attenuates_opposite_inverse_update():
+    from safegrip.models import SafeGripV3Net
+    import types
+    common=dict(
+        d=3, hidden=16, gru_hidden=8, dropout=0.0, dynamics_indices=[0],
+        acceptance_temperature=12.0, acceptance_tolerance=0.10, acceptance_strength=0.20,
+        agreement_temperature=12.0, agreement_threshold=0.40, agreement_strength=0.50,
+    )
+    with_veto=SafeGripV3Net(**common, use_agreement_veto=True)
+    no_veto=SafeGripV3Net(**common, use_agreement_veto=False)
+    def dyn(self, context_h, mu, upper=1.3):
+        return mu.reshape(-1,1)
+    with_veto.dynamics_prediction_from_context=types.MethodType(dyn,with_veto)
+    no_veto.dynamics_prediction_from_context=types.MethodType(dyn,no_veto)
+    x=torch.zeros(1,6,3); x[:,-1,0]=0.75
+    h=torch.zeros(1,with_veto.hidden); prior=torch.tensor([0.50]); bad_candidate=torch.tensor([0.35])
+    a=with_veto._counterfactual_authority(x,h,prior,bad_candidate,1.3)
+    b=no_veto._counterfactual_authority(x,h,prior,bad_candidate,1.3)
+    assert float(a[9]) < 0.1  # learned and inverse-dynamics corrections disagree
+    assert float(a[12]) > 0.5
+    assert float(a[2]) < float(b[2])

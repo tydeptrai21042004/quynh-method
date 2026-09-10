@@ -32,21 +32,34 @@ def suggest_safegrip(trial, cfg):
         "weight_decay":trial.suggest_float("weight_decay",*space.get("weight_decay",[1e-6,1e-3]),log=True),
         "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[128,256,512])),
         "huber_beta":trial.suggest_categorical("huber_beta",space.get("huber_beta",[0.03,0.05,0.10])),
-        "evidence_window":trial.suggest_categorical("evidence_window",space.get("evidence_window",[4,8,12])),
-        "delta_scale":trial.suggest_categorical("delta_scale",space.get("delta_scale",[0.5,1.0,1.5])),
-        "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.04,0.08,0.12])),
-        "identifiability_lambda":trial.suggest_categorical("identifiability_lambda",space.get("identifiability_lambda",[0.05,0.2,0.5])),
+        "evidence_window":trial.suggest_categorical("evidence_window",space.get("evidence_window",[4,8,12,16])),
+        "delta_scale":trial.suggest_categorical("delta_scale",space.get("delta_scale",[0.2,0.3,0.5,0.8])),
+        "state_persistence":trial.suggest_categorical("state_persistence",space.get("state_persistence",[0.5,0.7,0.8,0.9,0.97])),
+        "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.03,0.05,0.08,0.12])),
+        "counterfactual_scale_span":trial.suggest_categorical("counterfactual_scale_span",space.get("counterfactual_scale_span",[1.5,2.0,3.0])),
+        "identifiability_lambda":trial.suggest_categorical("identifiability_lambda",space.get("identifiability_lambda",[1e-4,1e-3,1e-2])),
+        "linearity_penalty":trial.suggest_categorical("linearity_penalty",space.get("linearity_penalty",[0.0,0.25,0.5,1.0])),
         "acceptance_temperature":trial.suggest_categorical("acceptance_temperature",space.get("acceptance_temperature",[6.0,12.0,20.0])),
+        "acceptance_margin":trial.suggest_categorical("acceptance_margin",space.get("acceptance_margin",[-0.02,0.0,0.02])),
         "acceptance_tolerance":trial.suggest_categorical("acceptance_tolerance",space.get("acceptance_tolerance",[0.05,0.10,0.20])),
         "acceptance_strength":trial.suggest_categorical("acceptance_strength",space.get("acceptance_strength",[0.2,0.35,0.5])),
+        "agreement_temperature":trial.suggest_categorical("agreement_temperature",space.get("agreement_temperature",[6.0,10.0,16.0])),
+        "agreement_threshold":trial.suggest_categorical("agreement_threshold",space.get("agreement_threshold",[0.2,0.35,0.5])),
+        "agreement_strength":trial.suggest_categorical("agreement_strength",space.get("agreement_strength",[0.0,0.1,0.2,0.35])),
+        "inverse_dynamics_ridge":trial.suggest_categorical("inverse_dynamics_ridge",space.get("inverse_dynamics_ridge",[1e-4,1e-3,1e-2])),
+        "inverse_dynamics_max_step":trial.suggest_categorical("inverse_dynamics_max_step",space.get("inverse_dynamics_max_step",[0.06,0.12,0.20])),
         "innovation_loss_weight":trial.suggest_categorical("innovation_loss_weight",space.get("innovation_loss_weight",[0.10,0.20,0.35])),
         "state_update_loss_weight":trial.suggest_categorical("state_update_loss_weight",space.get("state_update_loss_weight",[0.20,0.35,0.50])),
         "candidate_loss_weight":trial.suggest_categorical("candidate_loss_weight",space.get("candidate_loss_weight",[0.10,0.25,0.40])),
         "cf_agreement_loss_weight":trial.suggest_categorical("cf_agreement_loss_weight",space.get("cf_agreement_loss_weight",[0.0,0.03,0.08])),
+        "direction_loss_weight":trial.suggest_categorical("direction_loss_weight",space.get("direction_loss_weight",[0.0,0.03,0.05,0.10])),
         "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
         "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.02,0.05,0.10])),
+        "counterfactual_margin":trial.suggest_categorical("counterfactual_margin",space.get("counterfactual_margin",[0.0,0.01,0.02,0.05])),
+        "dynamics_pretrain_epochs":trial.suggest_categorical("dynamics_pretrain_epochs",space.get("dynamics_pretrain_epochs",[3,5,8,12])),
         "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.05,0.10,0.20])),
-        "information_beta":trial.suggest_categorical("information_beta",space.get("information_beta",[0.5,1.0,2.0])),
+        # UQ-only: carried explicitly but not suggested against point-RMSE.
+        "information_beta":float(cfg.get("proposal",{}).get("information_beta",1.0)),
     }
 
 def _gaussian_nll(y,p,s):
@@ -79,7 +92,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v090_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v100_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)
@@ -98,7 +111,9 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
     summary={"objective":"validation RMSE","best_value":study.best_value,"best_trial":study.best_trial.number,"best_params":best,
              "test_used_during_search":False,"n_trials_total":len(study.trials),"param_importance":importance,
              "common_eval_start":start,"validation_endpoint_sha256":endpoint_hash,
-             "fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"]}}
+             "fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"],
+                                "information_beta":cfg.get("proposal",{}).get("information_beta",1.0),
+                                "uq_reason":"point-model search uses validation RMSE; UQ-only parameters are not searched against a point metric"}}
     if evaluate_test:
         b=bundle(int(best["sequence_length"])); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
         d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et,ids=b.idt)
@@ -113,6 +128,89 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
                       "excitation":b.et}).to_csv(out/"best_test_predictions.csv",index=False)
     (out/"tuning_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
     return summary
+
+
+SENSITIVITY_DEFAULT_PARAMETERS = (
+    "state_persistence",
+    "counterfactual_delta",
+    "counterfactual_scale_span",
+    "identifiability_lambda",
+    "linearity_penalty",
+    "acceptance_strength",
+    "agreement_strength",
+    "inverse_dynamics_max_step",
+    "innovation_loss_weight",
+    "dynamics_pretrain_epochs",
+)
+
+
+def run_hyperparameter_sensitivity(csv_path, out_dir, cfg, best_hparams, parameters=None, epochs=None):
+    """One-factor-at-a-time sensitivity analysis around selected SafeGrip settings.
+
+    This is deliberately *not* another hyperparameter selection loop.  The
+    selected configuration is held fixed and each scientifically important
+    proposal parameter is swept over the predeclared tuning grid on the locked
+    validation endpoints.  The resulting table is suitable for a robustness
+    figure/table without touching test labels.
+    """
+    out=ensure_dir(out_dir)
+    base=dict(best_hparams or {})
+    hp0={**cfg.get("proposal",{}), **base}
+    seq=int(base.get("sequence_length",cfg.get("sequence_length",16)))
+    start=tuning_eval_start(cfg,include_baselines=True)
+    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,feature_mode="raw")
+    search_space=cfg.get("tuning",{}).get("space",{})
+    parameters=list(parameters or SENSITIVITY_DEFAULT_PARAMETERS)
+    bad=[k for k in parameters if k not in search_space]
+    if bad:
+        raise ValueError("No declared tuning grid for sensitivity parameters: "+", ".join(bad))
+    epochs=int(epochs or cfg.get("tuning",{}).get("epochs",cfg["training"]["epochs_paper"]))
+
+    rows=[]
+    for pi,name in enumerate(parameters):
+        values=list(search_space[name])
+        # Always include the selected value if it is not already on the declared grid.
+        selected=base.get(name,hp0.get(name))
+        if selected is not None and selected not in values:
+            values.append(selected)
+        for value in values:
+            hp=dict(base); hp[name]=value; hp["sequence_length"]=seq
+            # Same seed for all values: isolate the hyperparameter rather than RNG.
+            seed_everything(int(cfg["seed"]))
+            model,_=fit_proposal("safegrip_no_uq",b,cfg,epochs,hp)
+            d=predict_proposal_details(model,"safegrip_no_uq",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev,ids=b.idv)
+            y=np.asarray(b.yv,float); pred=np.asarray(d["prediction"],float)
+            row={
+                "parameter":name,
+                "value":value,
+                "is_selected":bool(selected is not None and value==selected),
+                "validation_rmse":float(np.sqrt(np.mean((y-pred)**2))),
+                "validation_mae":float(np.mean(np.abs(y-pred))),
+                "mean_authority":float(np.mean(d.get("authority",np.nan))),
+                "mean_identifiability":float(np.mean(d.get("identifiability",np.nan))),
+                "mean_acceptance":float(np.mean(d.get("acceptance",np.nan))),
+                "mean_information_scale_cv":float(np.mean(d.get("information_scale_cv",np.nan))),
+                "mean_local_linearity":float(np.mean(d.get("local_linearity",np.nan))),
+                "mean_counterfactual_agreement":float(np.mean(d.get("counterfactual_agreement",np.nan))),
+            }
+            rows.append(row)
+    table=pd.DataFrame(rows)
+    table.to_csv(out/"hyperparameter_sensitivity.csv",index=False)
+    endpoint_ids=b.idv.astype(str).tolist()
+    endpoint_hash=__import__("hashlib").sha256("\n".join(endpoint_ids).encode()).hexdigest()
+    summary={
+        "protocol":"one-factor-at-a-time validation sensitivity around selected SafeGrip hyperparameters",
+        "test_labels_used":False,
+        "same_validation_endpoints":True,
+        "common_eval_start":start,
+        "validation_endpoint_sha256":endpoint_hash,
+        "sequence_length_fixed":seq,
+        "parameters":parameters,
+        "selected_hparams":base,
+        "epochs":epochs,
+    }
+    (out/"hyperparameter_sensitivity.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
+    return table
 
 
 def _baseline_space(cfg,name):

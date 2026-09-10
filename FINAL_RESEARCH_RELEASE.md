@@ -1,23 +1,25 @@
-# SafeGrip-Open v0.9.0 — SafeGrip-CI proposal release
+# SafeGrip-Open v1.0.0 — multi-scale counterfactual trust-region release
 
-v0.9.0 keeps the LiRA decoding, trajectory segmentation, leakage controls, baseline provenance, split-role separation, physics-bound audit, persistent state, and counterfactual-identifiability core, while correcting the v0.8 innovation/acceptance failure mode.
+v1.0.0 keeps the leakage controls, LiRA decoding, trajectory segmentation, baseline provenance, split-role separation, physical-support audit, persistent state and counterfactual-identifiability core. It strengthens the proposal with multi-scale counterfactual observability, cross-scale consistency discounting, corrected inverse-dynamics agreement, and an identifiability-weighted agreement veto.
 
-## Proposal change
+## Proposal changes
 
-The full proposal uses raw sensors and a persistent friction state. A neural branch proposes a friction innovation, trained independently from update authority. Counterfactual friction sensitivity measures local identifiability, while a normalized candidate-vs-prior dynamics comparison provides an asymmetric veto against harmful updates. A detached local inverse-dynamics agreement target supplies an additional physically interpretable learning signal without becoming a handcrafted proposal input. Handcrafted excitation remains only as an explicit comparator ablation.
+- three-scale finite-difference friction sensitivity instead of a single displacement;
+- robust median information aggregation;
+- cross-scale coefficient-of-variation diagnostic and local-linearity discount;
+- corrected 0–1 candidate/inverse-dynamics agreement;
+- inference-time disagreement veto, activated only in proportion to local friction identifiability;
+- additional mechanism diagnostics exported to benchmark predictions and metrics.
 
-## Training and evaluation safeguards
+## Experimental hardening
 
-- persistent state is carried only within trajectory segments and resets at boundaries;
-- candidate innovation supervision is separated from authority learning;
-- neutral counterfactual evidence no longer automatically halves the update;
-- harmful candidate updates can be asymmetrically vetoed;
-- inverse-dynamics agreement is isolated by the `safegrip_no_cf_agreement` ablation;
-- final point output remains inside the conditional identified set;
-- lower-bound and predictive-UQ calibration roles remain disjoint;
-- test labels remain excluded from training, tuning and calibration;
-- per-seed predictions are exported explicitly;
-- statistical comparisons use matched seed/trajectory-aware resampling instead of treating overlapping windows as independent;
-- primary ablation semantics are explicit and unit-tested.
+- new primary ablations for single-scale counterfactuals, linearity consistency, agreement veto and counterfactual ranking;
+- supplementary loss/pretraining ablations;
+- expanded point-model hyperparameter search, including state persistence and inverse-dynamics trust-region settings;
+- UQ-only `information_beta` removed from point-RMSE search;
+- one-factor-at-a-time validation sensitivity command;
+- explicit endpoint-hash outputs for tuning/sensitivity reproducibility.
 
-A `PASS`/`PAPER_READY` gate is a reproducibility and scientific-sanity condition, not a novelty, significance, or publication guarantee.
+## Validation
+
+The repository test suite passes **59 tests**. This release does not assert improved LiRA accuracy before a locked real-data tuning and multi-seed paper run is executed.

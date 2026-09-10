@@ -8,7 +8,7 @@ from .datasets import DATASET_REGISTRY
 from .download import download_dataset
 from .data import prepare_dataset, make_synthetic
 from .benchmark import run_benchmark, run_ablation, PROPOSAL_VARIANTS
-from .tuning import tune_safegrip, tune_literature_baselines, tune_ablation_variants
+from .tuning import tune_safegrip, tune_literature_baselines, tune_ablation_variants, run_hyperparameter_sensitivity
 from .plots import make_plots, make_ablation_plots
 from .experiments import (
     run_excitation_analysis, run_robustness_analysis, run_scarcity_analysis,
@@ -50,6 +50,7 @@ def main():
     t=sub.add_parser("tune"); t.add_argument("--dataset",choices=["lira","synthetic"],required=True); t.add_argument("--trials",type=int,default=None); t.add_argument("--epochs",type=int,default=None); t.add_argument("--no-test",action="store_true")
     tb=sub.add_parser("tune-baselines"); tb.add_argument("--dataset",choices=["lira","synthetic"],required=True); tb.add_argument("--models",default=None,help="comma-separated literature baselines; default is the full paper set"); tb.add_argument("--trials",type=int,default=None); tb.add_argument("--epochs",type=int,default=None,help="optional development cap; omit for each method's paper-mode epoch budget")
     ta=sub.add_parser("tune-ablation"); ta.add_argument("--dataset",choices=["lira","synthetic"],required=True); ta.add_argument("--variants",default=None); ta.add_argument("--trials",type=int,default=15); ta.add_argument("--epochs",type=int,default=None)
+    hs=sub.add_parser("sensitivity",help="one-factor proposal hyperparameter sensitivity on locked validation endpoints"); hs.add_argument("--dataset",choices=["lira","synthetic"],required=True); hs.add_argument("--proposal-hparams",required=True,help="selected best_hparams.yaml from safegrip tune"); hs.add_argument("--parameters",default=None,help="optional comma-separated proposal parameters"); hs.add_argument("--epochs",type=int,default=None)
     st=sub.add_parser("statistics"); st.add_argument("--results",required=True); st.add_argument("--proposal",default="safegrip"); st.add_argument("--bootstrap",type=int,default=2000)
     e=sub.add_parser("experiment",help="run reviewer-oriented SafeGrip analyses")
     e.add_argument("--dataset",choices=["lira","synthetic"],required=True)
@@ -99,6 +100,12 @@ def main():
         csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_ablation_retuned"
         variants=args.variants.split(",") if args.variants else None
         print(json.dumps(tune_ablation_variants(csv,out,cfg,variants,args.trials,args.epochs),indent=2)); return
+    if args.cmd=="sensitivity":
+        csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_hyperparameter_sensitivity"
+        hp=_load_mapping(args.proposal_hparams,"proposal hyperparameter")
+        params=args.parameters.split(",") if args.parameters else None
+        table=run_hyperparameter_sensitivity(csv,out,cfg,hp,params,args.epochs)
+        print(table.to_string(index=False)); return
     if args.cmd=="statistics":
         print(run_statistical_comparison(Path(args.results),Path(args.results)/"statistics",proposal=args.proposal,bootstrap=args.bootstrap).to_string(index=False)); return
     if args.cmd=="experiment":

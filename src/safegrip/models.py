@@ -160,19 +160,23 @@ class SafeGripCINet(nn.Module):
     hypotheses and when the candidate state explains the observed dynamics
     better than the prior state.
 
-    v0.9 uses an *asymmetric counterfactual trust region*.  The learned
+    v1.0 uses a *multi-scale counterfactual trust region*.  The learned
     candidate innovation is no longer multiplied by a symmetric sigmoid that
     defaults to 0.5 when the dynamics residuals are nearly equal.  Instead, a
     candidate keeps the identifiability authority unless there is affirmative
-    counterfactual evidence that it makes the observed dynamics worse.
+    counterfactual evidence that it makes the observed dynamics worse.  Local
+    sensitivity is estimated at several friction displacements and discounted
+    when those derivative estimates are mutually inconsistent.
 
     For prior friction ``mu_prior`` and candidate innovation ``nu``:
 
         q_cand = q_prior + nu
-        I      = local sensitivity of G(context, mu) to mu
+        I      = robust multi-scale sensitivity of G(context, mu) to mu
+        C      = local sensitivity consistency / linearity score
         z      = (R_prior - R_cand) / (R_prior + R_cand + eps)
-        V      = 1 - rho * sigmoid(gamma * (-z - tau))
-        K      = V * I / (I + lambda)
+        A      = learned-vs-inverse-dynamics correction agreement
+        V      = asymmetric residual veto times a disagreement veto
+        K      = V * C * I / (I + lambda)
         q      = q_prior + K * nu
         mu     = L + (U-L) * sigmoid(q)
 
@@ -183,8 +187,9 @@ class SafeGripCINet(nn.Module):
     identifiability certificate rather than a hand-crafted excitation proxy.
     The same local dynamics model also yields a damped Gauss--Newton friction
     correction.  That correction is exposed as a diagnostic and can be used as
-    an auxiliary agreement target during training, but it never consumes test
-    friction labels at inference.
+    an auxiliary agreement target during training.  In v1.0, strong directional
+    disagreement also supplies a mild asymmetric veto at inference.  Neither
+    path consumes test friction labels.
 
     A previous predicted friction can be passed through ``prior_mu``.  This is
     how benchmark inference maintains a real persistent state inside a segment.
@@ -201,8 +206,16 @@ class SafeGripCINet(nn.Module):
                  acceptance_margin: float = 0.0,
                  acceptance_tolerance: float = 0.10,
                  acceptance_strength: float = 0.35,
+                 counterfactual_scale_span: float = 2.0,
+                 use_multiscale_counterfactual: bool = True,
+                 use_linearity_consistency: bool = True,
+                 linearity_penalty: float = 0.50,
                  inverse_dynamics_ridge: float = 0.001,
                  inverse_dynamics_max_step: float = 0.12,
+                 use_agreement_veto: bool = True,
+                 agreement_temperature: float = 10.0,
+                 agreement_threshold: float = 0.35,
+                 agreement_strength: float = 0.15,
                  gate_init_slope: float | None = None, gate_init_threshold: float | None = None,
                  use_temporal: bool = True, use_gate: bool = True,
                  use_bound: bool = True, endpoint_only: bool = False,
@@ -235,8 +248,16 @@ class SafeGripCINet(nn.Module):
         self.acceptance_margin = float(acceptance_margin)
         self.acceptance_tolerance = max(0.0, float(acceptance_tolerance))
         self.acceptance_strength = min(max(float(acceptance_strength), 0.0), 1.0)
+        self.counterfactual_scale_span = max(1.0, float(counterfactual_scale_span))
+        self.use_multiscale_counterfactual = bool(use_multiscale_counterfactual)
+        self.use_linearity_consistency = bool(use_linearity_consistency)
+        self.linearity_penalty = max(0.0, float(linearity_penalty))
         self.inverse_dynamics_ridge = max(1e-8, float(inverse_dynamics_ridge))
         self.inverse_dynamics_max_step = max(1e-4, float(inverse_dynamics_max_step))
+        self.use_agreement_veto = bool(use_agreement_veto)
+        self.agreement_temperature = max(1e-3, float(agreement_temperature))
+        self.agreement_threshold = min(max(float(agreement_threshold), 0.0), 1.0)
+        self.agreement_strength = min(max(float(agreement_strength), 0.0), 1.0)
 
         if dynamics_indices is None:
             dynamics_indices = list(range(min(4, self.d)))
@@ -406,15 +427,50 @@ class SafeGripCINet(nn.Module):
         idx = torch.as_tensor(self.dynamics_indices, dtype=torch.long, device=x.device)
         observed = torch.index_select(x[:, -1, :], 1, idx)
         upper_t = torch.as_tensor(upper, dtype=prior_mu.dtype, device=prior_mu.device)
-        dmu = float(self.counterfactual_delta)
-        mu_plus = torch.clamp(prior_mu + dmu, min=0.0, max=float(upper_t.detach().cpu()))
-        mu_minus = torch.clamp(prior_mu - dmu, min=0.0, max=float(upper_t.detach().cpu()))
-        g_plus = self.dynamics_prediction_from_context(dyn_h, mu_plus, upper)
-        g_minus = self.dynamics_prediction_from_context(dyn_h, mu_minus, upper)
-        denom = torch.clamp((mu_plus - mu_minus).reshape(-1, 1), min=1e-4)
-        sensitivity = (g_plus - g_minus) / denom
-        information_raw = torch.mean(sensitivity.square(), dim=-1)
+        upper_scalar = float(upper_t.detach().cpu())
+
+        # Multi-scale local counterfactual observability.  A single finite
+        # difference can be spuriously large because of local curvature or a
+        # dynamics-model artifact.  Estimate dG/dmu at three symmetric scales,
+        # aggregate the information robustly, and explicitly discount poor
+        # cross-scale consistency.  The single-scale path is kept as a clean
+        # ablation and for backward compatibility.
+        if self.use_multiscale_counterfactual and self.counterfactual_scale_span > 1.0 + 1e-8:
+            span = self.counterfactual_scale_span
+            scales = (1.0 / span, 1.0, span)
+        else:
+            scales = (1.0,)
+        sensitivities = []
+        scale_information = []
+        for scale in scales:
+            dmu = float(self.counterfactual_delta) * float(scale)
+            mu_plus = torch.clamp(prior_mu + dmu, min=0.0, max=upper_scalar)
+            mu_minus = torch.clamp(prior_mu - dmu, min=0.0, max=upper_scalar)
+            g_plus = self.dynamics_prediction_from_context(dyn_h, mu_plus, upper)
+            g_minus = self.dynamics_prediction_from_context(dyn_h, mu_minus, upper)
+            denom = torch.clamp((mu_plus - mu_minus).reshape(-1, 1), min=1e-4)
+            sens = (g_plus - g_minus) / denom
+            sensitivities.append(sens)
+            scale_information.append(torch.mean(sens.square(), dim=-1))
+
+        sensitivity_stack = torch.stack(sensitivities, dim=1)  # [B, S, D]
+        information_stack = torch.stack(scale_information, dim=1)  # [B, S]
+        sensitivity = torch.mean(sensitivity_stack, dim=1)
+        if information_stack.shape[1] > 1:
+            # Median prevents one pathological scale from creating authority.
+            information_raw = torch.median(information_stack, dim=1).values
+            info_mean = torch.mean(information_stack, dim=1)
+            info_std = torch.std(information_stack, dim=1, unbiased=False)
+            information_scale_cv = info_std / torch.clamp(info_mean, min=1e-8)
+            local_linearity = 1.0 / (1.0 + self.linearity_penalty * information_scale_cv.square())
+        else:
+            information_raw = information_stack[:, 0]
+            information_scale_cv = torch.zeros_like(information_raw)
+            local_linearity = torch.ones_like(information_raw)
+        if not self.use_linearity_consistency:
+            local_linearity = torch.ones_like(local_linearity)
         info_gain = information_raw / (information_raw + self.identifiability_lambda)
+        info_gain = torch.clamp(info_gain * local_linearity, 0.0, 1.0)
 
         g_prior = self.dynamics_prediction_from_context(dyn_h, prior_mu, upper)
         g_cand = self.dynamics_prediction_from_context(dyn_h, cand_mu, upper)
@@ -458,22 +514,50 @@ class SafeGripCINet(nn.Module):
         agreement_scale = torch.clamp(
             torch.abs(candidate_delta_mu) + torch.abs(cf_delta_mu), min=1e-4
         )
+        # Normalized correction agreement in [0,1].  Opposite-direction
+        # corrections map to 0, equal corrections to 1.  Earlier releases
+        # remapped this already nonnegative ratio through 0.5*(x+1), which
+        # unintentionally compressed the useful disagreement range to [0.5,1].
         cf_agreement = torch.clamp(
             1.0 - torch.abs(candidate_delta_mu - cf_delta_mu) / agreement_scale,
-            min=-1.0,
+            min=0.0,
             max=1.0,
         )
-        cf_agreement = 0.5 * (cf_agreement + 1.0)
 
-        if not self.use_identifiability:
-            info_gain = torch.ones_like(info_gain)
-        if not self.use_acceptance:
-            acceptance = torch.ones_like(acceptance)
-            veto_probability = torch.zeros_like(veto_probability)
-
+        # Select the authority source *before* the agreement veto.  This is
+        # essential for clean ablations: no-identifiability must not leak the
+        # learned information score through the veto, and the handcrafted
+        # excitation comparator must use its proxy everywhere authority is
+        # confidence-weighted while keeping the rest of the architecture fixed.
         if self.use_excitation_proxy:
             e = self._excitation_from_input(x, excitation)
             info_gain = self.reliability(e)
+        elif not self.use_identifiability:
+            info_gain = torch.ones_like(info_gain)
+
+        # Agreement-aware asymmetric veto.  It never boosts an update and is
+        # deliberately mild by default: only strong disagreement between the
+        # learned candidate and a local inverse-dynamics correction can further
+        # attenuate authority.  This makes inverse-dynamics consistency part of
+        # inference rather than only an auxiliary training loss.
+        agreement_veto_probability = torch.sigmoid(
+            self.agreement_temperature * (self.agreement_threshold - cf_agreement)
+        )
+        if self.use_agreement_veto and self.use_acceptance:
+            # The inverse-dynamics correction itself is unreliable when the
+            # active authority source is weak.  For the full model that source
+            # is counterfactual identifiability; for the proxy ablation it is
+            # the handcrafted excitation score.
+            acceptance = acceptance * (
+                1.0 - self.agreement_strength * agreement_veto_probability * info_gain
+            )
+        else:
+            agreement_veto_probability = torch.zeros_like(agreement_veto_probability)
+
+        if not self.use_acceptance:
+            acceptance = torch.ones_like(acceptance)
+            veto_probability = torch.zeros_like(veto_probability)
+            agreement_veto_probability = torch.zeros_like(agreement_veto_probability)
 
         if not self.use_gate:
             authority = torch.ones_like(info_gain)
@@ -483,6 +567,7 @@ class SafeGripCINet(nn.Module):
             authority, info_gain, acceptance, information_raw,
             residual_prior, residual_candidate, normalized_improvement,
             veto_probability, cf_delta_mu, cf_agreement,
+            information_scale_cv, local_linearity, agreement_veto_probability,
         )
 
     def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
@@ -517,7 +602,8 @@ class SafeGripCINet(nn.Module):
         dyn_h = self._encode_dynamics_context(x)
 
         (authority, info_gain, acceptance, information_raw, r_prior, r_candidate,
-         normalized_improvement, veto_probability, cf_delta_mu, cf_agreement) = self._counterfactual_authority(
+         normalized_improvement, veto_probability, cf_delta_mu, cf_agreement,
+         information_scale_cv, local_linearity, agreement_veto_probability) = self._counterfactual_authority(
             x, dyn_h, prior_prediction, candidate_prediction, upper, excitation=excitation
         )
         effective_innovation = authority * innovation
@@ -546,6 +632,9 @@ class SafeGripCINet(nn.Module):
             "veto_probability": veto_probability,
             "counterfactual_delta_mu": cf_delta_mu,
             "counterfactual_agreement": cf_agreement,
+            "information_scale_cv": information_scale_cv,
+            "local_linearity": local_linearity,
+            "agreement_veto_probability": agreement_veto_probability,
             "persistent_state_used": persistent_mask.to(dtype=x.dtype),
             "features": uq_h,
         }
@@ -562,7 +651,7 @@ class SafeGripCINet(nn.Module):
         return d["prediction"], d["latent"], d["reliability"]
 
 
-# Public/backward-compatible names.  v0.9 uses the CI implementation.
+# Public/backward-compatible names.  v1.0 uses the CI implementation.
 SafeGripV3Net = SafeGripCINet
 SafeGripV2Net = SafeGripCINet
 

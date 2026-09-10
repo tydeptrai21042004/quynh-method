@@ -64,6 +64,19 @@ proposal:
   counterfactual_margin: 0.02
   dynamics_pretrain_epochs: 8
   information_beta: 1.0
+  counterfactual_scale_span: 2.0
+  linearity_penalty: 0.5
+  agreement_temperature: 10.0
+  agreement_threshold: 0.35
+  agreement_strength: 0.15
+  acceptance_tolerance: 0.1
+  acceptance_strength: 0.35
+  inverse_dynamics_ridge: 0.001
+  inverse_dynamics_max_step: 0.12
+  candidate_loss_weight: 0.15
+  cf_agreement_loss_weight: 0.03
+  direction_loss_weight: 0.05
+  state_update_loss_weight: 0.35
 baseline:
   todorovic2022_cnn:
     sequence_length: 100
@@ -213,7 +226,7 @@ baseline_tuning:
       - 0.0
       - 0.3
 tuning:
-  trials: 30
+  trials: 20
   epochs: 40
   space:
     sequence_length:
@@ -283,10 +296,81 @@ tuning:
     - 0.05
     - 0.1
     - 0.2
-    information_beta:
+    state_persistence:
+    - 0.5
+    - 0.7
+    - 0.8
+    - 0.9
+    - 0.97
+    counterfactual_scale_span:
+    - 1.5
+    - 2.0
+    - 3.0
+    linearity_penalty:
+    - 0.0
+    - 0.25
     - 0.5
     - 1.0
-    - 2.0
+    acceptance_margin:
+    - -0.02
+    - 0.0
+    - 0.02
+    agreement_temperature:
+    - 6.0
+    - 10.0
+    - 16.0
+    agreement_threshold:
+    - 0.2
+    - 0.35
+    - 0.5
+    agreement_strength:
+    - 0.0
+    - 0.1
+    - 0.2
+    - 0.35
+    inverse_dynamics_ridge:
+    - 0.0001
+    - 0.001
+    - 0.01
+    inverse_dynamics_max_step:
+    - 0.06
+    - 0.12
+    - 0.2
+    direction_loss_weight:
+    - 0.0
+    - 0.03
+    - 0.05
+    - 0.1
+    counterfactual_margin:
+    - 0.0
+    - 0.01
+    - 0.02
+    - 0.05
+    dynamics_pretrain_epochs:
+    - 3
+    - 5
+    - 8
+    - 12
+    acceptance_tolerance:
+    - 0.05
+    - 0.1
+    - 0.2
+    acceptance_strength:
+    - 0.2
+    - 0.35
+    - 0.5
+    candidate_loss_weight:
+    - 0.1
+    - 0.25
+    - 0.4
+    cf_agreement_loss_weight:
+    - 0.0
+    - 0.03
+    - 0.08
+    state_update_loss_weight:
+    - 0.2
+    - 0.35
+    - 0.5
 split:
   train: 0.6
   calibration: 0.1

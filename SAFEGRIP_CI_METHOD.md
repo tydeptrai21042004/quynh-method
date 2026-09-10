@@ -1,18 +1,14 @@
-# SafeGrip-CI method (v0.9.0)
+# SafeGrip-CI method (v1.0.0)
 
 ## Core contribution
 
-SafeGrip-CI v0.9 keeps the strongest part of v0.8 — persistent friction state plus counterfactual identifiability — but changes how candidate innovations are trained and authorized.
+SafeGrip-CI v1.0 is a **persistent friction-state estimator with multi-scale counterfactual observability and an asymmetric trust-region update**. A learned innovation proposes how the friction state should change; a friction-conditioned dynamics model then asks whether nearby friction hypotheses are distinguishable, whether that sensitivity is locally consistent across perturbation scales, and whether the learned update agrees with a local inverse-dynamics correction. The mechanics lower endpoint remains a support constraint rather than a substitute label.
 
-The estimator follows one principle:
-
-> learn a friction correction independently, estimate whether friction is locally observable from the current dynamics, and only veto the correction when counterfactual dynamics provide affirmative evidence that the candidate is harmful.
-
-The full point estimator uses raw vehicle-sensor channels. Handcrafted excitation remains only as a controlled comparator.
+The central distinction is that **candidate estimation and update authority are separate problems**. The candidate is directly supervised, while its authority is determined by label-free counterfactual evidence at inference.
 
 ## 1. Persistent bounded friction state
 
-At a segment start, a causal context encoder predicts a bounded prior. At later endpoints the previous estimate is blended with the context prior,
+At a segment start, a causal context encoder predicts a bounded context prior. At later endpoints, the previous estimate is blended with that prior,
 
 \[
 \mu_t^- = \rho\hat\mu_{t-1} + (1-\rho)\mu_t^{ctx}.
@@ -21,7 +17,7 @@ At a segment start, a causal context encoder predicts a bounded prior. At later 
 For mechanics lower endpoint \(L_t\) and global upper support \(U\),
 
 \[
-q_t^- = \operatorname{logit}\left(\frac{\mu_t^- - L_t}{U-L_t}\right).
+q_t^- = \operatorname{logit}\!\left(\frac{\mu_t^- - L_t}{U-L_t}\right).
 \]
 
 The persistent state is reset at every trajectory-segment boundary.
@@ -34,57 +30,81 @@ A short causal raw-sensor encoder predicts
 \nu_t = \Delta_{max}\tanh f_\theta(X_{t-H:t}).
 \]
 
-The candidate is
+The unconstrained candidate is
 
 \[
-q_t^{cand}=q_t^-+\nu_t,\qquad
+q_t^{cand}=q_t^-+\nu_t,
+\qquad
 \mu_t^{cand}=L_t+(U-L_t)\sigma(q_t^{cand}).
 \]
 
-Unlike v0.8, the candidate is supervised *before* authority is applied. If
+With training target
 
 \[
-q_t^\star=\operatorname{logit}\left(\frac{\mu_t^\star-L_t}{U-L_t}\right),
+q_t^\star=\operatorname{logit}\!\left(\frac{\mu_t^\star-L_t}{U-L_t}\right),
+\qquad
+\nu_t^\star=q_t^\star-q_t^-,
 \]
 
-the direct innovation target is
-
-\[
-\nu_t^\star=q_t^\star-q_t^-.
-\]
-
-This separates candidate quality from update authority; a low authority can no longer hide a poor candidate during innovation training.
+the raw innovation is supervised before authority is applied. This prevents a low gate value from hiding an inaccurate candidate.
 
 ## 3. Friction-conditioned counterfactual dynamics
 
 A causal dynamics model predicts selected standardized endpoint responses from the window prefix and a friction hypothesis,
 
 \[
-\hat y_t^{dyn}=G_\phi(X_{t-H:t-1},\mu).
+\widehat y_t^{dyn}=G_\phi(X_{t-H:t-1},\mu).
 \]
 
-The endpoint response is not supplied to the dynamics encoder, so the residual comparison cannot be solved by copying the observed endpoint.
+The current endpoint response is excluded from the dynamics encoder, so the counterfactual residual cannot be solved by directly copying the quantity it is asked to explain.
 
-## 4. Counterfactual identifiability
+## 4. Multi-scale counterfactual observability
 
-Nearby friction hypotheses are evaluated around the persistent prior,
+A single finite-difference displacement can produce a spuriously high sensitivity because of local curvature or model artifacts. v1.0 therefore evaluates three symmetric friction perturbation scales,
 
 \[
-J_t \approx
-\frac{G_\phi(X,\mu_t^-+\delta)-G_\phi(X,\mu_t^- -\delta)}{2\delta}.
+\delta_s\in\left\{\frac{\delta}{c},\delta,c\delta\right\}, \qquad c\ge 1.
 \]
 
-The local information score is
+At each scale,
 
 \[
-I_t^{raw}=\frac{1}{d_y}\|J_t\|_2^2,
+J_t^{(s)} \approx
+\frac{G_\phi(X,\mu_t^-+\delta_s)-G_\phi(X,\mu_t^- -\delta_s)}
+{(\mu_t^-+\delta_s)-(\mu_t^- -\delta_s)}.
+\]
+
+Define the scale-specific information
+
+\[
+I_t^{(s)}=\frac{1}{d_y}\left\|J_t^{(s)}\right\|_2^2.
+\]
+
+The robust local information is the median across scales,
+
+\[
+\widetilde I_t=\operatorname{median}_s I_t^{(s)}.
+\]
+
+To detect sensitivity that changes strongly with perturbation scale, compute
+
+\[
+CV_t=\frac{\operatorname{std}_s I_t^{(s)}}
+{\operatorname{mean}_s I_t^{(s)}+\varepsilon},
 \qquad
-I_t=\frac{I_t^{raw}}{I_t^{raw}+\lambda_I}.
+C_t=\frac{1}{1+\lambda_C CV_t^2}.
 \]
 
-This is a model-based local observability signal: it asks whether nearby friction hypotheses produce distinguishable vehicle responses under the current maneuver.
+The final observability/identifiability score is
 
-## 5. Normalized asymmetric counterfactual veto
+\[
+I_t=\frac{\widetilde I_t}{\widetilde I_t+\lambda_I}\,C_t,
+\qquad 0\le I_t\le1.
+\]
+
+This makes authority depend not only on the magnitude of a learned friction sensitivity, but also on whether that sensitivity is stable in the local counterfactual neighborhood.
+
+## 5. Normalized asymmetric residual veto
 
 Let
 
@@ -94,66 +114,94 @@ R_t^- = \|y_t^{dyn}-G_\phi(X,\mu_t^-)\|_2^2,
 R_t^{cand} = \|y_t^{dyn}-G_\phi(X,\mu_t^{cand})\|_2^2.
 \]
 
-v0.8 used a symmetric sigmoid of the raw residual difference. On LiRA that residual difference was extremely small, so the factor collapsed near 0.5 and unnecessarily halved almost every innovation.
-
-v0.9 first forms the scale-free score
+Use the scale-free improvement
 
 \[
 z_t=\frac{R_t^- - R_t^{cand}}
 {R_t^- + R_t^{cand}+\varepsilon},\qquad -1\le z_t\le1.
 \]
 
-The veto probability is
+The residual veto probability is
 
 \[
-p_t^{veto}=\sigma\{-\gamma(z_t+\tau)\},
+p_t^{res}=\sigma\{-\gamma_r(z_t+\tau_r)\},
 \]
 
-and the trust multiplier is
+and the corresponding multiplier is
 
 \[
-V_t=1-\rho_v p_t^{veto}.
+V_t^{res}=1-\rho_r p_t^{res}.
 \]
 
-Therefore neutral evidence leaves \(V_t\) close to one; only a candidate that is materially worse under the counterfactual dynamics model loses substantial authority. This is intentionally asymmetric.
+The mechanism is intentionally asymmetric: neutral evidence does not halve every update; substantial attenuation requires affirmative evidence that the candidate explains the observed dynamics worse than the prior.
 
-## 6. Local inverse-dynamics agreement
+## 6. Local inverse-dynamics correction and agreement
 
-The same finite-difference sensitivity gives a damped local inverse-dynamics step. Let
+Using the mean multi-scale sensitivity
 
 \[
-e_t=y_t^{dyn}-G_\phi(X,\mu_t^-).
+\bar J_t=\frac{1}{S}\sum_sJ_t^{(s)},
 \]
 
-Then
+and prior residual vector
 
 \[
-\Delta\mu_t^{cf}
-=\operatorname{clip}\left(
-\frac{J_t^\top e_t}{J_t^\top J_t+\lambda_{GN}},
+e_t=y_t^{dyn}-G_\phi(X,\mu_t^-),
+\]
+
+a damped one-step inverse-dynamics correction is
+
+\[
+\Delta\mu_t^{cf}=
+\operatorname{clip}\!\left(
+\frac{\bar J_t^\top e_t}{\bar J_t^\top\bar J_t+\lambda_{GN}},
 -r_{max},r_{max}
 \right).
 \]
 
-This quantity uses observed dynamics and the learned dynamics model, not the friction label. During training it is detached and used as a weak auxiliary target for the learned candidate correction. The model also exports a candidate/counterfactual agreement score for diagnostics and ablation.
-
-This creates two independent views of the desired update:
-
-1. a supervised neural friction innovation;
-2. a local inverse-dynamics correction derived from the current dynamics residual.
-
-The auxiliary agreement term encourages consistent direction without turning the inverse-dynamics approximation into a hard estimator.
-
-## 7. Final authority and bounded update
-
-The final authority is
+The learned candidate correction is
 
 \[
-K_t=I_tV_t,
+\Delta\mu_t^{nn}=\mu_t^{cand}-\mu_t^-.
+\]
+
+v1.0 uses a genuine \([0,1]\) agreement score,
+
+\[
+A_t=\operatorname{clip}\!\left(
+1-\frac{|\Delta\mu_t^{nn}-\Delta\mu_t^{cf}|}
+{|\Delta\mu_t^{nn}|+|\Delta\mu_t^{cf}|+\varepsilon},0,1
+\right).
+\]
+
+Thus matching corrections approach 1 and opposite-direction corrections approach 0. The previous implementation unintentionally compressed disagreement into the upper half of the range; this is corrected in v1.0.
+
+## 7. Agreement-aware asymmetric trust region
+
+Strong candidate/inverse-dynamics disagreement provides a second veto,
+
+\[
+p_t^{agr}=\sigma\{\gamma_a(\tau_a-A_t)\}.
+\]
+
+Because the inverse step is itself unreliable when friction is unobservable, its veto is weighted by the same counterfactual observability,
+
+\[
+V_t^{agr}=1-\rho_a\,p_t^{agr}I_t.
+\]
+
+The combined update authority is
+
+\[
+\boxed{K_t=I_tV_t^{res}V_t^{agr}},
 \qquad 0\le K_t\le1.
 \]
 
-The updated latent state and friction estimate are
+This yields a dual-evidence trust region: a correction is suppressed when friction is locally unobservable, when the candidate worsens the dynamics residual, or when an observable local inverse-dynamics direction strongly contradicts the neural candidate.
+
+## 8. Final bounded update
+
+The final state is
 
 \[
 q_t=q_t^-+K_t\nu_t,
@@ -163,64 +211,78 @@ q_t=q_t^-+K_t\nu_t,
 \boxed{\hat\mu_t=L_t+(U-L_t)\sigma(q_t)}.
 \]
 
-Thus \(L_t\le\hat\mu_t\le U\) by construction. If friction is locally unidentifiable, \(I_t\) suppresses the update. If the candidate is clearly counterfactually harmful, \(V_t\) attenuates it. Neutral dynamics evidence no longer imposes an arbitrary 0.5 penalty.
+Therefore \(L_t\le\hat\mu_t\le U\) by construction.
 
-## 8. Training objective
+## 9. Training objective and curriculum
 
-Point training uses only training labels. Lower-bound calibration and predictive-UQ calibration remain disjoint from gradient training.
+Point training uses only the training-label role. Lower-bound calibration and predictive-UQ calibration remain disjoint from gradient training.
 
 \[
 \mathcal L =
 \mathcal L_{point}
 +\lambda_{innov}\mathcal L_{innov}
++\lambda_{update}\mathcal L_{update}
 +\lambda_{cand}\mathcal L_{cand}
 +\lambda_{dir}\mathcal L_{dir}
 +\lambda_{agree}\mathcal L_{agree}
 +\lambda_{dyn}\mathcal L_{dyn}
-+\lambda_{cf}\mathcal L_{cf}
++\lambda_{rank}\mathcal L_{rank}
 +\lambda_{harm}\mathcal L_{harm}.
 \]
 
-- `point`: Huber loss on the final bounded estimate;
-- `innov`: direct supervision of raw \(\nu_t\) toward \(q_t^\star-q_t^-\);
-- `cand`: Huber loss on \(\mu_t^{cand}\), independent of authority;
-- `dir`: penalizes innovation direction opposite to the required latent correction;
-- `agree`: identifiability-weighted agreement with the detached local inverse-dynamics correction;
+- `point`: Huber loss on the final bounded state;
+- `innov`: direct supervision of the raw latent innovation;
+- `update`: supervision of the authority-weighted innovation;
+- `cand`: candidate-point Huber loss before authority;
+- `dir`: sign/direction regularizer on meaningful latent corrections;
+- `agree`: identifiability-weighted agreement with the detached inverse-dynamics correction;
 - `dyn`: friction-conditioned dynamics reconstruction;
-- `cf`: counterfactual ranking that requires the true training friction hypothesis to explain the dynamics better than displaced hypotheses;
-- `harm`: penalizes final accepted updates that increase friction error relative to the prior.
+- `rank`: true-friction dynamics must outperform displaced friction hypotheses by a margin;
+- `harm`: penalizes accepted updates that increase friction error relative to the persistent prior.
 
-The dynamics model is warm-started before joint training so its friction sensitivity is not random when it first influences authority.
+The dynamics branch is warm-started before joint training. This avoids letting random friction sensitivity control the estimator at the beginning of optimization.
 
-## 9. Uncertainty
+## 10. Uncertainty
 
-The residual-scale head is post-hoc, so UQ fitting cannot improve coverage by degrading the selected point estimator. Scale is inflated under low identifiability and calibrated on the disjoint UQ role using the repository's dependence-aware block procedure.
+The residual-scale head is fitted after point-model selection. Scale can be inflated under low counterfactual identifiability and then calibrated on the disjoint UQ role with the dependence-aware block procedure. Conformal calibration is an evaluation/calibration layer and is not part of the core novelty claim.
 
-Conformal calibration is an evaluation/calibration layer, not part of the proposal novelty claim.
+## 11. Controlled ablations
 
-## 10. Primary ablations
+### Primary mechanism ablations
 
-1. `safegrip_backbone_raw` — raw temporal regressor only;
+1. `safegrip_backbone_raw` — raw temporal regression only;
 2. `safegrip_persistent` — persistent bounded state without innovation;
-3. `safegrip_neural_innovation` — candidate innovation with unconditional authority;
-4. `safegrip_no_identifiability` — asymmetric veto without counterfactual identifiability;
-5. `safegrip_excitation_proxy` — handcrafted excitation in place of identifiability;
-6. `safegrip_no_acceptance` — identifiability-only authority, isolating the asymmetric veto;
-7. `safegrip_no_cf_agreement` — removes the local inverse-dynamics agreement objective;
-8. `safegrip_no_innovation_supervision` — removes direct candidate supervision;
-9. `safegrip_no_bound` — removes the sample-specific mechanics lower endpoint;
-10. `safegrip_no_uq` — full point estimator without post-hoc UQ;
-11. `safegrip` — full v0.9 estimator.
+3. `safegrip_neural_innovation` — neural innovation with unconditional authority;
+4. `safegrip_no_identifiability` — no counterfactual observability score;
+5. `safegrip_excitation_proxy` — handcrafted excitation replaces counterfactual observability;
+6. `safegrip_no_acceptance` — removes residual-based veto;
+7. `safegrip_no_cf_agreement` — removes inverse-dynamics agreement training and inference use;
+8. `safegrip_single_scale_cf` — returns to one finite-difference scale;
+9. `safegrip_no_linearity_consistency` — retains multi-scale sensitivity but removes the cross-scale consistency discount;
+10. `safegrip_no_agreement_veto` — retains agreement supervision but removes its inference-time veto;
+11. `safegrip_no_counterfactual_ranking` — removes dynamics counterfactual ranking;
+12. `safegrip_no_innovation_supervision` — removes direct candidate supervision;
+13. `safegrip_no_bound` — removes the sample-specific mechanics lower support;
+14. `safegrip_no_uq` — full point estimator without post-hoc UQ;
+15. `safegrip` — full v1.0 estimator.
 
-## 11. Statistical contract
+### Supplementary optimization ablations
 
-v0.9 exports both `predictions.csv` and `predictions_by_seed.csv`.
+- `safegrip_no_state_update_loss`;
+- `safegrip_no_direction_loss`;
+- `safegrip_no_dynamics_pretrain`.
 
-- `metrics.csv` is the mean/std of independently trained seed metrics;
-- `predictions.csv` is an explicitly labeled seed ensemble for diagnostics;
-- statistical inference uses matched per-seed predictions and resamples trajectory segments, not overlapping endpoints as independent observations;
-- diagnostic columns such as identifiability, veto probability, candidate state and persistence flags are excluded from the comparator registry.
+These are kept separate from the core mechanism table because they test optimization design rather than the estimator's inference structure.
+
+## 12. Hyperparameter stability contract
+
+The repository now supports two distinct experiments:
+
+1. **Optuna selection** (`safegrip tune`) chooses point-model hyperparameters using validation RMSE only.
+2. **One-factor sensitivity** (`safegrip sensitivity`) freezes the selected model settings and sweeps scientifically important proposal parameters over their predeclared grid on the same locked validation endpoints.
+
+The second experiment is not used to select a better test result. It is evidence about stability around the selected configuration.
 
 ## Claim boundary
 
-The implementation is designed to be more distinctive and to directly address the v0.8 LiRA failure mode. The included synthetic sanity benchmark shows that the revised implementation can learn a non-degenerate positive-R2 estimator, but this is not evidence that LiRA performance has improved. The revised real-data trust run must be executed before making any new empirical claim.
+v1.0 creates a sharper methodological distinction from generic physics-informed regression, adaptive observer gains, handcrafted excitation factors, and uncertainty-only friction estimators. However, the repository does **not** claim that this exact combination is the first ever without a formal exhaustive literature/patent search. It also does not claim improved LiRA accuracy until the full leakage-safe real-data tuning and multi-seed benchmark have been run.

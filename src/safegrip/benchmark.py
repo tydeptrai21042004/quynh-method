@@ -33,6 +33,13 @@ PROPOSAL_VARIANTS=(
     "safegrip_excitation_proxy",
     "safegrip_no_acceptance",
     "safegrip_no_cf_agreement",
+    "safegrip_single_scale_cf",
+    "safegrip_no_linearity_consistency",
+    "safegrip_no_agreement_veto",
+    "safegrip_no_counterfactual_ranking",
+    "safegrip_no_state_update_loss",
+    "safegrip_no_direction_loss",
+    "safegrip_no_dynamics_pretrain",
     "safegrip_no_innovation_supervision",
     "safegrip_no_bound",
     "safegrip_no_uq",
@@ -55,6 +62,10 @@ PRIMARY_ABLATION_VARIANTS=(
     "safegrip_excitation_proxy",
     "safegrip_no_acceptance",
     "safegrip_no_cf_agreement",
+    "safegrip_single_scale_cf",
+    "safegrip_no_linearity_consistency",
+    "safegrip_no_agreement_veto",
+    "safegrip_no_counterfactual_ranking",
     "safegrip_no_innovation_supervision",
     "safegrip_no_bound",
     "safegrip_no_uq",
@@ -495,7 +506,7 @@ def _proposal_flags(variant: str) -> dict:
     """Explicit ablation registry.
 
     v0.7 inferred behavior from variant names and accidentally made several
-    nominally different ablations identical.  v0.9 uses an explicit semantic
+    nominally different ablations identical.  v1.0 uses an explicit semantic
     specification so every primary ablation changes a concrete model path.
     """
     aliases={
@@ -527,8 +538,8 @@ def _proposal_flags(variant: str) -> dict:
             use_innovation=True, use_persistent_state=True, use_identifiability=False, use_acceptance=True,
             use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
             use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
-        "safegrip_excitation_proxy": dict(model_kind="ci", feature_mode="safegrip", use_temporal=True,
-            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=False,
+        "safegrip_excitation_proxy": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
             use_excitation_proxy=True, use_innovation_supervision=True, use_dynamics_loss=True,
             use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
         "safegrip_no_acceptance": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
@@ -539,6 +550,40 @@ def _proposal_flags(variant: str) -> dict:
             use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
             use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
             use_counterfactual_loss=True, use_cf_agreement_loss=False, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_single_scale_cf": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True,
+            use_multiscale_counterfactual=False, use_linearity_consistency=False),
+        "safegrip_no_linearity_consistency": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True,
+            use_linearity_consistency=False),
+        "safegrip_no_agreement_veto": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True,
+            use_agreement_veto=False),
+        "safegrip_no_counterfactual_ranking": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=False, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True),
+        "safegrip_no_state_update_loss": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True,
+            use_state_update_loss=False),
+        "safegrip_no_direction_loss": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True,
+            use_direction_loss=False),
+        "safegrip_no_dynamics_pretrain": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
+            use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
+            use_excitation_proxy=False, use_innovation_supervision=True, use_dynamics_loss=True,
+            use_counterfactual_loss=True, use_cf_agreement_loss=True, use_bound=True, use_uq=True, use_calibrated_lower=True,
+            use_dynamics_pretrain=False),
         "safegrip_no_innovation_supervision": dict(model_kind="ci", feature_mode="raw", use_temporal=True,
             use_innovation=True, use_persistent_state=True, use_identifiability=True, use_acceptance=True,
             use_excitation_proxy=False, use_innovation_supervision=False, use_dynamics_loss=True,
@@ -567,6 +612,16 @@ def _proposal_flags(variant: str) -> dict:
     if canonical not in specs:
         raise ValueError(variant)
     out=dict(specs[canonical])
+    out.setdefault("use_multiscale_counterfactual", True)
+    out.setdefault("use_linearity_consistency", True)
+    out.setdefault("use_agreement_veto", bool(out.get("use_acceptance", False) and out.get("use_cf_agreement_loss", False)))
+    out.setdefault("use_state_update_loss", bool(out.get("use_innovation_supervision", False)))
+    out.setdefault("use_direction_loss", bool(out.get("use_innovation_supervision", False)))
+    out.setdefault("use_dynamics_pretrain", bool(out.get("use_dynamics_loss", False)))
+    # Removing all counterfactual agreement must remove both its training loss
+    # and its inference-time disagreement veto.
+    if canonical == "safegrip_no_cf_agreement":
+        out["use_agreement_veto"] = False
     out["canonical_variant"]=canonical
     out["raw_features_only"]=out["feature_mode"]=="raw"
     # Compatibility fields used by old notebooks/tests.
@@ -604,8 +659,16 @@ def _proposal_model(variant: str, b: Bundle, hp: dict):
         acceptance_margin=float(hp.get("acceptance_margin",0.0)),
         acceptance_tolerance=float(hp.get("acceptance_tolerance",0.10)),
         acceptance_strength=float(hp.get("acceptance_strength",0.35)),
+        counterfactual_scale_span=float(hp.get("counterfactual_scale_span",2.0)),
+        use_multiscale_counterfactual=flags["use_multiscale_counterfactual"],
+        use_linearity_consistency=flags["use_linearity_consistency"],
+        linearity_penalty=float(hp.get("linearity_penalty",0.50)),
         inverse_dynamics_ridge=float(hp.get("inverse_dynamics_ridge",0.001)),
         inverse_dynamics_max_step=float(hp.get("inverse_dynamics_max_step",0.12)),
+        use_agreement_veto=flags["use_agreement_veto"],
+        agreement_temperature=float(hp.get("agreement_temperature",10.0)),
+        agreement_threshold=float(hp.get("agreement_threshold",0.35)),
+        agreement_strength=float(hp.get("agreement_strength",0.15)),
         use_temporal=flags["use_temporal"], use_gate=flags["use_gate"], use_bound=flags["use_bound"],
         endpoint_only=not flags["use_temporal"], use_identifiability=flags["use_identifiability"],
         use_acceptance=flags["use_acceptance"], use_persistent_state=flags["use_persistent_state"],
@@ -628,7 +691,9 @@ def proposal_hparams(cfg, overrides=None):
         "state_persistence":0.85, "dynamics_pretrain_epochs":8,
         "acceptance_temperature":12.0, "acceptance_margin":0.0,
         "acceptance_tolerance":0.10, "acceptance_strength":0.35,
+        "counterfactual_scale_span":2.0, "linearity_penalty":0.50,
         "inverse_dynamics_ridge":0.001, "inverse_dynamics_max_step":0.12,
+        "agreement_temperature":10.0, "agreement_threshold":0.35, "agreement_strength":0.15,
         "innovation_loss_weight":0.20, "state_update_loss_weight":0.35, "candidate_loss_weight":0.15,
         "cf_agreement_loss_weight":0.03, "direction_loss_weight":0.05,
         "dynamics_loss_weight":0.10,
@@ -705,7 +770,8 @@ def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False,
     keys=("prediction","latent","reliability","features","prior_prediction","evidence_delta",
           "prior_latent","identifiability","acceptance","information_raw","candidate_prediction",
           "dynamics_residual_prior","dynamics_residual_candidate","persistent_state_used",
-          "normalized_improvement","veto_probability","counterfactual_delta_mu","counterfactual_agreement")
+          "normalized_improvement","veto_probability","counterfactual_delta_mu","counterfactual_agreement",
+          "information_scale_cv","local_linearity","agreement_veto_probability")
     store={k:[] for k in keys}
     excitation_arr=None if excitation is None else np.asarray(excitation,dtype=np.float32)
     X=np.asarray(X,dtype=np.float32); lower=np.asarray(lower,dtype=np.float32)
@@ -760,6 +826,8 @@ def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False,
             cat("persistent_state_used",np.zeros_like(pred)),
             cat("normalized_improvement",np.zeros_like(pred)),cat("veto_probability",np.zeros_like(pred)),
             cat("counterfactual_delta_mu",np.zeros_like(pred)),cat("counterfactual_agreement",np.full_like(pred,0.5)),
+            cat("information_scale_cv",np.zeros_like(pred)),cat("local_linearity",np.ones_like(pred)),
+            cat("agreement_veto_probability",np.zeros_like(pred)),
         )
     return pred,latent,rel
 
@@ -772,7 +840,7 @@ def _fit_residual_scale(model, b: Bundle, cfg: dict, hp: dict, lower_val: np.nda
         model,b.Xv,lower_val,float(cfg["mu_upper"]),return_features=True,
         excitation=b.ev,ids=b.idv,stateful=True
     )
-    p,_,_,h,_,_,_,ident,_,_,_,_,_,_,_,_,_,_=vals
+    p,_,_,h,_,_,_,ident,_,_,_,_,_,_,_,_,_,_,_,_,_=vals
     target=np.maximum(np.abs(np.asarray(b.yv,float)-p),float(hp["uq_scale_floor"]))
     info=np.clip(np.asarray(ident,float),0.0,1.0)
     beta=max(0.0,float(hp.get("information_beta",1.0)))
@@ -820,17 +888,17 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     prev_idx,pair_valid=_previous_pair_indices(b.idtr,1)
     dataset=TensorDataset(
         torch.from_numpy(b.Xtr),torch.from_numpy(b.ytr),torch.from_numpy(lo_train),torch.from_numpy(b.etr),
-        torch.from_numpy(b.Xtr[prev_idx]),torch.from_numpy(lo_train[prev_idx]),
+        torch.from_numpy(b.Xtr[prev_idx]),torch.from_numpy(lo_train[prev_idx]),torch.from_numpy(b.etr[prev_idx]),
         torch.from_numpy(pair_valid.astype(np.bool_)),
     )
     dl=DataLoader(dataset,batch_size=int(hp["batch_size"]),shuffle=True)
     mu_u=float(cfg["mu_upper"]); best=None; bestloss=float("inf"); bad=0
     patience=int(cfg["training"].get("patience",10)); huber_beta=float(hp.get("huber_beta",0.05))
     innov_w=float(hp.get("innovation_loss_weight",0.20)) if flags["use_innovation_supervision"] else 0.0
-    update_w=max(0.0,float(hp.get("state_update_loss_weight",0.35))) if flags["use_innovation_supervision"] else 0.0
+    update_w=max(0.0,float(hp.get("state_update_loss_weight",0.35))) if flags["use_innovation_supervision"] and flags.get("use_state_update_loss",True) else 0.0
     candidate_w=max(0.0,float(hp.get("candidate_loss_weight",0.15))) if flags["use_innovation_supervision"] else 0.0
     cf_agreement_w=max(0.0,float(hp.get("cf_agreement_loss_weight",0.05))) if flags.get("use_cf_agreement_loss",False) else 0.0
-    direction_w=max(0.0,float(hp.get("direction_loss_weight",0.05))) if flags["use_innovation_supervision"] else 0.0
+    direction_w=max(0.0,float(hp.get("direction_loss_weight",0.05))) if flags["use_innovation_supervision"] and flags.get("use_direction_loss",True) else 0.0
     dyn_w=float(hp.get("dynamics_loss_weight",0.10)) if flags["use_dynamics_loss"] else 0.0
     cf_w=float(hp.get("counterfactual_loss_weight",0.05)) if flags["use_counterfactual_loss"] else 0.0
     harm_w=max(0.0,float(hp.get("do_no_harm_weight",0.10))) if flags["use_innovation"] else 0.0
@@ -842,13 +910,13 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     # suppress every innovation at the beginning of training.  Counterfactual
     # ranking forces G to use friction rather than reconstructing the endpoint
     # from context alone.
-    pre_epochs=int(hp.get("dynamics_pretrain_epochs",8)) if flags["model_kind"]=="ci" and flags["use_dynamics_loss"] else 0
+    pre_epochs=int(hp.get("dynamics_pretrain_epochs",8)) if flags["model_kind"]=="ci" and flags["use_dynamics_loss"] and flags.get("use_dynamics_pretrain",True) else 0
     if pre_epochs>0:
         dyn_params=list(model.dynamics_gru.parameters())+list(model.dynamics_context.parameters())+list(model.dynamics_head.parameters())
         dyn_opt=torch.optim.AdamW(dyn_params,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
         for _pre in range(min(pre_epochs,max(1,int(epochs)))):
             model.train()
-            for xb,yb,lb,eb,xp,lp,pair_mask in dl:
+            for xb,yb,lb,eb,xp,lp,ep,pair_mask in dl:
                 xb=xb.to(dev); yb=yb.to(dev); dyn_opt.zero_grad()
                 dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
                 dloss=nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
@@ -863,15 +931,15 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
 
     for _ in range(int(epochs)):
         model.train()
-        for xb,yb,lb,eb,xp,lp,pair_mask in dl:
+        for xb,yb,lb,eb,xp,lp,ep,pair_mask in dl:
             xb=xb.to(dev); yb=yb.to(dev); lb=lb.to(dev); eb=eb.to(dev)
-            xp=xp.to(dev); lp=lp.to(dev); pair_mask=pair_mask.to(dev)
+            xp=xp.to(dev); lp=lp.to(dev); ep=ep.to(dev); pair_mask=pair_mask.to(dev)
             opt.zero_grad()
             if flags["model_kind"]=="backbone":
                 d=model.forward_details(xb,None,mu_u,excitation=eb)
             else:
                 with torch.no_grad():
-                    pd=model.forward_details(xp,lp,mu_u,excitation=eb)
+                    pd=model.forward_details(xp,lp,mu_u,excitation=ep)
                     prior_mu=pd["prediction"].detach()
                 d=model.forward_details(xb,lb,mu_u,excitation=eb,prior_mu=prior_mu,prior_mask=pair_mask)
             pred=d["prediction"]
@@ -881,7 +949,7 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
                 if innov_w>0:
                     target_q=_target_latent(yb,lb,mu_u,flags["use_bound"])
                     desired=(target_q-d["prior_latent"].detach())
-                    # v0.9: supervise the *raw candidate innovation*, not the
+                    # v1.0: supervise the *raw candidate innovation*, not the
                     # authority-weighted update.  Candidate quality and update
                     # authority are intentionally separate estimation tasks.
                     loss=loss+innov_w*nn.functional.smooth_l1_loss(
@@ -954,7 +1022,7 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
         if len(Xcal):
             vals=_forward_point(model,Xcal,lower_cal,mu_u,return_features=True,
                                 excitation=ecal,ids=idcal,stateful=True)
-            pcal,_,_,hcal,_,_,_,ident,_,_,_,_,_,_,_,_,_,_=vals
+            pcal,_,_,hcal,_,_,_,ident,_,_,_,_,_,_,_,_,_,_,_,_,_=vals
             model.scale_head.eval()
             with torch.no_grad():
                 base=model.scale_head(torch.from_numpy(hcal.astype(np.float32)).to(dev)).cpu().numpy()
@@ -979,7 +1047,7 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
     )
     (prediction,latent,authority,h,prior,innovation,prior_latent,ident,acceptance,info_raw,
      candidate,r_prior,r_candidate,persistent_used,normalized_improvement,veto_probability,
-     cf_delta_mu,cf_agreement)=vals
+     cf_delta_mu,cf_agreement,information_scale_cv,local_linearity,agreement_veto_probability)=vals
     details={
         "prediction":prediction,"raw_mean":prediction.copy(),"latent_score":latent,
         "prior_latent":prior_latent,"prior_prediction":prior,"candidate_prediction":candidate,
@@ -989,6 +1057,8 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
         "dynamics_residual_prior":r_prior,"dynamics_residual_candidate":r_candidate,
         "normalized_improvement":normalized_improvement,"veto_probability":veto_probability,
         "counterfactual_delta_mu":cf_delta_mu,"counterfactual_agreement":cf_agreement,
+        "information_scale_cv":information_scale_cv,"local_linearity":local_linearity,
+        "agreement_veto_probability":agreement_veto_probability,
         "persistent_state_used":persistent_used,"sigma":None,"bound":bound,
     }
     if flags["use_uq"] and getattr(model,"scale_head",None) is not None:
@@ -1338,6 +1408,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     seed_priors=[]; seed_deltas=[]; seed_prior_latents=[]
     seed_ident=[]; seed_acceptance=[]; seed_info_raw=[]; seed_candidates=[]; seed_persistent=[]
     seed_veto=[]; seed_norm_improve=[]; seed_cf_delta=[]; seed_cf_agreement=[]
+    seed_info_cv=[]; seed_linearity=[]; seed_agreement_veto=[]
     seed_uq_initial_scales=[]
     seed_pi_low=[]; seed_pi_high=[]; seed_pi_low_raw=[]; seed_pi_high_raw=[]; seed_gates=[]; seed_q=[]; seed_blocks=[]; seed_uq_counts=[]
     for seed in seed_list:
@@ -1362,6 +1433,9 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
                          "mean_veto_probability":float(np.mean(d["veto_probability"])),
                          "mean_normalized_improvement":float(np.mean(d["normalized_improvement"])),
                          "mean_counterfactual_agreement":float(np.mean(d["counterfactual_agreement"])),
+                         "mean_information_scale_cv":float(np.mean(d["information_scale_cv"])),
+                         "mean_local_linearity":float(np.mean(d["local_linearity"])),
+                         "mean_agreement_veto_probability":float(np.mean(d["agreement_veto_probability"])),
                          "mean_information_raw":float(np.mean(d["information_raw"])),
                          "persistent_state_use_rate":float(np.mean(d["persistent_state_used"])),
                          "prior_rmse":float(np.sqrt(np.mean((proposal_bundle.yt-d["prior_prediction"])**2))),
@@ -1377,6 +1451,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         seed_ident.append(d["identifiability"]); seed_acceptance.append(d["acceptance"]); seed_info_raw.append(d["information_raw"])
         seed_veto.append(d["veto_probability"]); seed_norm_improve.append(d["normalized_improvement"])
         seed_cf_delta.append(d["counterfactual_delta_mu"]); seed_cf_agreement.append(d["counterfactual_agreement"])
+        seed_info_cv.append(d["information_scale_cv"]); seed_linearity.append(d["local_linearity"]); seed_agreement_veto.append(d["agreement_veto_probability"])
         seed_candidates.append(d["candidate_prediction"]); seed_persistent.append(d["persistent_state_used"])
         seed_uq_initial_scales.append(float(getattr(model,"uq_scale_initialization",np.nan)))
         if d["sigma"] is not None: proposal_sigmas.append(d["sigma"])
@@ -1403,6 +1478,9 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     preds[name+"_normalized_improvement"]=np.mean(np.stack(seed_norm_improve),axis=0)
     preds[name+"_counterfactual_delta_mu"]=np.mean(np.stack(seed_cf_delta),axis=0)
     preds[name+"_counterfactual_agreement"]=np.mean(np.stack(seed_cf_agreement),axis=0)
+    preds[name+"_information_scale_cv"]=np.mean(np.stack(seed_info_cv),axis=0)
+    preds[name+"_local_linearity"]=np.mean(np.stack(seed_linearity),axis=0)
+    preds[name+"_agreement_veto_probability"]=np.mean(np.stack(seed_agreement_veto),axis=0)
     if proposal_sigmas: preds[name+"_sigma"]=np.mean(np.stack(proposal_sigmas),axis=0)
     if seed_pi_low:
         preds[name+"_pi95_low_physics"]=np.mean(np.stack(seed_pi_low),axis=0)
@@ -1411,11 +1489,11 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         preds[name+"_pi95_high_raw"]=np.mean(np.stack(seed_pi_high_raw),axis=0)
 
     (out/"proposal_reliability.json").write_text(json.dumps({
-        "method":"counterfactual identifiability + asymmetric trust-region veto",
-        "authority":"K = trust * I/(I+lambda), trust = 1-rho*sigmoid(gamma*(-z-tau)), z=(R_prior-R_candidate)/(R_prior+R_candidate+eps)",
-        "identifiability":"local sensitivity of friction-conditioned dynamics G(context, mu)",
-        "acceptance":"backward-compatible name for the trust multiplier; neutral evidence preserves most authority and only materially harmful candidates are vetoed",
-        "counterfactual_agreement":"local damped inverse-dynamics correction is used as a detached auxiliary target for the learned candidate innovation",
+        "method":"multi-scale counterfactual identifiability + asymmetric residual/disagreement trust-region veto",
+        "authority":"K = acceptance * local_linearity * I/(I+lambda); I is a robust median of multi-scale sensitivity energies",
+        "identifiability":"multi-scale local sensitivity of friction-conditioned dynamics G(context, mu), discounted by cross-scale inconsistency",
+        "acceptance":"neutral evidence preserves most authority; materially harmful candidates and strong learned-vs-inverse-dynamics disagreement can only attenuate updates",
+        "counterfactual_agreement":"local damped inverse-dynamics correction is both a detached auxiliary target and a mild inference-time disagreement veto",
         "handcrafted_excitation_used_by_full_proposal":False,
         "persistent_state":"previous predicted friction is carried within each trajectory segment",
         "per_seed_uq_initial_scale":seed_uq_initial_scales,
@@ -1452,8 +1530,8 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         "calibration_labels_used_in_gradient_training":False,
         "proposal_feature_engineering_label_free":True,
         "proposal_point_loss":"Huber point loss + raw candidate-innovation supervision + candidate point loss + directional innovation loss + detached inverse-dynamics agreement + friction-conditioned dynamics loss + counterfactual ranking + do-no-harm update penalty",
-        "proposal_architecture":"persistent friction state + raw-sensor candidate innovation + counterfactual identifiability + asymmetric counterfactual veto",
-        "proposal_reliability":"K = trust * I/(I+lambda); trust is an asymmetric veto near 1 under neutral evidence rather than a symmetric 0.5 gate",
+        "proposal_architecture":"persistent friction state + raw-sensor candidate innovation + multi-scale counterfactual observability + local-linearity discount + asymmetric residual/agreement veto",
+        "proposal_reliability":"K = acceptance * local_linearity * I/(I+lambda); authority is never boosted by the veto paths and neutral evidence preserves most authority",
         "proposal_bound_parameterization":"lower + (mu_upper-lower)*sigmoid(q_prior + K*innovation)",
         "proposal_uq":"post-hoc residual scale + block-max split-conformal multiplier",
         "proposal_uq_dependence_note":"block-max calibration is a conservative dependence mitigation, not an arbitrary-dependence finite-sample guarantee",
@@ -1507,6 +1585,7 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
         print(f"[ablation/CI] {variant} -> {flags['canonical_variant']} [{flags['feature_mode']}]")
         variant_preds=[]; variant_raw=[]; variant_sigma=[]; variant_auth=[]; variant_ident=[]; variant_accept=[]; lo_int=[]; hi_int=[]
         variant_veto=[]; variant_norm=[]; variant_cf_delta=[]; variant_cf_agree=[]
+        variant_info_cv=[]; variant_linearity=[]; variant_agreement_veto=[]
         for seed in seed_list:
             seed_everything(int(seed)); t0=time.time(); model,hp=fit_proposal(variant,vb,cfg,epochs,hp_overrides)
             d=predict_proposal_details(model,variant,vb.Xt,vb.lot,vb.raw_lot,cfg["mu_upper"],excitation=vb.et,ids=vb.idt)
@@ -1522,6 +1601,9 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
                  "mean_veto_probability":float(np.mean(d["veto_probability"])),
                  "mean_normalized_improvement":float(np.mean(d["normalized_improvement"])),
                  "mean_counterfactual_agreement":float(np.mean(d["counterfactual_agreement"])),
+                 "mean_information_scale_cv":float(np.mean(d["information_scale_cv"])),
+                 "mean_local_linearity":float(np.mean(d["local_linearity"])),
+                 "mean_agreement_veto_probability":float(np.mean(d["agreement_veto_probability"])),
                  "mean_information_raw":float(np.mean(d["information_raw"])),
                  "persistent_state_use_rate":float(np.mean(d["persistent_state_used"])),
                  "prior_rmse":float(np.sqrt(np.mean((vb.yt-d["prior_prediction"])**2))),
@@ -1532,6 +1614,7 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
             variant_auth.append(d["authority"]); variant_ident.append(d["identifiability"]); variant_accept.append(d["acceptance"])
             variant_veto.append(d["veto_probability"]); variant_norm.append(d["normalized_improvement"])
             variant_cf_delta.append(d["counterfactual_delta_mu"]); variant_cf_agree.append(d["counterfactual_agreement"])
+            variant_info_cv.append(d["information_scale_cv"]); variant_linearity.append(d["local_linearity"]); variant_agreement_veto.append(d["agreement_veto_probability"])
             if d["sigma"] is not None: variant_sigma.append(d["sigma"])
             if "pi95_low_physics" in d: lo_int.append(d["pi95_low_physics"]); hi_int.append(d["pi95_high_physics"])
         preds[variant]=np.mean(np.stack(variant_preds),axis=0); preds[variant+"_raw"]=np.mean(np.stack(variant_raw),axis=0)
@@ -1542,6 +1625,9 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
         preds[variant+"_normalized_improvement"]=np.mean(np.stack(variant_norm),axis=0)
         preds[variant+"_counterfactual_delta_mu"]=np.mean(np.stack(variant_cf_delta),axis=0)
         preds[variant+"_counterfactual_agreement"]=np.mean(np.stack(variant_cf_agree),axis=0)
+        preds[variant+"_information_scale_cv"]=np.mean(np.stack(variant_info_cv),axis=0)
+        preds[variant+"_local_linearity"]=np.mean(np.stack(variant_linearity),axis=0)
+        preds[variant+"_agreement_veto_probability"]=np.mean(np.stack(variant_agreement_veto),axis=0)
         if variant_sigma: preds[variant+"_sigma"]=np.mean(np.stack(variant_sigma),axis=0)
         if lo_int:
             preds[variant+"_pi95_low_physics"]=np.mean(np.stack(lo_int),axis=0); preds[variant+"_pi95_high_physics"]=np.mean(np.stack(hi_int),axis=0)
@@ -1549,13 +1635,17 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     by_seed=pd.DataFrame(results); summary=_aggregate_seed_metrics(results)
     summary.to_csv(out/"ablation_metrics.csv",index=False); by_seed.to_csv(out/"ablation_metrics_by_seed.csv",index=False); preds.to_csv(out/"ablation_predictions.csv",index=False)
     (out/"ablation_design.json").write_text(json.dumps({
-        "proposal":"SafeGrip-CI v0.9 counterfactual-identifiability state estimator with asymmetric trust-region veto",
+        "proposal":"SafeGrip-CI v1.0 multi-scale counterfactual-observability state estimator with residual/agreement trust-region veto",
         "primary_variants":variants,
         "semantic_specs":semantic,
         "key_comparisons":[
             "safegrip_excitation_proxy vs safegrip tests handcrafted excitation against learned counterfactual identifiability",
             "safegrip_no_acceptance vs safegrip isolates the asymmetric counterfactual veto",
-            "safegrip_no_cf_agreement vs safegrip isolates the inverse-dynamics agreement auxiliary objective",
+            "safegrip_no_cf_agreement vs safegrip removes both inverse-dynamics agreement supervision and inference veto",
+            "safegrip_single_scale_cf vs safegrip isolates robust multi-scale counterfactual observability",
+            "safegrip_no_linearity_consistency vs safegrip isolates the cross-scale local-linearity discount",
+            "safegrip_no_agreement_veto vs safegrip isolates inference-time use of inverse-dynamics agreement while retaining its training loss",
+            "safegrip_no_counterfactual_ranking vs safegrip isolates friction-discriminative training of the dynamics model",
         ],
         "same_hyperparameters_across_variants":True,"seeds":seed_list,
     },indent=2),encoding="utf-8")

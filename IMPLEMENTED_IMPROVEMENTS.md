@@ -1,5 +1,22 @@
 # Implemented improvements
 
+## v1.0.0 — multi-scale counterfactual-observability revision
+
+- replaced single-displacement friction sensitivity with three-scale counterfactual sensitivity;
+- added robust median information aggregation and cross-scale sensitivity-consistency discounting;
+- corrected the inverse-dynamics agreement normalization to use the full 0–1 range;
+- added an identifiability-weighted inverse-dynamics disagreement veto at inference;
+- added mechanism diagnostics for scale CV, local linearity and agreement-veto probability;
+- added primary ablations for single-scale counterfactuals, linearity consistency, agreement veto and counterfactual ranking;
+- added supplementary ablations for state-update loss, direction loss and dynamics pretraining;
+- expanded proposal tuning to state persistence, trust-region, agreement and optimization parameters that materially affect point estimates;
+- removed UQ-only `information_beta` from point-RMSE search;
+- added one-factor-at-a-time proposal sensitivity analysis on locked validation endpoints;
+- corrected previous-sample excitation alignment during proposal training;
+- synchronized package/readiness documentation with v1.0.0.
+
+# Implemented improvements
+
 ## v0.9.0 — SafeGrip-CI trust-region revision
 
 - retained persistent friction-state carry with segment reset;

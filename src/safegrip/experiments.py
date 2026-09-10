@@ -405,7 +405,7 @@ def run_statistical_comparison(results_dir, out_dir, *, proposal="safegrip", boo
     """Paired hierarchical bootstrap of mean per-seed RMSE differences.
 
     Primary benchmark metrics are averages of independently trained seeds, so
-    inference must use the same estimand.  v0.9 therefore resamples matched
+    inference must use the same estimand.  v1.0 therefore resamples matched
     seeds and trajectory segments rather than bootstrapping highly overlapping
     endpoints as if they were independent observations.
 
