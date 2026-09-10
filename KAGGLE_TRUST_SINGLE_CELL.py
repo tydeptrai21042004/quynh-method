@@ -1,5 +1,5 @@
-# SafeGrip v0.8.0 - trustworthy LiRA Kaggle run
-# Paste this entire file into one Kaggle cell AFTER pushing v0.8.0 to GitHub.
+# SafeGrip v0.9.0 - trustworthy LiRA Kaggle run
+# Paste this entire file into one Kaggle cell AFTER pushing v0.9.0 to GitHub.
 # Internet ON; T4 GPU recommended.
 import os, sys, json, shutil, subprocess
 from pathlib import Path
@@ -15,7 +15,7 @@ run('git clone --depth 1 https://github.com/tydeptrai21042004/quynh-method.git',
 SRC=REPO/'src'; sys.path.insert(0,str(SRC)); os.environ['PYTHONPATH']=str(SRC)+os.pathsep+os.environ.get('PYTHONPATH','')
 run(f'{sys.executable} -m pip install -q -e \".[dev]\"')
 import safegrip, pandas as pd
-assert safegrip.__version__ == '0.8.0', f'Expected corrected SafeGrip 0.8.0, got {safegrip.__version__}. Push the supplied ZIP to GitHub first.'
+assert safegrip.__version__ == '0.9.0', f'Expected corrected SafeGrip 0.9.0, got {safegrip.__version__}. Push the supplied ZIP to GitHub first.'
 run(f'{sys.executable} -m pytest -q')
 SG=f'{sys.executable} -m safegrip.cli --config configs/kaggle_trust.yaml'
 run(f'{SG} download --datasets lira')
@@ -28,7 +28,8 @@ for name in ['lira_signal_audit.csv','lira_physics_audit.json','lira_preprocessi
     print(p.read_text()[:12000] if p.suffix=='.json' else pd.read_csv(p).to_string(index=False))
 
 run(f'{SG} benchmark --dataset lira --preset trust --models todorovic2022_cnn,lampe2023_gru')
-run(f'{SG} ablation --dataset lira --preset trust --variants safegrip_backbone_raw,safegrip_persistent,safegrip_neural_innovation,safegrip_no_identifiability,safegrip_excitation_proxy,safegrip_no_acceptance,safegrip_no_innovation_supervision,safegrip_no_bound,safegrip_no_uq,safegrip')
+run(f'{SG} statistics --results results/lira_trust --bootstrap 2000')
+run(f'{SG} ablation --dataset lira --preset trust --variants safegrip_backbone_raw,safegrip_persistent,safegrip_neural_innovation,safegrip_no_identifiability,safegrip_excitation_proxy,safegrip_no_acceptance,safegrip_no_cf_agreement,safegrip_no_innovation_supervision,safegrip_no_bound,safegrip_no_uq,safegrip')
 
 health=json.loads((REPO/'results/lira_trust/result_health.json').read_text())
 print('\nSCIENTIFIC HEALTH:\n',json.dumps(health,indent=2))

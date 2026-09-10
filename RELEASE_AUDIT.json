@@ -1,32 +1,35 @@
 {
-  "release": "SafeGrip-Open v0.8.0 / SafeGrip-CI",
-  "purpose": "counterfactual-identifiability proposal redesign after v0.7 trust diagnostics showed handcrafted excitation could harm prediction",
-  "final_static_test_count": 51,
+  "release": "SafeGrip-Open v0.9.0 / SafeGrip-CI",
+  "purpose": "trust-region correction of the v0.8 SafeGrip-CI innovation/authority mechanism and statistical evaluation pipeline",
+  "final_static_test_count": 55,
   "release_validation": {
-    "pytest": "51 passed, 2 warnings",
+    "pytest": "55 passed, 2 warnings",
     "cli_help": true,
-    "synthetic_end_to_end_benchmark": true,
-    "synthetic_primary_ablation_count": 10
+    "workflow_shell_syntax": true,
+    "synthetic_end_to_end_benchmark": "started but not claimed in this packaging build because the command exceeded the session limit",
+    "primary_ablation_count": 11
   },
   "verified_invariants": [
     "LiRA decoding and leakage-safe trajectory segmentation retained",
     "full SafeGrip-CI point estimator uses raw sensor features",
     "persistent friction state resets at trajectory-segment boundaries",
-    "candidate innovation is supervised separately from accepted update authority",
+    "candidate innovation supervision is separated from update authority",
     "counterfactual identifiability is computed from friction-conditioned dynamics sensitivity",
-    "candidate acceptance depends on improvement of observed dynamics consistency",
+    "candidate-vs-prior dynamics evidence is normalized before authority decisions",
+    "neutral evidence does not automatically halve the innovation",
+    "harmful candidate updates can be asymmetrically vetoed",
+    "local inverse-dynamics agreement is isolated by a primary ablation",
     "final point output remains parameterized inside the conditional identified set",
-    "dynamics model is warm-started before joint authority-controlled training",
-    "post-hoc UQ inflation depends on low identifiability rather than handcrafted excitation",
+    "per-seed predictions are exported separately from ensemble predictions",
+    "statistical comparison uses registered model predictions with seed/trajectory-aware resampling",
     "lower-bound and predictive-UQ calibration roles remain disjoint",
-    "primary ablations use explicit semantic specifications and are unit-tested for distinctness",
-    "legacy v0.7 ablation names are compatibility aliases only and are not primary v0.8 paper variants"
+    "primary ablations use explicit semantic specifications and are unit-tested for distinctness"
   ],
   "files": [
     {
       "path": "ABLATION_AND_TUNING.md",
-      "bytes": 1679,
-      "sha256": "cd18505fdbabc80cf6332ae78990d34e5affbe6b2d5689ef1155846bf64674f6"
+      "bytes": 3350,
+      "sha256": "30d70e359ef341d25cc817e5e84b9c96cec9f58a27ec30c4dfd78f8aacf32cfd"
     },
     {
       "path": "DATASETS.md",
@@ -40,13 +43,13 @@
     },
     {
       "path": "FINAL_RESEARCH_RELEASE.md",
-      "bytes": 1377,
-      "sha256": "2d1b60dc5dfb54d71c811e620755cf6451b9e8cbbf4eb8dda7fc9f3b50166a9b"
+      "bytes": 1910,
+      "sha256": "dffb944d5afba4509881c87cb97a66f1e1013deba6114eabb443dce30888630d"
     },
     {
       "path": "IMPLEMENTED_IMPROVEMENTS.md",
-      "bytes": 1017,
-      "sha256": "28b4158e852b4fc5a82cc41ce88c727bf10df8d266cf5a56e687ce82a4e2dc76"
+      "bytes": 1461,
+      "sha256": "9a355e94f6e7672aacaa0c48b44ae8db01dcc94d1301e6a845e035fd5d453f8d"
     },
     {
       "path": "KAGGLE_LIRA_FIX.md",
@@ -55,13 +58,13 @@
     },
     {
       "path": "KAGGLE_SINGLE_CELL.py",
-      "bytes": 3328,
-      "sha256": "efe8c8c2086994174db913570f5dc6091df63f3d0e4feda4a800bb341d5d1241"
+      "bytes": 3423,
+      "sha256": "188142f3d7d2f5b55e779fe9837c1cc0bbf2760923ab10b45f7361e8bcd1d10a"
     },
     {
       "path": "KAGGLE_TRUST_SINGLE_CELL.py",
-      "bytes": 3328,
-      "sha256": "efe8c8c2086994174db913570f5dc6091df63f3d0e4feda4a800bb341d5d1241"
+      "bytes": 3423,
+      "sha256": "188142f3d7d2f5b55e779fe9837c1cc0bbf2760923ab10b45f7361e8bcd1d10a"
     },
     {
       "path": "LITERATURE_BASELINES.md",
@@ -70,18 +73,23 @@
     },
     {
       "path": "README.md",
-      "bytes": 15825,
-      "sha256": "dc5c395615ecfc5aeaa469a402577bee39118dfba0cf506d2a7e6eee7da1382b"
+      "bytes": 15957,
+      "sha256": "dfd7306fd3755fe53a0fc335a74d0c67b2db2ed0b532236081d37fc24da89efb"
     },
     {
       "path": "RESEARCH_PROTOCOL.md",
-      "bytes": 2608,
-      "sha256": "87c3bcff2634c2d8adcc301da25ff5a7ddad998d37a68122bc07010f922e6968"
+      "bytes": 2945,
+      "sha256": "2811d938939bcc0755e2e3ac4d48bcafd31daa1ae97f74461b43437abdd81359"
+    },
+    {
+      "path": "RELATED_WORK_V090.md",
+      "bytes": 3024,
+      "sha256": "68138bc8d5cdf145baf2616050e52acfa8f27bb5107b0afefb1f3947ecde60a3"
     },
     {
       "path": "SAFEGRIP_CI_METHOD.md",
-      "bytes": 6177,
-      "sha256": "82987c87c3be044f4b6ef812ec5d1a52edcf4945f3850b942f29d388392646c2"
+      "bytes": 8252,
+      "sha256": "4c07e2fa65d78b489baa60478778da696dbf4a9e6de6a1190bf48a3f1f201d2f"
     },
     {
       "path": "SAFEGRIP_V2_METHOD.md",
@@ -100,13 +108,13 @@
     },
     {
       "path": "VALIDATION.md",
-      "bytes": 1743,
-      "sha256": "e3e6c8b4806795ac8f51d5e52773774641dba5333c57000f36e2352b62126a6c"
+      "bytes": 1456,
+      "sha256": "9eb68d7c2746fc5c121594e88080bad0f376353d86f29c46e6ab4c4bf34fd59e"
     },
     {
       "path": "configs/default.yaml",
-      "bytes": 5447,
-      "sha256": "ef234ce90494d03c999e7027579b9895eb7a13ae56bf927892e16f2710c426e5"
+      "bytes": 6180,
+      "sha256": "0b80b8b4d183cc63a539e4b3ccb511991d0f4493edf318c0abd1ae67f7102f28"
     },
     {
       "path": "configs/kaggle_small.yaml",
@@ -115,13 +123,13 @@
     },
     {
       "path": "configs/kaggle_trust.yaml",
-      "bytes": 5272,
-      "sha256": "9a001477a748fb02b7580766ab51957b49b857b63cdd8fc162062bdd97cb8dd6"
+      "bytes": 6005,
+      "sha256": "e425598bb912c5011717b5815c7f074bface2e047865f5a1b418e7cf3a5c6741"
     },
     {
       "path": "pyproject.toml",
       "bytes": 791,
-      "sha256": "c0a0ba73a4d0a1c412017b2530ecc19a39efa85e83842259da737aa5dad90d66"
+      "sha256": "74d4efb17aa816bec1d0b4a4adbe918d61b96912ce33212ac45c6d92e2ab8ba8"
     },
     {
       "path": "references.bib",
@@ -135,8 +143,8 @@
     },
     {
       "path": "scripts/check_paper_readiness.py",
-      "bytes": 4653,
-      "sha256": "0e70907c157c7321ceafb5bd1db9631d2000954159750a72d7fe56c8dbc39f49"
+      "bytes": 6159,
+      "sha256": "2efcecc87c1cf10adfba3e53d7606bdc44b83ec4492e46be76dec24518afa659"
     },
     {
       "path": "scripts/download_all_datasets.sh",
@@ -145,8 +153,8 @@
     },
     {
       "path": "scripts/package_paper_results.py",
-      "bytes": 1383,
-      "sha256": "35d35441d5ed3260bf8dfeac89a8cd90a7dbece6aa8547a1e8cb21f400a3a575"
+      "bytes": 1429,
+      "sha256": "d6512f689e9076c6f032727a27bf0fe99cc88a509dc691f77e47e2cf6de44f5c"
     },
     {
       "path": "scripts/run_all.sh",
@@ -160,18 +168,18 @@
     },
     {
       "path": "scripts/run_kaggle_small.sh",
-      "bytes": 1545,
-      "sha256": "71e76f54b6a6c390b492bc36e69f8e3f0563ec4c954ba84d50b6af3198f14b88"
+      "bytes": 1728,
+      "sha256": "2073b094c57d116b2de511a4fcfcb1d6804d0378716626fba7305199c21ba39c"
     },
     {
       "path": "scripts/run_kaggle_trust.sh",
-      "bytes": 1364,
-      "sha256": "b25fd1ca86ed5bb3ef37230c8292b4dbf06949007f78bb0b0f952f64f0ad178d"
+      "bytes": 1492,
+      "sha256": "18b78ddc1254abf07f434900fd3252ca1574d9078901dac986cf30a739596a5a"
     },
     {
       "path": "scripts/run_paper.sh",
-      "bytes": 2678,
-      "sha256": "ff5b74b5a28a7656817877d86291b7d35759420350e14ad54c417633c055df9b"
+      "bytes": 2739,
+      "sha256": "cdada094413b43b8a27ecc86836d69a0b9fd813227db8ab99ab99aa6f525fcfc"
     },
     {
       "path": "scripts/run_tuning.sh",
@@ -186,12 +194,12 @@
     {
       "path": "src/safegrip/__init__.py",
       "bytes": 22,
-      "sha256": "88f95809c233bb35bb4f61ca0e499894c911239d5d04b7cd4713cf896adfc3d5"
+      "sha256": "1fd3564596fb35b79144f2cffd5d5f01198b357ada9e8ad533e38e63ef3fdae8"
     },
     {
       "path": "src/safegrip/benchmark.py",
-      "bytes": 84924,
-      "sha256": "0b32e0825c1d86898a899f3274e10c54fefec999c1e0c6dd6faa88237ceb1d3b"
+      "bytes": 96837,
+      "sha256": "34311dd83533c58bcde2c1593787dab5ec3d54e744c6ae2d8bbfb54bb83a99f8"
     },
     {
       "path": "src/safegrip/cli.py",
@@ -220,8 +228,8 @@
     },
     {
       "path": "src/safegrip/experiments.py",
-      "bytes": 21574,
-      "sha256": "77d4e3386ed2dea7c27b06e64ea8bbfc726d48a1cf7a19375e9fa746b10751ec"
+      "bytes": 27435,
+      "sha256": "5462c584f16d2d930de094e3f1608c082d83b7f2e949f9df310ec05569b54d08"
     },
     {
       "path": "src/safegrip/features.py",
@@ -235,8 +243,8 @@
     },
     {
       "path": "src/safegrip/models.py",
-      "bytes": 29318,
-      "sha256": "e2e82c576c3e9f8318b27b4c6420880fab08629662bb45f6cec5110cfd91e06a"
+      "bytes": 33079,
+      "sha256": "e59e5d0924b838fafbeec9f845a1e5fa574ac99fdbafd8e02275a958dd7504cf"
     },
     {
       "path": "src/safegrip/physics.py",
@@ -255,8 +263,8 @@
     },
     {
       "path": "src/safegrip/tuning.py",
-      "bytes": 16306,
-      "sha256": "43009586ea03bea1904e57c838eb5446ce7a35cab7a152801a838cfb5d112238"
+      "bytes": 16993,
+      "sha256": "0920b6f95a5769fd20321e9655386b96627d0863f386826363c979ef48390a90"
     },
     {
       "path": "src/safegrip/utils.py",
@@ -270,8 +278,8 @@
     },
     {
       "path": "tests/test_experiments.py",
-      "bytes": 509,
-      "sha256": "7aac8d7d2bfb05c4c760368b677c9ee5d786310921b2f12528f1bb4b9df298e0"
+      "bytes": 1897,
+      "sha256": "bcaf552abdc03b8619664e2f7f0f784a0d3bc0360b512dc37f2b02e6505eba0f"
     },
     {
       "path": "tests/test_features.py",
@@ -280,8 +288,8 @@
     },
     {
       "path": "tests/test_models.py",
-      "bytes": 6106,
-      "sha256": "9343608e498e180c37dd94508b7a95f4b3f732136a1cdf341c949ca4a115b240"
+      "bytes": 8647,
+      "sha256": "4e7def1ac92c313e78f8cae14cccf0d23eb0f05fb9f078a625bab4cd4ba8575d"
     },
     {
       "path": "tests/test_physics.py",

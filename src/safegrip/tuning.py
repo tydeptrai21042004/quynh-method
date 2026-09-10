@@ -37,7 +37,12 @@ def suggest_safegrip(trial, cfg):
         "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.04,0.08,0.12])),
         "identifiability_lambda":trial.suggest_categorical("identifiability_lambda",space.get("identifiability_lambda",[0.05,0.2,0.5])),
         "acceptance_temperature":trial.suggest_categorical("acceptance_temperature",space.get("acceptance_temperature",[6.0,12.0,20.0])),
-        "innovation_loss_weight":trial.suggest_categorical("innovation_loss_weight",space.get("innovation_loss_weight",[0.15,0.35,0.6])),
+        "acceptance_tolerance":trial.suggest_categorical("acceptance_tolerance",space.get("acceptance_tolerance",[0.05,0.10,0.20])),
+        "acceptance_strength":trial.suggest_categorical("acceptance_strength",space.get("acceptance_strength",[0.2,0.35,0.5])),
+        "innovation_loss_weight":trial.suggest_categorical("innovation_loss_weight",space.get("innovation_loss_weight",[0.10,0.20,0.35])),
+        "state_update_loss_weight":trial.suggest_categorical("state_update_loss_weight",space.get("state_update_loss_weight",[0.20,0.35,0.50])),
+        "candidate_loss_weight":trial.suggest_categorical("candidate_loss_weight",space.get("candidate_loss_weight",[0.10,0.25,0.40])),
+        "cf_agreement_loss_weight":trial.suggest_categorical("cf_agreement_loss_weight",space.get("cf_agreement_loss_weight",[0.0,0.03,0.08])),
         "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
         "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.02,0.05,0.10])),
         "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.05,0.10,0.20])),
@@ -74,7 +79,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v080_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v090_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)

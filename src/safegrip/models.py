@@ -160,12 +160,19 @@ class SafeGripCINet(nn.Module):
     hypotheses and when the candidate state explains the observed dynamics
     better than the prior state.
 
+    v0.9 uses an *asymmetric counterfactual trust region*.  The learned
+    candidate innovation is no longer multiplied by a symmetric sigmoid that
+    defaults to 0.5 when the dynamics residuals are nearly equal.  Instead, a
+    candidate keeps the identifiability authority unless there is affirmative
+    counterfactual evidence that it makes the observed dynamics worse.
+
     For prior friction ``mu_prior`` and candidate innovation ``nu``:
 
         q_cand = q_prior + nu
         I      = local sensitivity of G(context, mu) to mu
-        A      = sigmoid(gamma * (R_prior - R_cand - margin))
-        K      = A * I / (I + lambda)
+        z      = (R_prior - R_cand) / (R_prior + R_cand + eps)
+        V      = 1 - rho * sigmoid(gamma * (-z - tau))
+        K      = V * I / (I + lambda)
         q      = q_prior + K * nu
         mu     = L + (U-L) * sigmoid(q)
 
@@ -174,6 +181,10 @@ class SafeGripCINet(nn.Module):
     channels at the current endpoint from the causal prefix of the window and a
     friction hypothesis.  ``I`` is therefore a local counterfactual
     identifiability certificate rather than a hand-crafted excitation proxy.
+    The same local dynamics model also yields a damped Gauss--Newton friction
+    correction.  That correction is exposed as a diagnostic and can be used as
+    an auxiliary agreement target during training, but it never consumes test
+    friction labels at inference.
 
     A previous predicted friction can be passed through ``prior_mu``.  This is
     how benchmark inference maintains a real persistent state inside a segment.
@@ -188,6 +199,10 @@ class SafeGripCINet(nn.Module):
                  identifiability_lambda: float = 0.20,
                  acceptance_temperature: float = 12.0,
                  acceptance_margin: float = 0.0,
+                 acceptance_tolerance: float = 0.10,
+                 acceptance_strength: float = 0.35,
+                 inverse_dynamics_ridge: float = 0.001,
+                 inverse_dynamics_max_step: float = 0.12,
                  gate_init_slope: float | None = None, gate_init_threshold: float | None = None,
                  use_temporal: bool = True, use_gate: bool = True,
                  use_bound: bool = True, endpoint_only: bool = False,
@@ -218,6 +233,10 @@ class SafeGripCINet(nn.Module):
         self.identifiability_lambda = max(1e-6, float(identifiability_lambda))
         self.acceptance_temperature = max(1e-3, float(acceptance_temperature))
         self.acceptance_margin = float(acceptance_margin)
+        self.acceptance_tolerance = max(0.0, float(acceptance_tolerance))
+        self.acceptance_strength = min(max(float(acceptance_strength), 0.0), 1.0)
+        self.inverse_dynamics_ridge = max(1e-8, float(inverse_dynamics_ridge))
+        self.inverse_dynamics_max_step = max(1e-4, float(inverse_dynamics_max_step))
 
         if dynamics_indices is None:
             dynamics_indices = list(range(min(4, self.d)))
@@ -402,14 +421,55 @@ class SafeGripCINet(nn.Module):
         residual_prior = torch.mean((observed - g_prior).square(), dim=-1)
         residual_candidate = torch.mean((observed - g_cand).square(), dim=-1)
         improvement = residual_prior - residual_candidate
-        acceptance = torch.sigmoid(
-            self.acceptance_temperature * (improvement - self.acceptance_margin)
+
+        # Scale-free counterfactual evidence.  The previous raw residual
+        # difference was often ~1e-4 on standardized LiRA channels, making a
+        # symmetric sigmoid collapse to ~0.5 and unnecessarily halve every
+        # update.  The normalized quantity is bounded and comparable across
+        # operating regimes.
+        residual_scale = torch.clamp(residual_prior + residual_candidate, min=1e-8)
+        normalized_improvement = improvement / residual_scale
+
+        # Asymmetric veto: neutral/slightly noisy evidence leaves authority near
+        # one; only a materially worse candidate is attenuated.  This preserves
+        # the empirically useful identifiability-only path while still providing
+        # a safety-oriented rejection mechanism.
+        veto_probability = torch.sigmoid(
+            self.acceptance_temperature * (
+                -normalized_improvement - self.acceptance_tolerance - self.acceptance_margin
+            )
         )
+        acceptance = 1.0 - self.acceptance_strength * veto_probability
+
+        # Local inverse-dynamics correction from one damped Gauss--Newton step.
+        # e ~= s * dmu, so dmu = <s,e>/(||s||^2 + ridge).  The step is clipped
+        # to a physical trust region and detached by the training loss when used
+        # as a pseudo-target, preventing the estimator from gaming G through the
+        # agreement term.
+        residual_vector = observed - g_prior
+        sens_energy = torch.sum(sensitivity.square(), dim=-1)
+        cf_delta_mu = torch.sum(sensitivity * residual_vector, dim=-1) / (
+            sens_energy + self.inverse_dynamics_ridge
+        )
+        cf_delta_mu = torch.clamp(
+            cf_delta_mu, -self.inverse_dynamics_max_step, self.inverse_dynamics_max_step
+        )
+        candidate_delta_mu = cand_mu - prior_mu
+        agreement_scale = torch.clamp(
+            torch.abs(candidate_delta_mu) + torch.abs(cf_delta_mu), min=1e-4
+        )
+        cf_agreement = torch.clamp(
+            1.0 - torch.abs(candidate_delta_mu - cf_delta_mu) / agreement_scale,
+            min=-1.0,
+            max=1.0,
+        )
+        cf_agreement = 0.5 * (cf_agreement + 1.0)
 
         if not self.use_identifiability:
             info_gain = torch.ones_like(info_gain)
         if not self.use_acceptance:
             acceptance = torch.ones_like(acceptance)
+            veto_probability = torch.zeros_like(veto_probability)
 
         if self.use_excitation_proxy:
             e = self._excitation_from_input(x, excitation)
@@ -419,7 +479,11 @@ class SafeGripCINet(nn.Module):
             authority = torch.ones_like(info_gain)
         else:
             authority = torch.clamp(info_gain * acceptance, 0.0, 1.0)
-        return authority, info_gain, acceptance, information_raw, residual_prior, residual_candidate
+        return (
+            authority, info_gain, acceptance, information_raw,
+            residual_prior, residual_candidate, normalized_improvement,
+            veto_probability, cf_delta_mu, cf_agreement,
+        )
 
     def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
                         upper: float | torch.Tensor = 1.3,
@@ -452,7 +516,8 @@ class SafeGripCINet(nn.Module):
         candidate_prediction = self._latent_to_support(q_candidate, lower, upper)
         dyn_h = self._encode_dynamics_context(x)
 
-        authority, info_gain, acceptance, information_raw, r_prior, r_candidate = self._counterfactual_authority(
+        (authority, info_gain, acceptance, information_raw, r_prior, r_candidate,
+         normalized_improvement, veto_probability, cf_delta_mu, cf_agreement) = self._counterfactual_authority(
             x, dyn_h, prior_prediction, candidate_prediction, upper, excitation=excitation
         )
         effective_innovation = authority * innovation
@@ -477,6 +542,10 @@ class SafeGripCINet(nn.Module):
             "information_raw": information_raw,
             "dynamics_residual_prior": r_prior,
             "dynamics_residual_candidate": r_candidate,
+            "normalized_improvement": normalized_improvement,
+            "veto_probability": veto_probability,
+            "counterfactual_delta_mu": cf_delta_mu,
+            "counterfactual_agreement": cf_agreement,
             "persistent_state_used": persistent_mask.to(dtype=x.dtype),
             "features": uq_h,
         }
@@ -493,7 +562,7 @@ class SafeGripCINet(nn.Module):
         return d["prediction"], d["latent"], d["reliability"]
 
 
-# Public/backward-compatible names.  v0.8 uses the CI implementation.
+# Public/backward-compatible names.  v0.9 uses the CI implementation.
 SafeGripV3Net = SafeGripCINet
 SafeGripV2Net = SafeGripCINet
 

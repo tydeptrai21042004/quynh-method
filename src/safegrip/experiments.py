@@ -79,9 +79,18 @@ def _prediction_model_columns(pred: pd.DataFrame) -> list[str]:
     suffixes = (
         "_sigma", "_raw", "_latent", "_gate", "_reliability", "_excitation",
         "_prior", "_evidence_delta", "_prior_latent",
+        "_authority", "_identifiability", "_acceptance", "_information_raw",
+        "_candidate", "_persistent_state_used", "_normalized_improvement",
+        "_veto_probability", "_counterfactual_delta_mu", "_counterfactual_agreement",
         "_pi95_low_physics", "_pi95_high_physics", "_pi95_low_raw", "_pi95_high_raw",
     )
     return [c for c in pred.columns if c not in reserved and not c.endswith(suffixes) and "_latent_seed_" not in c]
+
+
+def _endpoint_segment_key(endpoint_id: str) -> str:
+    text=str(endpoint_id)
+    parts=text.rsplit(":",2)
+    return parts[0] if len(parts)>=3 else text
 
 
 def run_excitation_analysis(csv_path, results_dir, out_dir, cfg, bins: int = 4) -> pd.DataFrame:
@@ -393,28 +402,121 @@ def run_force_validation(prepared_csv, out_dir, cfg, *, eps_t=250.0, eps_z=250.0
 
 
 def run_statistical_comparison(results_dir, out_dir, *, proposal="safegrip", bootstrap=2000, seed=20260905) -> pd.DataFrame:
-    """Paired endpoint bootstrap of RMSE differences versus the proposal.
+    """Paired hierarchical bootstrap of mean per-seed RMSE differences.
 
-    Resampling is paired because every comparator is evaluated on the exact same
-    endpoint IDs. Negative delta means the proposal has lower RMSE.
+    Primary benchmark metrics are averages of independently trained seeds, so
+    inference must use the same estimand.  v0.9 therefore resamples matched
+    seeds and trajectory segments rather than bootstrapping highly overlapping
+    endpoints as if they were independent observations.
+
+    Negative delta means the proposal has lower RMSE.
     """
-    out=ensure_dir(out_dir); pred=pd.read_csv(Path(results_dir)/"predictions.csv")
-    if proposal not in pred or "y_true" not in pred:
-        raise RuntimeError(f"Missing {proposal} or y_true in predictions.csv")
-    y=pred.y_true.to_numpy(float); pp=pred[proposal].to_numpy(float)
-    models=_prediction_model_columns(pred)
-    rng=np.random.default_rng(int(seed)); n=len(y); rows=[]
-    for model in models:
-        if model==proposal: continue
-        pb=pred[model].to_numpy(float)
-        delta=float(np.sqrt(np.mean((y-pp)**2))-np.sqrt(np.mean((y-pb)**2)))
-        vals=np.empty(int(bootstrap),float)
-        for i in range(int(bootstrap)):
-            idx=rng.integers(0,n,n)
-            vals[i]=np.sqrt(np.mean((y[idx]-pp[idx])**2))-np.sqrt(np.mean((y[idx]-pb[idx])**2))
-        rows.append({"proposal":proposal,"comparator":model,"n_endpoints":n,"delta_rmse_proposal_minus_comparator":delta,
-                     "ci95_low":float(np.quantile(vals,0.025)),"ci95_high":float(np.quantile(vals,0.975)),
-                     "proposal_better_probability":float(np.mean(vals<0)),"bootstrap_replicates":int(bootstrap)})
+    out=ensure_dir(out_dir); results_dir=Path(results_dir)
+    long_path=results_dir/"predictions_by_seed.csv"
+    rng=np.random.default_rng(int(seed)); rows=[]
+
+    if long_path.exists():
+        long=pd.read_csv(long_path)
+        required={"endpoint_id","y_true","model","seed","prediction"}
+        if not required.issubset(long.columns):
+            raise RuntimeError("predictions_by_seed.csv is missing required columns: "+", ".join(sorted(required-set(long.columns))))
+        models=sorted(set(long.model.astype(str)))
+        if proposal not in models:
+            raise RuntimeError(f"Missing {proposal} in predictions_by_seed.csv")
+
+        for model in models:
+            if model==proposal:
+                continue
+            ps=long[long.model.astype(str)==proposal].copy()
+            cs=long[long.model.astype(str)==model].copy()
+            common_seeds=sorted(set(ps.seed.astype(int)) & set(cs.seed.astype(int)))
+            if not common_seeds:
+                continue
+            per_seed_delta=[]; segment_counts=[]
+            seed_pairs={}
+            for s in common_seeds:
+                a=ps[ps.seed.astype(int)==s][["endpoint_id","y_true","prediction"]].rename(columns={"prediction":"p_prop"})
+                b=cs[cs.seed.astype(int)==s][["endpoint_id","prediction"]].rename(columns={"prediction":"p_comp"})
+                m=a.merge(b,on="endpoint_id",how="inner",validate="one_to_one")
+                if len(m)==0:
+                    continue
+                m["segment_key"]=m.endpoint_id.astype(str).map(_endpoint_segment_key)
+                rp=float(np.sqrt(np.mean((m.y_true.to_numpy(float)-m.p_prop.to_numpy(float))**2)))
+                rc=float(np.sqrt(np.mean((m.y_true.to_numpy(float)-m.p_comp.to_numpy(float))**2)))
+                per_seed_delta.append(rp-rc)
+                segment_counts.append(int(m.segment_key.nunique()))
+                seed_pairs[int(s)]=m
+            if not seed_pairs:
+                continue
+            point=float(np.mean(per_seed_delta))
+            available=np.asarray(sorted(seed_pairs),dtype=int)
+            vals=np.empty(int(bootstrap),float)
+            for i in range(int(bootstrap)):
+                sampled_seeds=rng.choice(available,size=len(available),replace=True)
+                rep_seed_delta=[]
+                for s in sampled_seeds:
+                    m=seed_pairs[int(s)]
+                    segs=np.asarray(sorted(m.segment_key.unique()),dtype=object)
+                    sampled_segments=rng.choice(segs,size=len(segs),replace=True)
+                    y_parts=[]; pp_parts=[]; pc_parts=[]
+                    for seg in sampled_segments:
+                        g=m[m.segment_key==seg]
+                        y_parts.append(g.y_true.to_numpy(float))
+                        pp_parts.append(g.p_prop.to_numpy(float))
+                        pc_parts.append(g.p_comp.to_numpy(float))
+                    y=np.concatenate(y_parts); pp=np.concatenate(pp_parts); pc=np.concatenate(pc_parts)
+                    rep_seed_delta.append(float(np.sqrt(np.mean((y-pp)**2))-np.sqrt(np.mean((y-pc)**2))))
+                vals[i]=float(np.mean(rep_seed_delta))
+            rows.append({
+                "proposal":proposal,"comparator":model,"n_seeds":int(len(available)),
+                "n_segments_min":int(min(segment_counts)),"n_segments_max":int(max(segment_counts)),
+                "delta_rmse_proposal_minus_comparator":point,
+                "ci95_low":float(np.quantile(vals,0.025)),"ci95_high":float(np.quantile(vals,0.975)),
+                "proposal_better_probability":float(np.mean(vals<0)),"bootstrap_replicates":int(bootstrap),
+                "estimand":"mean per-seed RMSE difference",
+            })
+        protocol={
+            "method":"paired hierarchical bootstrap over matched seeds and trajectory segments",
+            "proposal":proposal,"bootstrap_replicates":int(bootstrap),"seed":int(seed),
+            "source":"predictions_by_seed.csv","estimand":"mean per-seed RMSE difference",
+            "interpretation":"negative delta RMSE favors proposal",
+            "overlapping_endpoint_note":"segments, not individual overlapping windows, are the primary resampling blocks",
+        }
+    else:
+        # Backward-compatible fallback for old result folders.  It is deliberately
+        # segment-blocked and uses only actual model columns.
+        pred=pd.read_csv(results_dir/"predictions.csv")
+        if proposal not in pred or "y_true" not in pred:
+            raise RuntimeError(f"Missing {proposal} or y_true in predictions.csv")
+        manifest_path=results_dir/"prediction_manifest.json"
+        if manifest_path.exists():
+            model_columns=json.loads(manifest_path.read_text(encoding="utf-8")).get("model_columns",[])
+            models=[m for m in model_columns if m in pred.columns]
+        else:
+            models=_prediction_model_columns(pred)
+        y=pred.y_true.to_numpy(float); pp=pred[proposal].to_numpy(float)
+        ids=pred.endpoint_id.astype(str).to_numpy() if "endpoint_id" in pred else np.arange(len(pred)).astype(str)
+        seg_keys=np.asarray([_endpoint_segment_key(x) for x in ids],dtype=object)
+        segs=np.asarray(sorted(set(seg_keys)),dtype=object)
+        for model in models:
+            if model==proposal: continue
+            pb=pred[model].to_numpy(float)
+            delta=float(np.sqrt(np.mean((y-pp)**2))-np.sqrt(np.mean((y-pb)**2)))
+            vals=np.empty(int(bootstrap),float)
+            for i in range(int(bootstrap)):
+                sampled=rng.choice(segs,size=len(segs),replace=True)
+                idx=np.concatenate([np.flatnonzero(seg_keys==s) for s in sampled])
+                vals[i]=np.sqrt(np.mean((y[idx]-pp[idx])**2))-np.sqrt(np.mean((y[idx]-pb[idx])**2))
+            rows.append({"proposal":proposal,"comparator":model,"n_seeds":1,"n_segments_min":int(len(segs)),"n_segments_max":int(len(segs)),
+                         "delta_rmse_proposal_minus_comparator":delta,"ci95_low":float(np.quantile(vals,0.025)),
+                         "ci95_high":float(np.quantile(vals,0.975)),"proposal_better_probability":float(np.mean(vals<0)),
+                         "bootstrap_replicates":int(bootstrap),"estimand":"ensemble RMSE difference (legacy fallback)"})
+        protocol={
+            "method":"paired trajectory-segment bootstrap (legacy ensemble fallback)","proposal":proposal,
+            "bootstrap_replicates":int(bootstrap),"seed":int(seed),"source":"predictions.csv",
+            "interpretation":"negative delta RMSE favors proposal",
+        }
+
     res=pd.DataFrame(rows); res.to_csv(out/"paired_bootstrap_rmse.csv",index=False)
-    (out/"statistical_protocol.json").write_text(json.dumps({"method":"paired endpoint bootstrap","proposal":proposal,"bootstrap_replicates":int(bootstrap),"seed":int(seed),"interpretation":"negative delta RMSE favors proposal"},indent=2),encoding="utf-8")
+    (out/"statistical_protocol.json").write_text(json.dumps(protocol,indent=2),encoding="utf-8")
     return res

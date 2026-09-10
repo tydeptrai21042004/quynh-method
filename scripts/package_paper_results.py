@@ -18,7 +18,7 @@ for rel in ['results/lira_paper','results/lira_ablation_paper','results/lira_exc
         dst=stage/rel
         dst.parent.mkdir(parents=True,exist_ok=True)
         shutil.copytree(src,dst)
-for rel in ['configs/default.yaml','RESEARCH_PROTOCOL.md','LITERATURE_BASELINES.md','FINAL_RESEARCH_RELEASE.md','SAFEGRIP_V3_METHOD.md','ABLATION_AND_TUNING.md']:
+for rel in ['configs/default.yaml','RESEARCH_PROTOCOL.md','LITERATURE_BASELINES.md','FINAL_RESEARCH_RELEASE.md','SAFEGRIP_CI_METHOD.md','RELATED_WORK_V090.md','RESEARCH_PROTOCOL.md','ABLATION_AND_TUNING.md']:
     src=ROOT/rel
     if src.exists():
         dst=stage/rel; dst.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,dst)

@@ -1,10 +1,10 @@
-# SafeGrip-Open v0.8.0
+# SafeGrip-Open v0.9.0
 
-## SafeGrip-CI (v0.8.0)
+## SafeGrip-CI (v0.9.0)
 
-SafeGrip-CI redesigns the proposal around **counterfactual friction identifiability** rather than handcrafted excitation. The full estimator maintains a persistent friction state, predicts a raw-sensor candidate innovation, and accepts that innovation only when a friction-conditioned dynamics model indicates that nearby friction hypotheses are distinguishable and the candidate explains the observed dynamics better than the prior.
+SafeGrip-CI v0.9 keeps the persistent friction state and counterfactual identifiability core, but replaces the nearly symmetric acceptance gate with an **asymmetric counterfactual trust-region veto**. The candidate innovation is supervised independently from update authority, and a local inverse-dynamics agreement objective provides an additional friction-space learning signal without becoming a handcrafted proposal input.
 
-The full point estimator uses raw sensors; the old handcrafted excitation score is retained only as an explicit comparator ablation. The mechanics lower endpoint remains a conditional feasibility constraint, and post-hoc block-conformal UQ remains separate from the novelty claim. See `SAFEGRIP_CI_METHOD.md`.
+The full point estimator uses raw sensors; handcrafted excitation is retained only as an explicit comparator ablation. The mechanics lower endpoint remains a conditional feasibility constraint, and post-hoc conformal UQ remains separate from the novelty claim. The evaluation pipeline also exports per-seed predictions and uses matched trajectory-aware resampling for statistical comparisons. See `SAFEGRIP_CI_METHOD.md` and `RELATED_WORK_V090.md`.
 
 The literature baselines, LiRA leakage safeguards and paper-readiness gates remain independent of proposal-only changes.
 

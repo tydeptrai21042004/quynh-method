@@ -18,11 +18,14 @@ $SG --config "$CONFIG" benchmark \
   --preset quick \
   --models todorovic2022_cnn,lampe2023_gru
 
+# Statistics use per-seed predictions and trajectory-aware paired resampling.
+$SG --config "$CONFIG" statistics --results results/lira_quick --bootstrap 500
+
 # Full component ablation in one-seed / three-epoch development mode.
 $SG --config "$CONFIG" ablation \
   --dataset lira \
   --preset quick \
-  --variants safegrip_backbone_raw,safegrip_persistent,safegrip_neural_innovation,safegrip_no_identifiability,safegrip_excitation_proxy,safegrip_no_acceptance,safegrip_no_innovation_supervision,safegrip_no_bound,safegrip_no_uq,safegrip
+  --variants safegrip_backbone_raw,safegrip_persistent,safegrip_neural_innovation,safegrip_no_identifiability,safegrip_excitation_proxy,safegrip_no_acceptance,safegrip_no_cf_agreement,safegrip_no_innovation_supervision,safegrip_no_bound,safegrip_no_uq,safegrip
 
 echo "Small LiRA run complete."
 echo "Main metrics: results/lira_quick/metrics.csv"

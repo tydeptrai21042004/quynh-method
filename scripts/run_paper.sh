@@ -29,6 +29,7 @@ fi
 # Paper preset uses five independent seeds by default and evaluates every method
 # on the same validation/test endpoints even when temporal context differs.
 $SG benchmark --dataset lira --preset paper "${HP_ARGS[@]}" "${BASELINE_HP_ARGS[@]}"
+$SG statistics --results results/lira_paper --bootstrap 5000
 # Reuse exactly the selected proposal hyperparameters for every ablation.
 $SG ablation --dataset lira --preset paper "${HP_ARGS[@]}"
 

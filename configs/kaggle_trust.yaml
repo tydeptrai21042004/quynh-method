@@ -67,13 +67,21 @@ proposal:
   identifiability_lambda: 0.001
   acceptance_temperature: 12.0
   acceptance_margin: 0.0
-  innovation_loss_weight: 0.35
+  innovation_loss_weight: 0.2
   dynamics_loss_weight: 0.1
   counterfactual_loss_weight: 0.05
   do_no_harm_weight: 0.1
   counterfactual_margin: 0.02
   dynamics_pretrain_epochs: 8
   information_beta: 1.0
+  acceptance_tolerance: 0.1
+  acceptance_strength: 0.35
+  inverse_dynamics_ridge: 0.001
+  inverse_dynamics_max_step: 0.12
+  candidate_loss_weight: 0.15
+  cf_agreement_loss_weight: 0.03
+  direction_loss_weight: 0.05
+  state_update_loss_weight: 0.35
 baseline:
   todorovic2022_cnn:
     sequence_length: 100
@@ -278,9 +286,9 @@ tuning:
     - 12.0
     - 20.0
     innovation_loss_weight:
-    - 0.15
+    - 0.1
+    - 0.2
     - 0.35
-    - 0.6
     dynamics_loss_weight:
     - 0.05
     - 0.1
@@ -297,11 +305,36 @@ tuning:
     - 0.5
     - 1.0
     - 2.0
+    acceptance_tolerance:
+    - 0.05
+    - 0.1
+    - 0.2
+    acceptance_strength:
+    - 0.2
+    - 0.35
+    - 0.5
+    candidate_loss_weight:
+    - 0.1
+    - 0.15
+    - 0.25
+    cf_agreement_loss_weight:
+    - 0.0
+    - 0.03
+    - 0.08
+    state_update_loss_weight:
+    - 0.2
+    - 0.35
+    - 0.5
 physics_audit:
   max_bound_above_upper_rate: 0.01
 health:
-  min_test_endpoints_trust: 200
+  min_test_endpoints_trust: 150
   max_projection_correction_rate: 0.95
+  min_test_endpoints_paper: 200
+  min_test_segments_trust: 4
+  min_test_segments_paper: 6
+  max_predictive_width_over_target_std_trust: 12.0
+  max_predictive_width_over_target_std_paper: 10.0
 split:
   train: 0.6
   calibration: 0.1

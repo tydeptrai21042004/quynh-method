@@ -139,3 +139,60 @@ def test_static_ablation_is_endpoint_only():
     with torch.no_grad():
         p1,_,_=model(x1,lo,1.3); p2,_,_=model(x2,lo,1.3)
     assert torch.allclose(p1,p2,atol=1e-7)
+
+
+def test_safegrip_ci_neutral_counterfactual_evidence_does_not_halve_authority():
+    from safegrip.models import SafeGripV3Net
+    import types
+    model=SafeGripV3Net(
+        3, hidden=16, gru_hidden=8, dropout=0.0, dynamics_indices=[0],
+        acceptance_temperature=12.0, acceptance_tolerance=0.10, acceptance_strength=0.35,
+    )
+    # Deterministic local dynamics: G(mu)=mu.  Candidate == prior gives exactly
+    # neutral residual improvement, which should now preserve most authority.
+    def dyn(self, context_h, mu, upper=1.3):
+        return mu.reshape(-1,1)
+    model.dynamics_prediction_from_context=types.MethodType(dyn,model)
+    x=torch.zeros(2,6,3); x[:,-1,0]=0.5
+    h=torch.zeros(2,model.hidden); prior=torch.tensor([0.5,0.5]); cand=prior.clone()
+    out=model._counterfactual_authority(x,h,prior,cand,1.3)
+    acceptance=out[2]; veto=out[7]
+    assert torch.all(acceptance>0.85)
+    assert torch.all(veto<0.5)
+
+
+def test_safegrip_ci_counterfactual_veto_reacts_asymmetrically_to_harm():
+    from safegrip.models import SafeGripV3Net
+    import types
+    model=SafeGripV3Net(
+        3, hidden=16, gru_hidden=8, dropout=0.0, dynamics_indices=[0],
+        acceptance_temperature=12.0, acceptance_tolerance=0.10, acceptance_strength=0.35,
+    )
+    def dyn(self, context_h, mu, upper=1.3):
+        return mu.reshape(-1,1)
+    model.dynamics_prediction_from_context=types.MethodType(dyn,model)
+    x=torch.zeros(1,6,3); x[:,-1,0]=0.5
+    h=torch.zeros(1,model.hidden); prior=torch.tensor([0.5])
+    neutral=model._counterfactual_authority(x,h,prior,prior,1.3)
+    harmful=model._counterfactual_authority(x,h,prior,torch.tensor([1.0]),1.3)
+    assert float(harmful[7])>float(neutral[7])
+    assert float(harmful[2])<float(neutral[2])
+
+
+def test_safegrip_ci_inverse_dynamics_correction_has_observed_direction():
+    from safegrip.models import SafeGripV3Net
+    import types
+    model=SafeGripV3Net(
+        3, hidden=16, gru_hidden=8, dropout=0.0, dynamics_indices=[0],
+        inverse_dynamics_ridge=1e-4, inverse_dynamics_max_step=0.12,
+    )
+    def dyn(self, context_h, mu, upper=1.3):
+        return mu.reshape(-1,1)
+    model.dynamics_prediction_from_context=types.MethodType(dyn,model)
+    x=torch.zeros(1,6,3); x[:,-1,0]=0.7
+    h=torch.zeros(1,model.hidden); prior=torch.tensor([0.5]); cand=torch.tensor([0.55])
+    out=model._counterfactual_authority(x,h,prior,cand,1.3)
+    cf_delta=out[8]; agreement=out[9]
+    assert float(cf_delta)>0.0
+    assert float(cf_delta)<=0.120001
+    assert 0.5<float(agreement)<=1.0
