@@ -82,3 +82,24 @@ data/processed/lira/lira_stream_assembly_report.json
 data/processed/lira/lira_alignment_report.csv
 data/processed/lira/lira_preprocessing_report.json
 ```
+
+
+## September 2026 zero-byte Figshare mirror regression
+
+A later Kaggle run exposed a separate download-layer failure: Figshare file URLs could return an
+HTTP-success response with a **zero-byte body**. The previous downloader treated those responses
+as successful, so every `task_7505_*.txt` and `m3_custom_fric_*.csv` file was created at size 0.
+`prepare_lira` then failed inside pandas with `csv.Error: Could not determine delimiter`.
+
+The downloader now treats payload integrity as part of the dataset contract:
+
+1. streamed downloads are rejected when the payload is empty;
+2. when Figshare metadata provides a byte count, the downloaded size must match it exactly;
+3. a bad partial file is never promoted after an HTTP 416 resume response;
+4. LiRA per-file downloads try the metadata URL plus DTU/Figshare `ndownloader/files/<id>` mirrors;
+5. failed mirror attempts are recorded in `SOURCE.json`; and
+6. if the per-file route remains unusable, LiRA falls back to the public article-level bulk ZIP.
+
+Regression tests reproduce both a zero-byte HTTP-success payload and a truncated-size payload.
+This prevents the preprocessing stage from ever receiving the silent zero-byte files seen in the
+failed Kaggle run.

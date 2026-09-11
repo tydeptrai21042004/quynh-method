@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import zipfile
+
+import pytest
 from pathlib import Path
 
 import safegrip.download as dl
@@ -129,3 +131,134 @@ def test_lira_per_file_403_also_falls_back_to_bulk(monkeypatch, tmp_path: Path):
     source = json.loads((tmp_path / "SOURCE.json").read_text(encoding="utf-8"))
     assert source["download_route"] == "public_bulk_ndownloader"
     assert any("per-file download -> HTTP 403" in x for x in source["metadata_warnings"])
+
+
+def test_lira_zero_byte_per_file_payload_falls_back_to_bulk(monkeypatch, tmp_path: Path):
+    """Regression: Kaggle received HTTP-successful zero-byte Figshare files."""
+    monkeypatch.setattr(
+        dl,
+        "_lira_metadata_files",
+        lambda: (
+            [
+                {
+                    "id": 123,
+                    "name": "task_7505_speed.txt",
+                    "size": 21,
+                    "download_url": "https://ndownloader.figshare.com/files/123",
+                }
+            ],
+            [],
+        ),
+    )
+    calls = []
+
+    def fake_download(url, dest, **kwargs):
+        calls.append(url)
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if "/files/123" in url:
+            # Reproduce the Kaggle failure: HTTP path appears successful, but no
+            # payload bytes are written.
+            dest.write_bytes(b"")
+        else:
+            with zipfile.ZipFile(dest, "w") as z:
+                z.writestr("task_7505_speed.txt", "timestamp,value\n0,36\n")
+                z.writestr("m3_custom_fric_hh.csv", "Lat,Lon,mu\n55,12,0.6\n")
+        return dest
+
+    monkeypatch.setattr(dl, "_download", fake_download)
+    dl.download_lira(tmp_path)
+
+    source = json.loads((tmp_path / "SOURCE.json").read_text(encoding="utf-8"))
+    assert source["download_route"] == "public_bulk_ndownloader"
+    assert (tmp_path / "task_7505_speed.txt").stat().st_size > 0
+    assert any("empty file" in x.lower() for x in source["metadata_warnings"])
+    assert any("/articles/23096600/versions/1" in x for x in calls)
+
+
+def test_lira_per_file_size_mismatch_tries_next_mirror(monkeypatch, tmp_path: Path):
+    item = {
+        "id": 456,
+        "name": "task_7505_speed.txt",
+        "size": 7,
+        "download_url": "https://primary.example/files/456",
+    }
+    calls = []
+
+    def fake_download(url, dest, **kwargs):
+        calls.append(url)
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if "primary.example" in url:
+            dest.write_bytes(b"bad")
+        else:
+            dest.write_bytes(b"1234567")
+        return dest
+
+    monkeypatch.setattr(dl, "_download", fake_download)
+    errors = []
+    used = dl._download_lira_file(item, tmp_path / item["name"], errors)
+
+    assert used == "https://data.dtu.dk/ndownloader/files/456"
+    assert (tmp_path / item["name"]).read_bytes() == b"1234567"
+    assert any("expected 7" in x for x in errors)  # failed primary mirror remains auditable
+    assert calls[:2] == [
+        "https://primary.example/files/456",
+        "https://data.dtu.dk/ndownloader/files/456",
+    ]
+
+
+class _StreamingResponse:
+    def __init__(self, chunks, status_code=200, headers=None):
+        self._chunks = list(chunks)
+        self.status_code = int(status_code)
+        self.headers = dict(headers or {})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            response = type("R", (), {"status_code": self.status_code})()
+            raise dl.requests.HTTPError(str(self.status_code), response=response)
+
+    def iter_content(self, _chunk_size):
+        yield from self._chunks
+
+
+class _StreamingSession:
+    def __init__(self, response):
+        self.response = response
+
+    def get(self, *args, **kwargs):
+        return self.response
+
+
+def test_download_rejects_http_success_with_empty_body(tmp_path: Path):
+    dest = tmp_path / "empty.txt"
+    session = _StreamingSession(_StreamingResponse([], headers={"content-length": "0"}))
+
+    with pytest.raises(dl.DownloadIntegrityError, match="empty payload"):
+        dl._download("https://example.test/empty", dest, session=session)
+
+    assert not dest.exists()
+    assert not dest.with_suffix(".txt.part").exists()
+
+
+def test_download_rejects_metadata_size_mismatch(tmp_path: Path):
+    dest = tmp_path / "short.txt"
+    session = _StreamingSession(_StreamingResponse([b"abc"], headers={"content-length": "3"}))
+
+    with pytest.raises(dl.DownloadIntegrityError, match="size mismatch"):
+        dl._download(
+            "https://example.test/short",
+            dest,
+            session=session,
+            expected_size=7,
+        )
+
+    assert not dest.exists()
+    assert not dest.with_suffix(".txt.part").exists()

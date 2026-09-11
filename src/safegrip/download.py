@@ -8,7 +8,12 @@ from tqdm import tqdm
 from .utils import ensure_dir
 from .datasets import DATASET_REGISTRY
 
-UA = {"User-Agent": "SafeGripOpen/0.2 academic-research"}
+UA = {"User-Agent": "SafeGripOpen/1.0 academic-research"}
+
+
+class DownloadIntegrityError(RuntimeError):
+    """Raised when a remote endpoint returns an unusable or truncated payload."""
+
 
 SOURCE = {
     "lira": {
@@ -28,24 +33,82 @@ SOURCE = {
 }
 
 
-def _download(url: str, dest: Path, *, session=None, headers=None, timeout=120) -> Path:
-    session = session or requests.Session(); h = dict(UA)
-    if headers: h.update(headers)
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    session=None,
+    headers=None,
+    timeout=120,
+    expected_size: int | None = None,
+    allow_empty: bool = False,
+) -> Path:
+    """Stream ``url`` to ``dest`` and reject silent empty/truncated responses.
+
+    Figshare/DTU can occasionally return HTTP 200 with a zero-byte body from a
+    download mirror.  ``requests.raise_for_status`` cannot detect that failure,
+    so payload integrity is checked before the temporary file is promoted.
+    When repository metadata provides an exact byte count, callers should pass
+    it through ``expected_size``.
+    """
+    session = session or requests.Session()
+    h = dict(UA)
+    if headers:
+        h.update(headers)
+    dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
     resume = part.stat().st_size if part.exists() else 0
-    if resume: h["Range"] = f"bytes={resume}-"
+    if resume:
+        h["Range"] = f"bytes={resume}-"
+
     with session.get(url, stream=True, allow_redirects=True, timeout=timeout, headers=h) as r:
         if r.status_code == 416 and part.exists():
-            part.replace(dest); return dest
+            size = part.stat().st_size
+            valid = (allow_empty or size > 0) and (expected_size is None or size == int(expected_size))
+            if valid:
+                part.replace(dest)
+                return dest
+            part.unlink(missing_ok=True)
+            raise DownloadIntegrityError(
+                f"Server rejected resume for {url}, and the partial payload is invalid "
+                f"({size} bytes; expected {expected_size!r})."
+            )
+
         r.raise_for_status()
         mode = "ab" if resume and r.status_code == 206 else "wb"
-        if mode == "wb": resume = 0
-        total = int(r.headers.get("content-length", 0)) + resume
-        with open(part, mode) as f, tqdm(total=total or None, initial=resume, unit="B", unit_scale=True, desc=dest.name) as p:
+        if mode == "wb":
+            resume = 0
+        try:
+            content_length = int(r.headers.get("content-length", 0) or 0)
+        except (TypeError, ValueError):
+            content_length = 0
+        total = content_length + resume
+        with open(part, mode) as f, tqdm(
+            total=total or None,
+            initial=resume,
+            unit="B",
+            unit_scale=True,
+            desc=dest.name,
+        ) as progress:
             for chunk in r.iter_content(1024 * 1024):
-                if chunk: f.write(chunk); p.update(len(chunk))
-    part.replace(dest); return dest
+                if chunk:
+                    f.write(chunk)
+                    progress.update(len(chunk))
+
+    size = part.stat().st_size if part.exists() else 0
+    if not allow_empty and size == 0:
+        part.unlink(missing_ok=True)
+        raise DownloadIntegrityError(f"Downloaded an empty payload from {url}.")
+    if expected_size is not None and size != int(expected_size):
+        part.unlink(missing_ok=True)
+        raise DownloadIntegrityError(
+            f"Downloaded payload size mismatch from {url}: got {size} bytes, "
+            f"expected {int(expected_size)} bytes."
+        )
+
+    part.replace(dest)
+    return dest
 
 
 def _safe_extract_zip(path: Path, out: Path):
@@ -121,6 +184,70 @@ def _lira_metadata_files() -> tuple[list[dict], list[str]]:
     return [], errors
 
 
+def _lira_file_download_urls(item: dict) -> list[str]:
+    """Return de-duplicated per-file mirrors for one Figshare metadata item."""
+    urls: list[str] = []
+    reported = str(item.get("download_url") or "").strip()
+    if reported:
+        urls.append(reported)
+    file_id = item.get("id")
+    if file_id not in (None, ""):
+        fid = str(file_id)
+        urls.extend(
+            [
+                f"https://data.dtu.dk/ndownloader/files/{fid}",
+                f"https://ndownloader.figshare.com/files/{fid}",
+                f"https://figshare.com/ndownloader/files/{fid}",
+            ]
+        )
+    # Preserve order while avoiding duplicate mirrors.
+    return list(dict.fromkeys(urls))
+
+
+def _download_lira_file(item: dict, dest: Path, errors: list[str]) -> str:
+    """Download one LiRA file, validating metadata size and trying safe mirrors."""
+    expected = item.get("size")
+    expected_size = int(expected) if expected not in (None, "") else None
+    urls = _lira_file_download_urls(item)
+    if not urls:
+        raise DownloadIntegrityError(f"No download URL available for LiRA file {dest.name!r}.")
+
+    attempts: list[str] = []
+    for url in urls:
+        # A .part file belongs to one concrete mirror.  Never append bytes from
+        # a different host to it when falling back.
+        part = dest.with_suffix(dest.suffix + ".part")
+        dest.unlink(missing_ok=True)
+        part.unlink(missing_ok=True)
+        try:
+            _download(
+                url,
+                dest,
+                headers=_figshare_browser_headers(),
+                timeout=300,
+                expected_size=expected_size,
+            )
+            size = dest.stat().st_size if dest.exists() else 0
+            if size <= 0:
+                raise DownloadIntegrityError(f"LiRA mirror returned an empty file: {url}")
+            if expected_size is not None and size != expected_size:
+                raise DownloadIntegrityError(
+                    f"LiRA mirror returned {size} bytes for {dest.name}, expected {expected_size}."
+                )
+            return url
+        except (requests.RequestException, DownloadIntegrityError, OSError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            detail = f"HTTP {status}" if status is not None else f"{type(exc).__name__}: {exc}"
+            attempt = f"{url} -> {detail}"
+            attempts.append(attempt)
+            errors.append(f"{dest.name}: {attempt}")
+
+    raise DownloadIntegrityError(
+        f"All per-file mirrors failed for LiRA file {dest.name!r}. "
+        + " | ".join(attempts)
+    )
+
+
 def _download_lira_bulk(out: Path, errors: list[str]) -> tuple[Path, str]:
     """Fallback to the public bulk-downloader used by the DTU Figshare UI."""
     cfg = SOURCE["lira"]
@@ -153,7 +280,7 @@ def _download_lira_bulk(out: Path, errors: list[str]) -> tuple[Path, str]:
             status = getattr(getattr(e, "response", None), "status_code", None)
             suffix = f"HTTP {status}" if status is not None else f"{type(e).__name__}: {e}"
             errors.append(f"{url} -> {suffix}")
-        except (OSError, zipfile.BadZipFile) as e:
+        except (DownloadIntegrityError, OSError, zipfile.BadZipFile) as e:
             errors.append(f"{url} -> {type(e).__name__}: {e}")
     raise RuntimeError(
         "LiRA automatic download failed through both Figshare metadata and public bulk-download routes. "
@@ -168,27 +295,40 @@ def download_lira(out: Path) -> None:
     files, errors = _lira_metadata_files()
     if files:
         try:
+            used_urls: dict[str, str] = {}
             for item in files:
                 dest = out / str(item["name"])
-                expected_size = item.get("size")
-                size_ok = dest.exists() and (not expected_size or dest.stat().st_size == int(expected_size))
+                expected = item.get("size")
+                expected_size = int(expected) if expected not in (None, "") else None
+                size_ok = (
+                    dest.exists()
+                    and dest.stat().st_size > 0
+                    and (expected_size is None or dest.stat().st_size == expected_size)
+                )
                 if not size_ok:
-                    _download(
-                        str(item["download_url"]),
-                        dest,
-                        headers=_figshare_browser_headers(),
-                        timeout=300,
-                    )
+                    used_urls[dest.name] = _download_lira_file(item, dest, errors)
                 _extract(dest, out)
             _write_source(
                 "lira",
                 out,
-                {"download_route": "figshare_api_file_metadata", "metadata_warnings": errors},
+                {
+                    "download_route": "figshare_api_file_metadata",
+                    "download_urls": used_urls,
+                    "metadata_warnings": errors,
+                },
             )
             return
-        except requests.RequestException as e:
+        except (requests.RequestException, DownloadIntegrityError, OSError) as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
-            suffix = f"HTTP {status}" if status is not None else f"{type(e).__name__}: {e}"
+            text = str(e)
+            if status is not None:
+                suffix = f"HTTP {status}"
+            elif "HTTP 403" in text:
+                suffix = "HTTP 403"
+            elif "HTTP 401" in text:
+                suffix = "HTTP 401"
+            else:
+                suffix = f"{type(e).__name__}: {e}"
             errors.append(f"Figshare per-file download -> {suffix}")
 
     print("[download] LiRA: Figshare API route unavailable; trying DTU public bulk downloader.")
