@@ -12,7 +12,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from joblib import dump
 
 from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, PAPER_BASELINES, QUICK_BASELINES, validate_paper_baselines
-from .models import make_literature_baseline, SafeGripV3Net, SafeGripBackboneNet, ResidualScaleHead
+from .models import make_literature_baseline, SafeGripV3Net, SafeGripV4Net, SafeGripBackboneNet, ResidualScaleHead
 from .physics import (
     project_torch, project_numpy, project_interval_numpy, gaussian_interval,
     conformal_lower_correction, apply_lower_correction,
@@ -26,10 +26,22 @@ META={
     "route_id","direction","trip_id","trajectory_id","segment_id","sample_uid","resampled",
 }
 PROPOSAL_VARIANTS=(
+    # SafeGrip-CI v1.2 primary proposal and decisive ablations.
+    "safegrip_base_temporal",
+    "safegrip_no_dynamic_loss",
+    "safegrip_no_safety_loss",
+    "safegrip_no_physics_residual",
+    "safegrip_no_utility_gate",
+    "safegrip_no_identifiability",
+    "safegrip_no_bound",
+    "safegrip_no_regime_head",
+    "safegrip_no_heteroscedastic",
+    "safegrip_no_uq",
+    "safegrip",
+    # v1.1/v1.0 legacy controls retained for reproducibility.
     "safegrip_backbone_raw",
     "safegrip_persistent",
     "safegrip_neural_innovation",
-    "safegrip_no_identifiability",
     "safegrip_excitation_proxy",
     "safegrip_no_acceptance",
     "safegrip_no_cf_agreement",
@@ -41,14 +53,10 @@ PROPOSAL_VARIANTS=(
     "safegrip_no_direction_loss",
     "safegrip_no_dynamics_pretrain",
     "safegrip_no_innovation_supervision",
-    "safegrip_no_bound",
-    "safegrip_no_uq",
     "safegrip_no_inverse_expert",
     "safegrip_no_learned_arbitration",
     "safegrip_fixed_persistence",
     "safegrip_unsplit_innovation",
-    "safegrip",
-    # Backward-compatible names retained for old notebooks.
     "safegrip_features_only",
     "safegrip_prior_evidence",
     "safegrip_no_excitation",
@@ -59,19 +67,15 @@ PROPOSAL_VARIANTS=(
     "safegrip_static_only",
 )
 PRIMARY_ABLATION_VARIANTS=(
-    "safegrip_backbone_raw",
-    "safegrip_persistent",
-    "safegrip_neural_innovation",
+    "safegrip_base_temporal",
+    "safegrip_no_dynamic_loss",
+    "safegrip_no_safety_loss",
+    "safegrip_no_physics_residual",
+    "safegrip_no_utility_gate",
     "safegrip_no_identifiability",
-    "safegrip_excitation_proxy",
-    "safegrip_no_inverse_expert",
-    "safegrip_no_learned_arbitration",
-    "safegrip_fixed_persistence",
-    "safegrip_unsplit_innovation",
-    "safegrip_no_counterfactual_ranking",
-    "safegrip_no_dynamics_pretrain",
-    "safegrip_no_innovation_supervision",
     "safegrip_no_bound",
+    "safegrip_no_regime_head",
+    "safegrip_no_heteroscedastic",
     "safegrip_no_uq",
     "safegrip",
 )
@@ -662,9 +666,41 @@ def _proposal_flags(variant: str) -> dict:
             use_dual_expert=True, use_learned_arbitration=True, use_inverse_expert=True,
             use_adaptive_persistence=True, use_split_innovation=True),
     }
-    if canonical not in specs:
+    # SafeGrip-CI v1.2 uses a simpler direct-temporal + selective-physics path.
+    # Legacy v1.0/v1.1 entries above remain untouched for reproducibility.
+    v12_base=dict(
+        model_kind="ci12", feature_mode="raw", use_temporal=True,
+        use_bound=True, use_uq=True, use_calibrated_lower=True,
+        use_physics_correction=True, use_utility_gate=True,
+        use_identifiability_feature=True, use_dynamic_loss=True,
+        use_safety_loss=True, use_regime_head=True, use_heteroscedastic_loss=True, use_aleatoric_feature=True,
+        use_dynamics_loss=True, use_counterfactual_loss=True, use_dynamics_pretrain=True,
+        use_excitation_proxy=False, use_persistent_state=False, use_innovation=False,
+        use_identifiability=True, use_acceptance=False, use_innovation_supervision=False,
+        use_cf_agreement_loss=False,
+    )
+    v12_specs={
+        "safegrip_base_temporal": dict(v12_base, use_bound=False, use_uq=False, use_physics_correction=False,
+            use_utility_gate=False, use_identifiability_feature=False, use_dynamic_loss=False,
+            use_safety_loss=False, use_regime_head=False, use_heteroscedastic_loss=False, use_aleatoric_feature=False,
+            use_dynamics_loss=False, use_counterfactual_loss=False, use_dynamics_pretrain=False),
+        "safegrip_no_dynamic_loss": dict(v12_base, use_dynamic_loss=False),
+        "safegrip_no_safety_loss": dict(v12_base, use_safety_loss=False),
+        "safegrip_no_physics_residual": dict(v12_base, use_physics_correction=False, use_utility_gate=False),
+        "safegrip_no_utility_gate": dict(v12_base, use_utility_gate=False),
+        "safegrip_no_identifiability": dict(v12_base, use_identifiability_feature=False),
+        "safegrip_no_bound": dict(v12_base, use_bound=False),
+        "safegrip_no_regime_head": dict(v12_base, use_regime_head=False),
+        "safegrip_no_heteroscedastic": dict(v12_base, use_heteroscedastic_loss=False, use_aleatoric_feature=False),
+        "safegrip_no_uq": dict(v12_base, use_uq=False),
+        "safegrip": dict(v12_base),
+    }
+    if canonical in v12_specs:
+        out=dict(v12_specs[canonical])
+    elif canonical in specs:
+        out=dict(specs[canonical])
+    else:
         raise ValueError(variant)
-    out=dict(specs[canonical])
     out.setdefault("use_multiscale_counterfactual", True)
     out.setdefault("use_linearity_consistency", True)
     out.setdefault("use_agreement_veto", bool(out.get("use_acceptance", False) and out.get("use_cf_agreement_loss", False)))
@@ -676,6 +712,13 @@ def _proposal_flags(variant: str) -> dict:
     out.setdefault("use_inverse_expert", False)
     out.setdefault("use_adaptive_persistence", False)
     out.setdefault("use_split_innovation", False)
+    out.setdefault("use_physics_correction", False)
+    out.setdefault("use_utility_gate", False)
+    out.setdefault("use_identifiability_feature", False)
+    out.setdefault("use_dynamic_loss", False)
+    out.setdefault("use_safety_loss", False)
+    out.setdefault("use_regime_head", False)
+    out.setdefault("use_heteroscedastic_loss", False)
     # Removing all counterfactual agreement must remove both its training loss
     # and its inference-time disagreement veto.
     if canonical == "safegrip_no_cf_agreement":
@@ -704,6 +747,29 @@ def _proposal_model(variant: str, b: Bundle, hp: dict):
             len(b.features), hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]),
             dropout=float(hp["dropout"]),
         )
+        model.variant_spec=flags
+        return model
+    if flags["model_kind"]=="ci12":
+        model=SafeGripV4Net(
+            len(b.features), dynamics_indices=_dynamics_indices(b.features),
+            hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]), dropout=float(hp["dropout"]),
+            conv_channels=int(hp.get("conv_channels", max(32, int(hp["hidden"])//2))),
+            gru_layers=int(hp.get("gru_layers",2)),
+            counterfactual_delta=float(hp.get("counterfactual_delta",0.08)),
+            identifiability_lambda=float(hp.get("identifiability_lambda",0.001)),
+            inverse_dynamics_ridge=float(hp.get("inverse_dynamics_ridge",0.001)),
+            inverse_dynamics_max_step=float(hp.get("inverse_dynamics_max_step",0.10)),
+            physics_correction_scale=float(hp.get("physics_correction_scale",1.0)),
+            use_physics_correction=flags.get("use_physics_correction",True),
+            use_utility_gate=flags.get("use_utility_gate",True),
+            use_identifiability_feature=flags.get("use_identifiability_feature",True),
+            use_bound=flags.get("use_bound",True),
+            use_regime_head=flags.get("use_regime_head",True),
+            use_aleatoric_feature=flags.get("use_aleatoric_feature",True),
+            aleatoric_floor=float(hp.get("aleatoric_floor",0.005)),
+        )
+        model.information_beta=max(0.0,float(hp.get("information_beta",0.5)))
+        model.disagreement_beta=max(0.0,float(hp.get("disagreement_beta",0.25)))
         model.variant_spec=flags
         return model
     exc_idx=b.features.index("sg_excitation_score") if "sg_excitation_score" in b.features else None
@@ -771,6 +837,14 @@ def proposal_hparams(cfg, overrides=None):
         "arbitration_loss_weight":0.30, "prior_loss_weight":0.05,
         "teacher_forcing_start":0.80, "teacher_forcing_end":0.0,
         "persistence_min":0.05, "persistence_max":0.98, "inverse_expert_scale":1.0,
+        # v1.2 selective-physics proposal.
+        "conv_channels":48, "gru_layers":2, "physics_correction_scale":1.0,
+        "base_loss_weight":0.75, "dynamic_loss_weight":0.25,
+        "safety_loss_weight":0.20, "unsafe_margin":0.02,
+        "utility_gate_loss_weight":0.30, "utility_gate_beta":0.02,
+        "change_loss_weight":0.10, "change_threshold":0.02,
+        "smooth_loss_weight":0.05, "heteroscedastic_loss_weight":0.05,
+        "aleatoric_floor":0.005,
     }
     defaults.update(p); defaults.update(overrides or {}); return defaults
 
@@ -843,7 +917,9 @@ def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False,
           "normalized_improvement","veto_probability","counterfactual_delta_mu","counterfactual_agreement",
           "information_scale_cv","local_linearity","agreement_veto_probability",
           "expert_weight_prior","expert_weight_neural","expert_weight_inverse",
-          "adaptive_persistence","direction_agreement","magnitude_agreement","inverse_candidate_prediction")
+          "adaptive_persistence","direction_agreement","magnitude_agreement","inverse_candidate_prediction",
+          "change_probability","aleatoric_scale","physics_correction","applied_physics_correction","gate_confidence",
+          "raw_prediction")
     store={k:[] for k in keys}
     excitation_arr=None if excitation is None else np.asarray(excitation,dtype=np.float32)
     X=np.asarray(X,dtype=np.float32); lower=np.asarray(lower,dtype=np.float32)
@@ -904,6 +980,9 @@ def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False,
             cat("expert_weight_inverse",np.zeros_like(pred)),cat("adaptive_persistence",np.zeros_like(pred)),
             cat("direction_agreement",np.zeros_like(pred)),cat("magnitude_agreement",np.zeros_like(pred)),
             cat("inverse_candidate_prediction",pred.copy()),
+            cat("change_probability",np.zeros_like(pred)),cat("aleatoric_scale",np.zeros_like(pred)),
+            cat("physics_correction",np.zeros_like(pred)),cat("applied_physics_correction",np.zeros_like(pred)),
+            cat("gate_confidence",np.ones_like(pred)),cat("raw_prediction",pred.copy()),
         )
     return pred,latent,rel
 
@@ -954,11 +1033,196 @@ def _target_latent(y: torch.Tensor, lower: torch.Tensor, upper: float, use_bound
     return torch.log(frac)-torch.log1p(-frac)
 
 
+
+def _masked_mean(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    mask_f=mask.to(dtype=x.dtype)
+    return (x*mask_f).sum()/torch.clamp(mask_f.sum(),min=1.0)
+
+
+def _fit_proposal_v12(variant,b:Bundle,cfg,epochs,hp_overrides=None):
+    """Train SafeGrip-CI v1.2 with direct estimation + selective physics correction.
+
+    The point estimator is trained to be strong on its own.  Dynamics evidence
+    is trained by a separate friction-conditioned objective, while the utility
+    gate receives a training-only oracle fraction that answers a single
+    question: how much of the bounded inverse-dynamics correction would reduce
+    the current absolute friction error?  No friction label enters the gate at
+    inference time.
+    """
+    flags=_proposal_flags(variant)
+    hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
+    opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
+    lo_train=b.raw_lotr
+    lo_val=b.lov if flags["use_calibrated_lower"] else b.raw_lov
+    prev_idx,pair_valid=_previous_pair_indices(b.idtr,1)
+    dataset=TensorDataset(
+        torch.from_numpy(b.Xtr),torch.from_numpy(b.ytr),torch.from_numpy(lo_train),torch.from_numpy(b.etr),
+        torch.from_numpy(b.Xtr[prev_idx]),torch.from_numpy(b.ytr[prev_idx]),torch.from_numpy(lo_train[prev_idx]),
+        torch.from_numpy(pair_valid.astype(np.bool_)),
+    )
+    dl=DataLoader(dataset,batch_size=int(hp["batch_size"]),shuffle=True)
+    mu_u=float(cfg["mu_upper"]); huber_beta=float(hp.get("huber_beta",0.05))
+    best=None; bestloss=float("inf"); bad=0; patience=int(cfg["training"].get("patience",10))
+
+    base_w=max(0.0,float(hp.get("base_loss_weight",0.75)))
+    dyn_delta_w=max(0.0,float(hp.get("dynamic_loss_weight",0.25))) if flags.get("use_dynamic_loss",True) else 0.0
+    safety_w=max(0.0,float(hp.get("safety_loss_weight",0.20))) if flags.get("use_safety_loss",True) else 0.0
+    gate_w=max(0.0,float(hp.get("utility_gate_loss_weight",0.30))) if flags.get("use_utility_gate",True) else 0.0
+    change_w=max(0.0,float(hp.get("change_loss_weight",0.10))) if flags.get("use_regime_head",True) else 0.0
+    smooth_w=max(0.0,float(hp.get("smooth_loss_weight",0.05))) if flags.get("use_regime_head",True) else 0.0
+    hetero_w=max(0.0,float(hp.get("heteroscedastic_loss_weight",0.05))) if flags.get("use_heteroscedastic_loss",True) else 0.0
+    dynamics_w=max(0.0,float(hp.get("dynamics_loss_weight",0.10))) if flags.get("use_dynamics_loss",True) else 0.0
+    cf_w=max(0.0,float(hp.get("counterfactual_loss_weight",0.05))) if flags.get("use_counterfactual_loss",True) else 0.0
+    unsafe_margin=max(0.0,float(hp.get("unsafe_margin",0.02)))
+    change_threshold=max(1e-5,float(hp.get("change_threshold",0.02)))
+    cf_margin=max(0.0,float(hp.get("counterfactual_margin",0.02)))
+
+    # Pretrain G so local sensitivity and residual correction are meaningful
+    # before the utility gate starts learning from them.
+    pre_epochs=int(hp.get("dynamics_pretrain_epochs",8)) if flags.get("use_dynamics_pretrain",True) and flags.get("use_dynamics_loss",True) else 0
+    if pre_epochs>0:
+        dyn_params=list(model.dynamics_gru.parameters())+list(model.dynamics_context.parameters())+list(model.dynamics_head.parameters())
+        dyn_opt=torch.optim.AdamW(dyn_params,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
+        for _pre in range(min(pre_epochs,max(1,int(epochs)))):
+            model.train()
+            for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
+                xb=xb.to(dev); yb=yb.to(dev); dyn_opt.zero_grad()
+                dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
+                loss=nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
+                if cf_w>0:
+                    true_err=torch.mean((dyn_true-dyn_target).square(),dim=-1)
+                    delta=float(hp.get("counterfactual_delta",0.08))
+                    wrong_lo=torch.clamp(yb-delta,min=0.0,max=mu_u)
+                    wrong_hi=torch.clamp(yb+delta,min=0.0,max=mu_u)
+                    p_lo,_=model.dynamics_prediction(xb,wrong_lo,mu_u)
+                    p_hi,_=model.dynamics_prediction(xb,wrong_hi,mu_u)
+                    wrong_err=0.5*(torch.mean((p_lo-dyn_target).square(),dim=-1)+torch.mean((p_hi-dyn_target).square(),dim=-1))
+                    loss=loss+max(cf_w,0.05)*torch.relu(cf_margin+true_err-wrong_err).mean()
+                loss.backward(); torch.nn.utils.clip_grad_norm_(dyn_params,5.0); dyn_opt.step()
+
+    for _epoch in range(max(1,int(epochs))):
+        model.train()
+        for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
+            xb=xb.to(dev); yb=yb.to(dev); lb=lb.to(dev)
+            xp=xp.to(dev); yp=yp.to(dev); lp=lp.to(dev); pair_mask=pair_mask.to(dev)
+            opt.zero_grad()
+            d=model.forward_details(xb,lb,mu_u)
+            pred=d["prediction"]
+            loss=nn.functional.smooth_l1_loss(pred,yb,beta=huber_beta)
+
+            # Keep the direct temporal estimator competitive even when physics
+            # correction is active; this avoids the v1.1 failure where state/
+            # arbitration compensated for a weak point estimator.
+            if base_w>0:
+                loss=loss+base_w*nn.functional.smooth_l1_loss(d["base_prediction"],yb,beta=huber_beta)
+
+            need_prev=(dyn_delta_w>0 or change_w>0 or smooth_w>0)
+            dprev=None
+            target_delta=None
+            if need_prev:
+                dprev=model.forward_details(xp,lp,mu_u)
+                target_delta=yb-yp
+
+            if dyn_delta_w>0 and dprev is not None:
+                delta_err=nn.functional.smooth_l1_loss(
+                    pred-dprev["prediction"],target_delta,beta=max(huber_beta,0.03),reduction="none"
+                )
+                loss=loss+dyn_delta_w*_masked_mean(delta_err,pair_mask)
+
+            if change_w>0 and dprev is not None:
+                change_target=(torch.abs(target_delta)>change_threshold).to(pred.dtype)
+                change_loss=nn.functional.binary_cross_entropy(
+                    torch.clamp(d["change_probability"],1e-5,1-1e-5),change_target,reduction="none"
+                )
+                loss=loss+change_w*_masked_mean(change_loss,pair_mask)
+
+            if smooth_w>0 and dprev is not None:
+                stable=pair_mask & (torch.abs(target_delta)<=change_threshold)
+                smooth=torch.abs(pred-dprev["prediction"])
+                loss=loss+smooth_w*_masked_mean(smooth,stable)
+
+            if safety_w>0:
+                unsafe=torch.relu(pred-yb-unsafe_margin)
+                loss=loss+safety_w*torch.mean(unsafe.square())
+
+            if gate_w>0 and flags.get("use_physics_correction",True):
+                # Oracle *fraction* of the full bounded physics correction.
+                # This directly trains "how much of this correction is useful?"
+                # instead of classifying among unrelated experts.
+                base=d["base_prediction"].detach()
+                full=d.get("inverse_candidate_raw",d["inverse_candidate_prediction"]).detach()
+                delta=full-base
+                oracle=torch.clamp(((yb-base)*delta)/(delta.square()+1e-6),0.0,1.0).detach()
+                active=torch.abs(delta)>1e-4
+                gate_err=nn.functional.smooth_l1_loss(d["physics_gate"],oracle,beta=float(hp.get("utility_gate_beta",0.02)),reduction="none")
+                loss=loss+gate_w*_masked_mean(gate_err,active)
+
+            if hetero_w>0:
+                scale=torch.clamp(d["aleatoric_scale"],min=float(hp.get("aleatoric_floor",0.005)),max=mu_u)
+                err=(pred-yb)/scale
+                nll=0.5*torch.clamp(err.square(),max=100.0)+torch.log(scale)
+                loss=loss+hetero_w*nll.mean()
+
+            if dynamics_w>0:
+                dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
+                loss=loss+dynamics_w*nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
+                if cf_w>0:
+                    true_err=torch.mean((dyn_true-dyn_target).square(),dim=-1)
+                    delta=float(hp.get("counterfactual_delta",0.08))
+                    wrong_lo=torch.clamp(yb-delta,min=0.0,max=mu_u)
+                    wrong_hi=torch.clamp(yb+delta,min=0.0,max=mu_u)
+                    d_lo,_=model.dynamics_prediction(xb,wrong_lo,mu_u)
+                    d_hi,_=model.dynamics_prediction(xb,wrong_hi,mu_u)
+                    wrong_err=0.5*(torch.mean((d_lo-dyn_target).square(),dim=-1)+torch.mean((d_hi-dyn_target).square(),dim=-1))
+                    loss=loss+cf_w*torch.relu(cf_margin+true_err-wrong_err).mean()
+
+            loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step()
+
+        v=_forward_point(model,b.Xv,np.asarray(lo_val,np.float32),mu_u,return_features=False,
+                         excitation=b.ev,ids=b.idv,stateful=False)[0]
+        vl=float(np.mean((np.asarray(v,float)-np.asarray(b.yv,float))**2))
+        if vl<bestloss-1e-7:
+            bestloss=vl; best={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}; bad=0
+        else:
+            bad+=1
+        if bad>=patience:
+            break
+    if best:
+        model.load_state_dict(best)
+
+    if flags.get("use_uq",True):
+        _fit_residual_scale(model,b,cfg,hp,np.asarray(lo_val,np.float32))
+        lo_cal=b.loc if flags["use_calibrated_lower"] else b.raw_loc
+        mask=np.asarray(b.uq_cal_mask,dtype=bool)
+        Xcal=b.Xc[mask]; ycal=b.yc[mask]; idcal=b.idc[mask]; lower_cal=lo_cal[mask]
+        if len(Xcal):
+            vals=_forward_point(model,Xcal,lower_cal,mu_u,return_features=True,ids=idcal,stateful=False)
+            pcal=vals[0]; hcal=vals[3]; ident=vals[7]; gate_conf=vals[17]
+            model.scale_head.eval()
+            with torch.no_grad():
+                base=model.scale_head(torch.from_numpy(hcal.astype(np.float32)).to(dev)).cpu().numpy()
+            beta=max(0.0,float(hp.get("information_beta",0.5)))
+            disagreement_beta=max(0.0,float(hp.get("disagreement_beta",0.25)))
+            scale=base*(1.0+beta*(1.0-np.clip(np.asarray(ident,float),0.0,1.0))
+                        +disagreement_beta*(1.0-np.clip(np.asarray(gate_conf,float),0.0,1.0)))
+            scores=np.abs(np.asarray(ycal,float)-pcal)/np.maximum(scale,float(hp["uq_scale_floor"]))
+            block=int(cfg.get("uq",{}).get("block_size",0))
+            if block<=0:
+                block=max(1,int(np.ceil(float(b.sequence_length)/max(float(cfg.get("stride",1)),1.0))))
+            block_scores=_block_max_scores(scores,idcal,block)
+            model.conformal_q=_finite_sample_quantile(block_scores,cfg.get("alpha",0.05))
+            model.conformal_block_size=block; model.uq_calibration_count=int(len(Xcal)); model.uq_block_count=int(len(block_scores))
+        else:
+            model.conformal_q=1.96; model.conformal_block_size=1
+    return model,hp
+
 def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     if variant not in PROPOSAL_VARIANTS: raise ValueError(variant)
     flags=_proposal_flags(variant)
     if getattr(b,"feature_mode",None) != flags["feature_mode"]:
         raise ValueError(f"{variant} requires feature_mode={flags['feature_mode']}, got {getattr(b,'feature_mode',None)}")
+    if flags.get("model_kind")=="ci12":
+        return _fit_proposal_v12(variant,b,cfg,epochs,hp_overrides)
     hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
     opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
     lo_train=b.raw_lotr
@@ -1155,9 +1419,10 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
      candidate,r_prior,r_candidate,persistent_used,normalized_improvement,veto_probability,
      cf_delta_mu,cf_agreement,information_scale_cv,local_linearity,agreement_veto_probability,
      expert_weight_prior,expert_weight_neural,expert_weight_inverse,adaptive_persistence,
-     direction_agreement,magnitude_agreement,inverse_candidate)=vals
+     direction_agreement,magnitude_agreement,inverse_candidate,change_probability,aleatoric_scale,
+     physics_correction,applied_physics_correction,gate_confidence,raw_prediction)=vals
     details={
-        "prediction":prediction,"raw_mean":prediction.copy(),"latent_score":latent,
+        "prediction":prediction,"raw_mean":raw_prediction,"latent_score":latent,
         "prior_latent":prior_latent,"prior_prediction":prior,"candidate_prediction":candidate,
         "evidence_delta":innovation,"innovation":innovation,
         "gate":authority,"reliability":authority,"authority":authority,
@@ -1171,6 +1436,9 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
         "expert_weight_inverse":expert_weight_inverse,"adaptive_persistence":adaptive_persistence,
         "direction_agreement":direction_agreement,"magnitude_agreement":magnitude_agreement,
         "inverse_candidate_prediction":inverse_candidate,
+        "base_prediction":prior,"physics_gate":authority,"change_probability":change_probability,
+        "aleatoric_scale":aleatoric_scale,"physics_correction":physics_correction,
+        "applied_physics_correction":applied_physics_correction,"gate_confidence":gate_confidence,
         "persistent_state_used":persistent_used,"sigma":None,"bound":bound,
     }
     if flags["use_uq"] and getattr(model,"scale_head",None) is not None:
@@ -1337,7 +1605,7 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
         "acceptance_finite": bool(np.isfinite(acceptance).all() and np.all((acceptance>=-1e-6)&(acceptance<=1.0+1e-6))),
         "veto_probability_finite": bool(np.isfinite(veto).all() and np.all((veto>=-1e-6)&(veto<=1.0+1e-6))),
         "counterfactual_delta_finite": bool(np.isfinite(cf_delta).all()),
-        "final_not_materially_worse_than_persistent_prior": bool(not np.isfinite(prior_rmse) or final_rmse_ensemble <= 1.03*prior_rmse),
+        "final_not_materially_worse_than_base_estimator": bool(not np.isfinite(prior_rmse) or final_rmse_ensemble <= 1.03*prior_rmse),
         "accepted_update_direction_not_inverted": bool(not np.isfinite(accepted_corr) or accepted_corr >= -0.10),
     }
     return {
@@ -1369,6 +1637,7 @@ def _result_health(bundle: Bundle, metrics: pd.DataFrame, preds: pd.DataFrame, p
             "physics_lower_nonzero_rate": float(np.mean(raw_bound>1e-9)),
             "physics_lower_above_005_rate": float(np.mean(raw_bound>0.05)),
             "physics_information_fraction_mean": float(np.mean(np.clip(raw_bound/max(float(cfg.get("mu_upper",1.3)),1e-12),0.0,1.0))),
+            "base_estimator_rmse": prior_rmse,
             "prior_rmse": prior_rmse,
             "candidate_rmse": candidate_rmse,
             "ensemble_final_rmse": final_rmse_ensemble,
@@ -1525,6 +1794,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     seed_info_cv=[]; seed_linearity=[]; seed_agreement_veto=[]
     seed_w_prior=[]; seed_w_neural=[]; seed_w_inverse=[]; seed_adaptive_rho=[]
     seed_dir_agree=[]; seed_mag_agree=[]; seed_inverse_candidate=[]
+    seed_change_prob=[]; seed_aleatoric=[]; seed_physics_corr=[]; seed_applied_corr=[]; seed_gate_conf=[]
     seed_uq_initial_scales=[]
     seed_pi_low=[]; seed_pi_high=[]; seed_pi_low_raw=[]; seed_pi_high_raw=[]; seed_gates=[]; seed_q=[]; seed_blocks=[]; seed_uq_counts=[]
     for seed in seed_list:
@@ -1560,6 +1830,13 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
                          "mean_expert_weight_inverse":float(np.mean(d["expert_weight_inverse"])),
                          "mean_direction_agreement":float(np.mean(d["direction_agreement"])),
                          "mean_magnitude_agreement":float(np.mean(d["magnitude_agreement"])),
+                         "mean_physics_gate":float(np.mean(d["physics_gate"])),
+                         "mean_gate_confidence":float(np.mean(d["gate_confidence"])),
+                         "mean_change_probability":float(np.mean(d["change_probability"])),
+                         "mean_aleatoric_scale":float(np.mean(d["aleatoric_scale"])),
+                         "mean_abs_physics_correction":float(np.mean(np.abs(d["physics_correction"]))),
+                         "mean_abs_applied_physics_correction":float(np.mean(np.abs(d["applied_physics_correction"]))),
+                         "base_rmse":float(np.sqrt(np.mean((proposal_bundle.yt-d["base_prediction"])**2))),
                          "prior_rmse":float(np.sqrt(np.mean((proposal_bundle.yt-d["prior_prediction"])**2))),
                          "candidate_rmse":float(np.sqrt(np.mean((proposal_bundle.yt-d["candidate_prediction"])**2))),
                          "inverse_candidate_rmse":float(np.sqrt(np.mean((proposal_bundle.yt-d["inverse_candidate_prediction"])**2))),
@@ -1578,6 +1855,8 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         seed_w_prior.append(d["expert_weight_prior"]); seed_w_neural.append(d["expert_weight_neural"]); seed_w_inverse.append(d["expert_weight_inverse"])
         seed_adaptive_rho.append(d["adaptive_persistence"]); seed_dir_agree.append(d["direction_agreement"]); seed_mag_agree.append(d["magnitude_agreement"])
         seed_inverse_candidate.append(d["inverse_candidate_prediction"])
+        seed_change_prob.append(d["change_probability"]); seed_aleatoric.append(d["aleatoric_scale"])
+        seed_physics_corr.append(d["physics_correction"]); seed_applied_corr.append(d["applied_physics_correction"]); seed_gate_conf.append(d["gate_confidence"])
         seed_candidates.append(d["candidate_prediction"]); seed_persistent.append(d["persistent_state_used"])
         seed_uq_initial_scales.append(float(getattr(model,"uq_scale_initialization",np.nan)))
         if d["sigma"] is not None: proposal_sigmas.append(d["sigma"])
@@ -1614,6 +1893,13 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     preds[name+"_direction_agreement"]=np.mean(np.stack(seed_dir_agree),axis=0)
     preds[name+"_magnitude_agreement"]=np.mean(np.stack(seed_mag_agree),axis=0)
     preds[name+"_inverse_candidate"]=np.mean(np.stack(seed_inverse_candidate),axis=0)
+    preds[name+"_base"]=preds[name+"_prior"]
+    preds[name+"_physics_gate"]=np.mean(np.stack(seed_gates),axis=0)
+    preds[name+"_gate_confidence"]=np.mean(np.stack(seed_gate_conf),axis=0)
+    preds[name+"_change_probability"]=np.mean(np.stack(seed_change_prob),axis=0)
+    preds[name+"_aleatoric_scale"]=np.mean(np.stack(seed_aleatoric),axis=0)
+    preds[name+"_physics_correction"]=np.mean(np.stack(seed_physics_corr),axis=0)
+    preds[name+"_applied_physics_correction"]=np.mean(np.stack(seed_applied_corr),axis=0)
     if proposal_sigmas: preds[name+"_sigma"]=np.mean(np.stack(proposal_sigmas),axis=0)
     if seed_pi_low:
         preds[name+"_pi95_low_physics"]=np.mean(np.stack(seed_pi_low),axis=0)
@@ -1622,15 +1908,15 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         preds[name+"_pi95_high_raw"]=np.mean(np.stack(seed_pi_high_raw),axis=0)
 
     (out/"proposal_reliability.json").write_text(json.dumps({
-        "method":"SafeGrip-CI v1.1 dual-expert state correction with learned risk-aware arbitration",
-        "experts":["keep_persistent_prior","neural_direction_magnitude_correction","local_inverse_dynamics_correction"],
-        "arbitration":"softmax policy trained on training-only best-expert targets; inference uses only raw-sensor/dynamics evidence",
-        "identifiability":"counterfactual local sensitivity is an inverse-expert availability/observability feature, not a monotone neural correctness score",
-        "agreement":"direction and magnitude agreement are evidence features; disagreement is not a permanent multiplicative veto",
-        "counterfactual_scale":"single-scale finite difference is the v1.1 default; multi-scale consistency remains a legacy/sensitivity control",
+        "method":"SafeGrip-CI v1.2 risk-aware selective physics correction",
+        "primary_estimator":"raw-sensor Conv1D + two-layer GRU temporal estimator",
+        "physics_role":"bounded local inverse-dynamics residual correction; never an equal standalone expert",
+        "utility_gate":"scalar correction fraction trained with a training-only oracle useful-fraction target; inference uses only raw-sensor/dynamics evidence",
+        "identifiability":"counterfactual local sensitivity is an observability feature supplied to the utility gate, not a correctness multiplier",
+        "regime_model":"auxiliary friction-change probability plus delta-friction supervision; no recursive friction state is used",
+        "risk_training":"asymmetric unsafe-overestimation hinge loss augments Huber point loss",
         "handcrafted_excitation_used_by_full_proposal":False,
-        "persistent_state":"previous predicted friction is carried within each trajectory segment with learned context-dependent persistence",
-        "innovation":"bounded neural correction factorized into learned direction and magnitude",
+        "persistent_state_used_by_full_proposal":False,
         "per_seed_uq_initial_scale":seed_uq_initial_scales,
     },indent=2),encoding="utf-8")
     (out/"proposal_uq.json").write_text(json.dumps({
@@ -1664,11 +1950,11 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
         "calibration_labels_used_in_gradient_training":False,
         "proposal_feature_engineering_label_free":True,
-        "proposal_point_loss":"Huber final-state loss + raw innovation supervision + candidate loss + direction loss + training-only best-expert arbitration + adaptive-prior loss + dynamics ranking + do-no-harm penalty",
-        "proposal_architecture":"adaptive persistent friction state + direction/magnitude neural correction + local inverse-dynamics correction + learned three-action arbitration",
-        "proposal_reliability":"counterfactual identifiability is an observability/availability feature for inverse dynamics; correctness is learned by arbitration rather than a multiplicative gate",
-        "proposal_bound_parameterization":"physics support projection is applied after the arbitrated state correction",
-        "proposal_uq":"post-hoc residual scale + observability/disagreement inflation + block-max split-conformal multiplier",
+        "proposal_point_loss":"Huber final estimate + direct-base supervision + friction-change loss + asymmetric unsafe-overestimation loss + utility-gate fraction loss + regime-change loss + heteroscedastic NLL + dynamics ranking",
+        "proposal_architecture":"strong raw-sensor Conv1D-GRU estimator + bounded inverse-dynamics residual correction + one learned utility gate",
+        "proposal_reliability":"counterfactual identifiability is an observability feature; the gate learns how much physics correction is useful rather than selecting among experts",
+        "proposal_bound_parameterization":"physics feasible-set projection is applied only after the selective residual correction",
+        "proposal_uq":"heteroscedastic representation + post-hoc residual scale + observability/gate-uncertainty inflation + block-max split-conformal multiplier",
         "proposal_uq_dependence_note":"block-max calibration is a conservative dependence mitigation, not an arbitrary-dependence finite-sample guarantee",
         "physical_claim":"conditional on configured bounded-error and mu_upper assumptions",
     },indent=2),encoding="utf-8")
@@ -1721,6 +2007,7 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
         variant_preds=[]; variant_raw=[]; variant_sigma=[]; variant_auth=[]; variant_ident=[]; variant_accept=[]; lo_int=[]; hi_int=[]
         variant_veto=[]; variant_norm=[]; variant_cf_delta=[]; variant_cf_agree=[]
         variant_info_cv=[]; variant_linearity=[]; variant_agreement_veto=[]
+        variant_gate_conf=[]; variant_change=[]; variant_aleatoric=[]; variant_phys_corr=[]; variant_applied_corr=[]
         for seed in seed_list:
             seed_everything(int(seed)); t0=time.time(); model,hp=fit_proposal(variant,vb,cfg,epochs,hp_overrides)
             d=predict_proposal_details(model,variant,vb.Xt,vb.lot,vb.raw_lot,cfg["mu_upper"],excitation=vb.et,ids=vb.idt)
@@ -1741,6 +2028,13 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
                  "mean_agreement_veto_probability":float(np.mean(d["agreement_veto_probability"])),
                  "mean_information_raw":float(np.mean(d["information_raw"])),
                  "persistent_state_use_rate":float(np.mean(d["persistent_state_used"])),
+                 "mean_physics_gate":float(np.mean(d["physics_gate"])),
+                 "mean_gate_confidence":float(np.mean(d["gate_confidence"])),
+                 "mean_change_probability":float(np.mean(d["change_probability"])),
+                 "mean_aleatoric_scale":float(np.mean(d["aleatoric_scale"])),
+                 "mean_abs_physics_correction":float(np.mean(np.abs(d["physics_correction"]))),
+                 "mean_abs_applied_physics_correction":float(np.mean(np.abs(d["applied_physics_correction"]))),
+                 "base_rmse":float(np.sqrt(np.mean((vb.yt-d["base_prediction"])**2))),
                  "prior_rmse":float(np.sqrt(np.mean((vb.yt-d["prior_prediction"])**2))),
                  "candidate_rmse":float(np.sqrt(np.mean((vb.yt-d["candidate_prediction"])**2))),
                  "mean_abs_dynamic_update":float(np.mean(np.abs(d["prediction"]-d["prior_prediction"]))),
@@ -1750,6 +2044,8 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
             variant_veto.append(d["veto_probability"]); variant_norm.append(d["normalized_improvement"])
             variant_cf_delta.append(d["counterfactual_delta_mu"]); variant_cf_agree.append(d["counterfactual_agreement"])
             variant_info_cv.append(d["information_scale_cv"]); variant_linearity.append(d["local_linearity"]); variant_agreement_veto.append(d["agreement_veto_probability"])
+            variant_gate_conf.append(d["gate_confidence"]); variant_change.append(d["change_probability"]); variant_aleatoric.append(d["aleatoric_scale"])
+            variant_phys_corr.append(d["physics_correction"]); variant_applied_corr.append(d["applied_physics_correction"])
             if d["sigma"] is not None: variant_sigma.append(d["sigma"])
             if "pi95_low_physics" in d: lo_int.append(d["pi95_low_physics"]); hi_int.append(d["pi95_high_physics"])
         preds[variant]=np.mean(np.stack(variant_preds),axis=0); preds[variant+"_raw"]=np.mean(np.stack(variant_raw),axis=0)
@@ -1763,6 +2059,12 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
         preds[variant+"_information_scale_cv"]=np.mean(np.stack(variant_info_cv),axis=0)
         preds[variant+"_local_linearity"]=np.mean(np.stack(variant_linearity),axis=0)
         preds[variant+"_agreement_veto_probability"]=np.mean(np.stack(variant_agreement_veto),axis=0)
+        preds[variant+"_physics_gate"]=np.mean(np.stack(variant_auth),axis=0)
+        preds[variant+"_gate_confidence"]=np.mean(np.stack(variant_gate_conf),axis=0)
+        preds[variant+"_change_probability"]=np.mean(np.stack(variant_change),axis=0)
+        preds[variant+"_aleatoric_scale"]=np.mean(np.stack(variant_aleatoric),axis=0)
+        preds[variant+"_physics_correction"]=np.mean(np.stack(variant_phys_corr),axis=0)
+        preds[variant+"_applied_physics_correction"]=np.mean(np.stack(variant_applied_corr),axis=0)
         if variant_sigma: preds[variant+"_sigma"]=np.mean(np.stack(variant_sigma),axis=0)
         if lo_int:
             preds[variant+"_pi95_low_physics"]=np.mean(np.stack(lo_int),axis=0); preds[variant+"_pi95_high_physics"]=np.mean(np.stack(hi_int),axis=0)
@@ -1770,17 +2072,20 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     by_seed=pd.DataFrame(results); summary=_aggregate_seed_metrics(results)
     summary.to_csv(out/"ablation_metrics.csv",index=False); by_seed.to_csv(out/"ablation_metrics_by_seed.csv",index=False); preds.to_csv(out/"ablation_predictions.csv",index=False)
     (out/"ablation_design.json").write_text(json.dumps({
-        "proposal":"SafeGrip-CI v1.1 dual-expert adaptive-state estimator with learned risk-aware arbitration",
+        "proposal":"SafeGrip-CI v1.2 risk-aware selective physics correction",
         "primary_variants":variants,
         "semantic_specs":semantic,
         "key_comparisons":[
-            "safegrip_excitation_proxy vs safegrip tests handcrafted excitation against learned counterfactual identifiability",
-            "safegrip_no_acceptance vs safegrip isolates the asymmetric counterfactual veto",
-            "safegrip_no_cf_agreement vs safegrip removes both inverse-dynamics agreement supervision and inference veto",
-            "safegrip_single_scale_cf vs safegrip isolates robust multi-scale counterfactual observability",
-            "safegrip_no_linearity_consistency vs safegrip isolates the cross-scale local-linearity discount",
-            "safegrip_no_agreement_veto vs safegrip isolates inference-time use of inverse-dynamics agreement while retaining its training loss",
-            "safegrip_no_counterfactual_ranking vs safegrip isolates friction-discriminative training of the dynamics model",
+            "safegrip_base_temporal vs safegrip tests the net gain of physics/risk mechanisms over the direct estimator",
+            "safegrip_no_dynamic_loss vs safegrip tests explicit friction-change supervision",
+            "safegrip_no_safety_loss vs safegrip tests asymmetric unsafe-overestimation training",
+            "safegrip_no_physics_residual vs safegrip tests whether inverse-dynamics correction improves the direct estimate",
+            "safegrip_no_utility_gate vs safegrip tests selective correction against unconditional physics correction",
+            "safegrip_no_identifiability vs safegrip tests counterfactual observability as a gate feature",
+            "safegrip_no_bound vs safegrip tests the physics feasible-set safety projection",
+            "safegrip_no_regime_head vs safegrip tests transition-aware temporal regularization",
+            "safegrip_no_heteroscedastic vs safegrip tests uncertainty-aware representation training",
+            "safegrip_no_uq vs safegrip is the UQ-only control with identical point path",
         ],
         "same_hyperparameters_across_variants":True,"seeds":seed_list,
     },indent=2),encoding="utf-8")

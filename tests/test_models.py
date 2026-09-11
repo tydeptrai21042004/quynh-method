@@ -294,3 +294,77 @@ def test_safegrip_v11_adaptive_persistence_stays_in_configured_range():
     d=model.forward_details(x,lo,1.3,prior_mu=prior)
     rho=d["adaptive_persistence"]
     assert torch.all(rho>=0.1-1e-6) and torch.all(rho<=0.9+1e-6)
+
+
+def test_safegrip_v12_outputs_selective_physics_components_and_bound():
+    from safegrip.models import SafeGripV4Net
+    torch.manual_seed(4)
+    model=SafeGripV4Net(6,hidden=24,gru_hidden=16,conv_channels=16,dropout=0.0,dynamics_indices=[0,1])
+    x=torch.randn(5,12,6); lo=torch.linspace(0.05,0.25,5)
+    d=model.forward_details(x,lo,1.3)
+    required={"prediction","base_prediction","physics_gate","identifiability","physics_correction",
+              "applied_physics_correction","change_probability","aleatoric_scale","features"}
+    assert required <= set(d)
+    assert torch.all(d["prediction"]>=lo-1e-7)
+    assert torch.all(d["prediction"]<=1.3+1e-7)
+    assert torch.all((d["physics_gate"]>=0)&(d["physics_gate"]<=1))
+    assert torch.all((d["identifiability"]>=0)&(d["identifiability"]<=1))
+    assert torch.all((d["change_probability"]>=0)&(d["change_probability"]<=1))
+    assert torch.all(d["aleatoric_scale"]>0)
+
+
+def test_safegrip_v12_zero_dynamics_sensitivity_cannot_change_base_prediction():
+    from safegrip.models import SafeGripV4Net
+    torch.manual_seed(5)
+    model=SafeGripV4Net(5,hidden=24,gru_hidden=12,conv_channels=16,dropout=0.0,dynamics_indices=[0,1])
+    for p in model.dynamics_head.parameters():
+        torch.nn.init.zeros_(p)
+    x=torch.randn(4,10,5); lo=torch.zeros(4)
+    d=model.forward_details(x,lo,1.3)
+    assert torch.allclose(d["identifiability"],torch.zeros_like(d["identifiability"]),atol=1e-8)
+    assert torch.allclose(d["physics_correction"],torch.zeros_like(d["physics_correction"]),atol=1e-8)
+    assert torch.allclose(d["prediction"],d["base_prediction"],atol=1e-7)
+
+
+def test_safegrip_v12_unconditional_physics_ablation_uses_full_correction():
+    from safegrip.models import SafeGripV4Net
+    torch.manual_seed(6)
+    model=SafeGripV4Net(4,hidden=16,gru_hidden=8,conv_channels=8,dropout=0.0,dynamics_indices=[0],
+                        use_utility_gate=False,use_physics_correction=True,use_bound=False)
+    x=torch.randn(3,8,4)
+    d=model.forward_details(x,None,1.3)
+    assert torch.allclose(d["physics_gate"],torch.ones_like(d["physics_gate"]))
+    expected=torch.clamp(d["base_prediction"]+model.physics_correction_scale*d["physics_correction"],0.0,1.3)
+    assert torch.allclose(d["prediction"],expected,atol=1e-6)
+
+
+def test_safegrip_v12_physics_step_is_bounded():
+    from safegrip.models import SafeGripV4Net
+    torch.manual_seed(7)
+    max_step=0.07
+    model=SafeGripV4Net(5,hidden=16,gru_hidden=8,conv_channels=8,dropout=0.0,dynamics_indices=[0,1],
+                        inverse_dynamics_max_step=max_step)
+    d=model.forward_details(torch.randn(8,10,5),torch.zeros(8),1.3)
+    assert torch.all(torch.abs(d["physics_correction"])<=max_step+1e-7)
+
+
+def test_safegrip_v12_no_aleatoric_feature_is_deterministic_constant():
+    from safegrip.models import SafeGripV4Net
+    torch.manual_seed(8)
+    floor=0.007
+    model=SafeGripV4Net(5,hidden=16,gru_hidden=8,conv_channels=8,dropout=0.0,dynamics_indices=[0],
+                        use_aleatoric_feature=False,aleatoric_floor=floor)
+    d=model.forward_details(torch.randn(6,9,5),torch.zeros(6),1.3)
+    assert torch.allclose(d["aleatoric_scale"],torch.full_like(d["aleatoric_scale"],floor),atol=1e-8)
+
+
+def test_safegrip_v12_raw_inverse_candidate_is_pre_projection_correction():
+    from safegrip.models import SafeGripV4Net
+    torch.manual_seed(9)
+    model=SafeGripV4Net(4,hidden=16,gru_hidden=8,conv_channels=8,dropout=0.0,dynamics_indices=[0],
+                        use_bound=True,physics_correction_scale=0.5)
+    x=torch.randn(4,8,4); lo=torch.full((4,),0.8)
+    d=model.forward_details(x,lo,1.3)
+    expected=d["base_prediction"]+0.5*d["physics_correction"]
+    assert torch.allclose(d["inverse_candidate_raw"],expected,atol=1e-7)
+    assert torch.all(d["inverse_candidate_prediction"]>=lo-1e-7)

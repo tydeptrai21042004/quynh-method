@@ -1,33 +1,35 @@
 {
-  "release": "SafeGrip-Open v1.1.0 / SafeGrip-CI",
-  "purpose": "dual-expert adaptive-state proposal revision with learned prior/neural/inverse arbitration",
+  "release": "SafeGrip-Open v1.2.0 / SafeGrip-CI",
+  "purpose": "risk-aware selective physics correction with strong temporal base estimator and learned correction-utility gating",
   "release_validation": {
-    "pytest": "70 passed, 2 warnings",
+    "pytest": "77 passed, 2 warnings",
+    "python_compileall": true,
     "cli_help": true,
     "synthetic_training_smoke": true,
-    "primary_ablation_count": 15,
-    "supplementary_optimization_ablations": 2
+    "primary_ablation_count": 11,
+    "supplementary_optimization_ablations": 0
   },
   "verified_invariants": [
-    "persistent friction state resets at trajectory-segment boundaries",
-    "adaptive persistence is bounded and initialized from the configured state persistence",
-    "candidate innovation is factorized into bounded direction and magnitude",
-    "inverse dynamics is an explicit correction expert and is unavailable when counterfactual observability vanishes",
-    "learned arbitration weights prior/neural/inverse actions and sums to one",
-    "arbitration supervision uses training labels only; inference consumes no friction label",
-    "scheduled teacher forcing anneals toward recursively predicted previous state",
-    "counterfactual identifiability is observability evidence rather than a monotone neural-correctness gate",
-    "full v1.1 uses single-scale counterfactual sensitivity; v1.0 multi-scale/linearity controls remain legacy ablations",
-    "agreement is exported as direction/magnitude evidence rather than a permanent multiplicative veto",
-    "final point output remains inside the conditional physical support",
-    "UQ inflation can use both low observability and expert disagreement before block-max conformal calibration",
+    "full v1.2 point estimator does not recursively consume the previous predicted friction state",
+    "raw sensor Conv1D+GRU temporal estimator owns the primary friction prediction",
+    "counterfactual identifiability is exported and consumed as local observability evidence rather than neural-correctness authority",
+    "inverse dynamics contributes only a damped trust-region-bounded residual correction",
+    "physics evidence is detached before entering the point/gate path so point loss cannot improve by warping the dynamics model",
+    "learned utility gate uses only inference-available evidence at inference; its oracle useful-fraction target is training-only",
+    "friction-change, regime-change and asymmetric unsafe-overestimation objectives are explicit training terms",
+    "no-heteroscedastic ablation removes both the heteroscedastic objective and aleatoric gate feature",
+    "base-temporal ablation removes physics correction, projection-specific bound use, heteroscedastic evidence and UQ",
+    "final point output respects global and enabled conditional physical support",
+    "UQ remains calibrated on the disjoint UQ role with block-max split conformal calibration",
+    "primary v1.2 ablation semantics are explicit and unit-tested for distinctness",
+    "legacy v1.0/v1.1 proposal classes remain available only for reproducibility",
     "LiRA downloads reject zero-byte/corrupt payloads and retain public fallback behavior"
   ],
   "files": [
     {
       "path": "ABLATION_AND_TUNING.md",
-      "bytes": 5989,
-      "sha256": "68b60163c7ac5742d24c934f9f9e06072c595b7019095f862563f89f374a69fd"
+      "bytes": 3894,
+      "sha256": "8aa64ed190ce78d12b6a9a4874d36291ecdecd7b7b96316f31b723174e1826b5"
     },
     {
       "path": "DATASETS.md",
@@ -41,13 +43,13 @@
     },
     {
       "path": "FINAL_RESEARCH_RELEASE.md",
-      "bytes": 1632,
-      "sha256": "95c985f614803828875544868f7fcd948c7d6e2a96e6e2e8049beec8c891fd42"
+      "bytes": 1788,
+      "sha256": "1485ebd261c17fa9a4321233d38a7440a626ac3a38f51b56f7b33daed95063b3"
     },
     {
       "path": "IMPLEMENTED_IMPROVEMENTS.md",
-      "bytes": 3188,
-      "sha256": "604169c2b91de101d29c672b061f2e2efc0ede87c0940416df950da6ed9c1baa"
+      "bytes": 4400,
+      "sha256": "1eb513bc5e45a21aaf61b79f413521ababca3a290963a36d70261648bdbadbb6"
     },
     {
       "path": "KAGGLE_LIRA_FIX.md",
@@ -56,13 +58,13 @@
     },
     {
       "path": "KAGGLE_SINGLE_CELL.py",
-      "bytes": 61027,
-      "sha256": "52bfa21ba6d55e42ec574abd474992ed7d8ee2a8cd08644e8160f3048a2e2afd"
+      "bytes": 61341,
+      "sha256": "c71a7f0bdf5b73ff55a67b122278d6c48c98595db95b95676ac7d41e5e1fffab"
     },
     {
       "path": "KAGGLE_TRUST_SINGLE_CELL.py",
-      "bytes": 61027,
-      "sha256": "52bfa21ba6d55e42ec574abd474992ed7d8ee2a8cd08644e8160f3048a2e2afd"
+      "bytes": 61341,
+      "sha256": "c71a7f0bdf5b73ff55a67b122278d6c48c98595db95b95676ac7d41e5e1fffab"
     },
     {
       "path": "LITERATURE_BASELINES.md",
@@ -71,13 +73,13 @@
     },
     {
       "path": "PROPOSAL_IMPROVEMENT_REPORT.md",
-      "bytes": 7376,
-      "sha256": "ee2ad221198a3022789ca3ee27f8a8fff774396ffa458bca29b759db24d992b5"
+      "bytes": 3101,
+      "sha256": "8e21664e45cd1ff0b2aaf18ae959594d1f966718a229dd6e37744acb72df6973"
     },
     {
       "path": "README.md",
-      "bytes": 15899,
-      "sha256": "6c40336d7707fe4902551c5ca481810e8c57abbfeba2874101bfb44da394d057"
+      "bytes": 16789,
+      "sha256": "0f6d52fad758f148a0951fecf8b1886d79d85d10a15194f8fd6761942f01125f"
     },
     {
       "path": "RELATED_WORK_V090.md",
@@ -91,18 +93,23 @@
     },
     {
       "path": "RESEARCH_PROTOCOL.md",
-      "bytes": 2945,
-      "sha256": "2811d938939bcc0755e2e3ac4d48bcafd31daa1ae97f74461b43437abdd81359"
+      "bytes": 3539,
+      "sha256": "aa3527f84dd9468d862e39a32567986a9fef1e51721df32e929418705393f1f6"
     },
     {
       "path": "SAFEGRIP_CI_METHOD.md",
-      "bytes": 10128,
-      "sha256": "6dcaa0f266334c98cb3eddc8c41991e291979185a03780bef9585d012be9f489"
+      "bytes": 1227,
+      "sha256": "e6f5318dd483f6c139b07a25cf5a156dd0dce3e83eab9947f75c98df0c6adc31"
     },
     {
       "path": "SAFEGRIP_CI_V11_METHOD.md",
       "bytes": 2588,
       "sha256": "852e7befc249aecb5e8bc3784dc959893fc761a1b2dcade8b989a5d6254fa9d0"
+    },
+    {
+      "path": "SAFEGRIP_CI_V12_METHOD.md",
+      "bytes": 6624,
+      "sha256": "32527001d5ab2df465f2dec40c471a91c9bacbab145c122bc3c80cbd8b5e3e37"
     },
     {
       "path": "SAFEGRIP_V2_METHOD.md",
@@ -121,28 +128,28 @@
     },
     {
       "path": "VALIDATION.md",
-      "bytes": 1316,
-      "sha256": "adb1e444d61fcf5980e6b92a4678f9a9d653611fbd8935f0b5b230153b57dff7"
+      "bytes": 1570,
+      "sha256": "a430cc3559f4ac3817daf6d1642ae7f2b0e7329222267f41501305249a93a94a"
     },
     {
       "path": "configs/default.yaml",
-      "bytes": 7510,
-      "sha256": "3df4fbddd1b31f47da492356edffab1621709ebc341f0ec7ad1ee1f12f726941"
+      "bytes": 6541,
+      "sha256": "c65025a619aea4bef50e7be5a2237d0765b0b925abaafff45ed2744d5445daa1"
     },
     {
       "path": "configs/kaggle_small.yaml",
-      "bytes": 6997,
-      "sha256": "efd0fc018cdbf53344d0fc59af7d9ec3a78cb93da31533f1e17e2d74e809312c"
+      "bytes": 6669,
+      "sha256": "f11e90f6bd03041cf3764eaf1063721e72c987a2e12530ddf71a38aae44f71e6"
     },
     {
       "path": "configs/kaggle_trust.yaml",
-      "bytes": 7335,
-      "sha256": "166e28d49ec14e9088b8e5d0fb137a8dfd4c5e5bcedf03aa7cbc6957623ae969"
+      "bytes": 6366,
+      "sha256": "3a1b1480b9df7e2e354e622c118e8e48f629065760be228689ae07005bdc09e3"
     },
     {
       "path": "pyproject.toml",
       "bytes": 791,
-      "sha256": "19aa4d50672849193326922afb21995dbbe3bda6a26f40fccbe2100b4a6b4f9a"
+      "sha256": "7b37ca45d1c0bd69727fa8341cc649923e8b41dd5e1731b6a70834d753b0c941"
     },
     {
       "path": "references.bib",
@@ -156,8 +163,8 @@
     },
     {
       "path": "scripts/check_paper_readiness.py",
-      "bytes": 6300,
-      "sha256": "34d8f25d936e2c5a8533031b1796ab34558b6a2c05dfb1de73c58823098ecb15"
+      "bytes": 6159,
+      "sha256": "b8b1c9c3dfd2ce9730ffb38e4bb5a22c7336ad331bc0609e9b43648c0fed1ce1"
     },
     {
       "path": "scripts/download_all_datasets.sh",
@@ -182,12 +189,12 @@
     {
       "path": "scripts/run_kaggle_small.sh",
       "bytes": 1728,
-      "sha256": "2073b094c57d116b2de511a4fcfcb1d6804d0378716626fba7305199c21ba39c"
+      "sha256": "e317e784160dff5264da31697e03437b476cc6cde015cf22218249b6d3c0f959"
     },
     {
       "path": "scripts/run_kaggle_trust.sh",
       "bytes": 1492,
-      "sha256": "18b78ddc1254abf07f434900fd3252ca1574d9078901dac986cf30a739596a5a"
+      "sha256": "8033e7d3bee690622ff3394cf065da1109116020f47caf8840869b19be6f2a2f"
     },
     {
       "path": "scripts/run_paper.sh",
@@ -207,12 +214,12 @@
     {
       "path": "src/safegrip/__init__.py",
       "bytes": 22,
-      "sha256": "2c6550c83b1689f7400a8eeacedc1bf115961ddb3513bb90f99a83f12023cb0e"
+      "sha256": "329013e6180da079d3b46d57443fc657f03b42b1d553abc98c64b0ffca8c180e"
     },
     {
       "path": "src/safegrip/benchmark.py",
-      "bytes": 117188,
-      "sha256": "236afd7a5021384de313277630f7cfba4d268289297c80a2a80b2dca107549e5"
+      "bytes": 136825,
+      "sha256": "92dcdde718c868de7bc02316163ff8d678f6accf5c8454824eef19b9be73a29d"
     },
     {
       "path": "src/safegrip/cli.py",
@@ -256,8 +263,8 @@
     },
     {
       "path": "src/safegrip/models.py",
-      "bytes": 53282,
-      "sha256": "7b49b3aad5bd0f2fa3665d7ce332046e3d8d634344e975dfd5defad821b3b633"
+      "bytes": 71782,
+      "sha256": "982e21b73344de81d09ef5d1ccf0ecf47a7b03faabd24618792b454192749a9a"
     },
     {
       "path": "src/safegrip/physics.py",
@@ -276,8 +283,8 @@
     },
     {
       "path": "src/safegrip/tuning.py",
-      "bytes": 22759,
-      "sha256": "e82372d1d5a9d0b601b1559ee568ee0ae755090f199aa35aef1d93c062ff2427"
+      "bytes": 22601,
+      "sha256": "68979ddf51a3ce3b2beb2fcd189224996ff5905288ed477b36659394e36b5d4a"
     },
     {
       "path": "src/safegrip/utils.py",
@@ -306,8 +313,8 @@
     },
     {
       "path": "tests/test_models.py",
-      "bytes": 13639,
-      "sha256": "efdefda60c3a572c780c5efff999c152ae004701e77b88846c6837087fdb8554"
+      "bytes": 17470,
+      "sha256": "cd4cadef6ccb6e713fdfe04d99e00b6e06743382bfdebf21de144cb160c8cb03"
     },
     {
       "path": "tests/test_physics.py",
@@ -321,13 +328,13 @@
     },
     {
       "path": "tests/test_registry.py",
-      "bytes": 3459,
-      "sha256": "3febd86287768f11706562363c2d042d088ae026ad055ec645b1168e3921da0e"
+      "bytes": 4603,
+      "sha256": "50664fec788c1f9f75c508a97f812b7a16e47d5b83d2ba1281e875f42bfc1f43"
     },
     {
       "path": "tests/test_tuning.py",
-      "bytes": 1963,
-      "sha256": "050f238d8d928b0c3d6e9f98b3183a85f10a6b6621ec4a182eee99f00a37f6a2"
+      "bytes": 1921,
+      "sha256": "a37a8c9d26558cf6902f28d6ddd25b684d4b2d5df00b248010a55c5be3d0a24f"
     }
   ]
 }

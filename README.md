@@ -1,9 +1,18 @@
-# SafeGrip-Open v1.1.0
+# SafeGrip-Open v1.2.0
 
-## SafeGrip-CI v1.1
+## SafeGrip-CI v1.2
 
-The active proposal is now a **dual-expert adaptive friction-state estimator**. It combines a learned direction/magnitude correction with a local inverse-dynamics correction and learns a three-action arbitration policy: keep the prior, use the neural correction, or use the inverse correction. Counterfactual identifiability is treated as observability evidence rather than a direct multiplicative correctness gate. Adaptive persistence and scheduled teacher forcing reduce the near-static-state and train/inference mismatch observed in the v1.0 trust run. See `SAFEGRIP_CI_V11_METHOD.md`.
+The active proposal is **Risk-Aware Selective Physics Correction**. A strong raw-sensor Conv1D+GRU temporal estimator owns the primary friction estimate; a separately trained friction-conditioned dynamics model provides a bounded local inverse-dynamics residual; and one learned utility gate decides how much of that physics residual to apply using inference-available observability, residual, regime-change and uncertainty evidence. The final point estimate is physically projected and uncertainty is calibrated with the existing leakage-safe conformal protocol.
 
+The full v1.2 path intentionally removes recursive friction persistence, adaptive persistence, direction/magnitude splitting and prior/neural/inverse three-way arbitration. Those mechanisms remain only for historical reproducibility. See `SAFEGRIP_CI_V12_METHOD.md` and `ABLATION_AND_TUNING.md`.
+
+### Current evidence status
+
+v1.2 code has local unit/integration validation, but **no new real LiRA performance claim is made until TRUST is rerun**. The repository keeps the existing fairness, endpoint-parity, matched-seed/trajectory statistics and paper-readiness gates.
+
+## Historical SafeGrip-CI v1.1
+
+v1.1 used dual neural/inverse correction experts, adaptive persistence, direction/magnitude innovation and learned three-way arbitration. Its trust result motivated the simpler v1.2 design. See `SAFEGRIP_CI_V11_METHOD.md`.
 
 ## SafeGrip-CI (v1.0.0)
 
@@ -117,32 +126,29 @@ Paper-reported scores from non-matching protocols are stored as literature conte
 
 ## Proposal and ablations
 
-Full SafeGrip-CI v1.0:
+Full SafeGrip-CI v1.2:
 
 ```text
 raw causal sensor window
-   -> context prior + persistent friction state
-   -> independently supervised neural innovation
-   -> friction-conditioned dynamics model G(context, mu)
+   -> Conv1D + GRU temporal representation h_t
+   -> direct neural friction estimate mu_base
+   -> regime-change probability + aleatoric scale
 
-G(mu^- +/- delta_s), delta_s in {delta/c, delta, c*delta}
-   -> robust multi-scale information
-   -> cross-scale consistency / local-linearity discount
+separate friction-conditioned dynamics model G(context, mu)
+   -> counterfactual local sensitivity / observability I_t
+   -> bounded inverse-dynamics residual correction dmu_ID
 
-G(mu^-), G(mu_candidate)
-   -> normalized asymmetric residual veto
+inference-available evidence
+   -> learned correction-utility gate g_t
 
-local inverse-dynamics correction vs neural correction
-   -> agreement-aware veto, weighted by identifiability
-
-K = identifiability * residual_trust * agreement_trust
-q = q_prior + K * innovation
-mu = lower + (mu_upper-lower) * sigmoid(q)
+mu_corr = mu_base + g_t * clipped(dmu_ID)
+   -> conditional physical projection
+   -> residual-scale model + block-max split-conformal calibration
 ```
 
-Primary controlled ablations include the existing backbone/state/innovation/bound/UQ controls plus four v1.0 mechanism tests: `safegrip_single_scale_cf`, `safegrip_no_linearity_consistency`, `safegrip_no_agreement_veto`, and `safegrip_no_counterfactual_ranking`. Supplementary optimization controls remove the state-update loss, direction loss, or dynamics pretraining.
+The full proposal is trained with direct point/base regression, explicit friction-change loss, asymmetric unsafe-overestimation loss, correction-utility supervision, regime-change supervision, conditional smoothness, heteroscedastic residual training, and separate dynamics/counterfactual objectives.
 
-The ablation registry is explicit and unit-tested. See `SAFEGRIP_CI_METHOD.md` and `ABLATION_AND_TUNING.md`.
+The controlled primary ablations are `safegrip_base_temporal`, `safegrip_no_dynamic_loss`, `safegrip_no_safety_loss`, `safegrip_no_physics_residual`, `safegrip_no_utility_gate`, `safegrip_no_identifiability`, `safegrip_no_bound`, `safegrip_no_regime_head`, `safegrip_no_heteroscedastic`, `safegrip_no_uq`, and the full `safegrip`. See `SAFEGRIP_CI_V12_METHOD.md` and `ABLATION_AND_TUNING.md`.
 
 ## Fair validation tuning
 
@@ -154,7 +160,7 @@ safegrip tune --dataset lira --trials 80 --no-test
 
 Literature comparators use their own source-compatible spaces under the same validation endpoint contract. The primary selection metric for both proposal and comparators is **validation RMSE**; the test partition is locked during search.
 
-The v1.0 proposal search covers architecture/optimizer settings, state persistence, innovation scale/window, multi-scale counterfactual displacement/span, identifiability regularization, cross-scale linearity penalty, residual-veto controls, inverse-dynamics ridge/trust-region size, agreement-veto controls, dynamics pretraining, ranking margin, and all point-training auxiliary loss weights. `mu_upper`, `alpha`, and UQ-only `information_beta` are not optimized against point RMSE.
+The v1.2 proposal search covers temporal representation/optimizer settings, counterfactual displacement, observability regularization, inverse-dynamics damping/trust-region size, physics-correction scale, base/dynamic/safety/utility-gate/regime/smoothness/heteroscedastic loss weights, and dynamics pretraining/ranking settings. Physical support constants and UQ-only calibration settings are not optimized against final test RMSE.
 
 After choosing `best_hparams.yaml`, run a separate validation-only stability study:
 

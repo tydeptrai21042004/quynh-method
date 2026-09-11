@@ -25,7 +25,7 @@ $SG --config "$CONFIG" statistics --results results/lira_quick --bootstrap 500
 $SG --config "$CONFIG" ablation \
   --dataset lira \
   --preset quick \
-  --variants safegrip_backbone_raw,safegrip_persistent,safegrip_neural_innovation,safegrip_no_identifiability,safegrip_excitation_proxy,safegrip_no_acceptance,safegrip_no_cf_agreement,safegrip_no_innovation_supervision,safegrip_no_bound,safegrip_no_uq,safegrip
+  --variants safegrip_base_temporal,safegrip_no_dynamic_loss,safegrip_no_safety_loss,safegrip_no_physics_residual,safegrip_no_utility_gate,safegrip_no_identifiability,safegrip_no_bound,safegrip_no_regime_head,safegrip_no_heteroscedastic,safegrip_no_uq,safegrip
 
 echo "Small LiRA run complete."
 echo "Main metrics: results/lira_quick/metrics.csv"

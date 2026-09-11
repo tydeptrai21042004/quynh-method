@@ -932,9 +932,397 @@ class SafeGripCI11Net(SafeGripCINet):
         }
 
 
-# Public/backward-compatible names.  v1.1 uses the dual-expert CI implementation.
+class SafeGripCI12Net(nn.Module):
+    """SafeGrip-CI v1.2: risk-aware selective physics correction.
+
+    The v1.2 proposal deliberately simplifies the v1.1 state/arbitration stack.
+    A strong raw-sensor temporal estimator produces the primary friction
+    estimate.  A friction-conditioned dynamics model then supplies a local
+    inverse-dynamics residual correction.  A learned utility gate predicts how
+    much of that correction should be applied from *inference-available*
+    evidence: temporal representation, local counterfactual observability,
+    dynamics residual, correction magnitude, regime-change probability and
+    aleatoric scale.
+
+    Point prediction:
+
+        mu_base = F_theta(x[t-L:t])
+        J       = d G_phi(context, mu) / d mu |_(mu_base)
+        dmu_ID  = <J, y_dyn - G_phi(context,mu_base)> / (||J||^2 + ridge)
+        g       = sigmoid(H_psi(h, I, residual, dmu_ID, p_change, sigma))
+        mu_hat  = Projection_C(mu_base + g * clip(dmu_ID))
+
+    Counterfactual identifiability ``I`` is an observability feature, not a
+    correctness score and not a multiplicative authority term.  The dynamics
+    evidence is detached before it enters the correction/gate point path, so
+    the point loss cannot improve by warping the dynamics model; G is trained
+    by its own supervised and counterfactual-ranking objectives.
+    """
+
+    def __init__(
+        self,
+        d: int,
+        dynamics_indices: list[int] | tuple[int, ...] | None = None,
+        hidden: int = 96,
+        gru_hidden: int = 96,
+        dropout: float = 0.10,
+        conv_channels: int | None = None,
+        gru_layers: int = 2,
+        counterfactual_delta: float = 0.08,
+        identifiability_lambda: float = 1e-3,
+        inverse_dynamics_ridge: float = 1e-3,
+        inverse_dynamics_max_step: float = 0.10,
+        physics_correction_scale: float = 1.0,
+        use_physics_correction: bool = True,
+        use_utility_gate: bool = True,
+        use_identifiability_feature: bool = True,
+        use_bound: bool = True,
+        use_regime_head: bool = True,
+        use_aleatoric_feature: bool = True,
+        aleatoric_floor: float = 0.005,
+    ):
+        super().__init__()
+        self.d = int(d)
+        self.hidden = int(hidden)
+        self.gru_hidden = int(gru_hidden)
+        self.use_bound = bool(use_bound)
+        self.use_physics_correction = bool(use_physics_correction)
+        self.use_utility_gate = bool(use_utility_gate) and self.use_physics_correction
+        self.use_identifiability_feature = bool(use_identifiability_feature)
+        self.use_regime_head = bool(use_regime_head)
+        self.use_aleatoric_feature = bool(use_aleatoric_feature)
+        self.use_persistent_state = False  # v1.2 intentionally has no recursive friction state.
+        self.counterfactual_delta = max(1e-4, float(counterfactual_delta))
+        self.identifiability_lambda = max(1e-8, float(identifiability_lambda))
+        self.inverse_dynamics_ridge = max(1e-8, float(inverse_dynamics_ridge))
+        self.inverse_dynamics_max_step = max(1e-4, float(inverse_dynamics_max_step))
+        self.physics_correction_scale = max(0.0, float(physics_correction_scale))
+        self.aleatoric_floor = max(1e-5, float(aleatoric_floor))
+
+        if dynamics_indices is None:
+            dynamics_indices = list(range(min(4, self.d)))
+        dynamics_indices = [int(i) for i in dynamics_indices if 0 <= int(i) < self.d]
+        if not dynamics_indices:
+            dynamics_indices = [0]
+        self.dynamics_indices = tuple(dict.fromkeys(dynamics_indices))
+        dyn_out = len(self.dynamics_indices)
+
+        conv = int(conv_channels or max(32, hidden // 2))
+        # A local convolutional front-end improves short-range motion-pattern
+        # extraction while the two-layer GRU carries the longer temporal state.
+        self.temporal_conv = nn.Sequential(
+            nn.Conv1d(self.d, conv, kernel_size=5, padding=2),
+            nn.GELU(),
+            nn.Conv1d(conv, conv, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.temporal_gru = nn.GRU(
+            conv,
+            self.gru_hidden,
+            num_layers=max(1, int(gru_layers)),
+            batch_first=True,
+            dropout=float(dropout) if int(gru_layers) > 1 else 0.0,
+        )
+        self.static_encoder = nn.Sequential(
+            nn.Linear(3 * self.d, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+            nn.Dropout(dropout), nn.Linear(hidden, hidden), nn.SiLU(),
+        )
+        self.temporal_proj = nn.Sequential(nn.Linear(self.gru_hidden, hidden), nn.SiLU())
+        self.fuse = nn.Sequential(
+            nn.Linear(2 * hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden), nn.Dropout(dropout)
+        )
+        inner = max(24, hidden // 2)
+        self.base_head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
+        self.change_head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
+        self.aleatoric_head = nn.Sequential(nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, 1))
+
+        # Dynamics model only sees the causal prefix; the endpoint response is
+        # used as the observed residual target and therefore cannot be copied.
+        self.dynamics_gru = nn.GRU(self.d, self.gru_hidden, num_layers=1, batch_first=True)
+        self.dynamics_context = nn.Sequential(
+            nn.Linear(self.gru_hidden, hidden), nn.SiLU(), nn.LayerNorm(hidden)
+        )
+        self.dynamics_head = nn.Sequential(
+            nn.Linear(hidden + 1, hidden), nn.SiLU(), nn.Dropout(dropout),
+            nn.Linear(hidden, inner), nn.SiLU(), nn.Linear(inner, dyn_out),
+        )
+
+        # Gate scalars: observability, residual magnitude, normalized ID step,
+        # regime-change probability, aleatoric scale, sensitivity energy.
+        self.gate_head = nn.Sequential(
+            nn.Linear(hidden + 6, hidden), nn.SiLU(), nn.LayerNorm(hidden),
+            nn.Dropout(dropout), nn.Linear(hidden, 1),
+        )
+        # Neutral/conservative initialization: start with a small correction and
+        # let the utility supervision earn larger gate values.
+        nn.init.zeros_(self.gate_head[-1].weight)
+        nn.init.constant_(self.gate_head[-1].bias, -1.5)
+
+        self.uq_fuse = nn.Sequential(
+            nn.Linear(hidden + 5, hidden), nn.SiLU(), nn.LayerNorm(hidden)
+        )
+        self.scale_head: ResidualScaleHead | None = None
+        self.conformal_q: float | None = None
+        self.conformal_block_size: int | None = None
+        self.information_beta: float = 0.5
+        self.disagreement_beta: float = 0.25
+
+    @staticmethod
+    def _stats(x: torch.Tensor) -> torch.Tensor:
+        return torch.cat([x[:, -1, :], x.mean(dim=1), x.std(dim=1, unbiased=False)], dim=-1)
+
+    @staticmethod
+    def _logit(p: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+        p = torch.clamp(p, eps, 1.0 - eps)
+        return torch.log(p) - torch.log1p(-p)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        static = self.static_encoder(self._stats(x))
+        z = self.temporal_conv(x.transpose(1, 2)).transpose(1, 2)
+        y, _ = self.temporal_gru(z)
+        temporal = self.temporal_proj(y[:, -1])
+        return self.fuse(torch.cat([static, temporal], dim=-1))
+
+    def _base_prediction(self, h: torch.Tensor, upper: float | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        upper_t = torch.as_tensor(upper, dtype=h.dtype, device=h.device)
+        latent = self.base_head(h).squeeze(-1)
+        mu = upper_t * torch.sigmoid(latent)
+        return mu, latent
+
+    def _encode_dynamics_context(self, x: torch.Tensor) -> torch.Tensor:
+        prefix = x[:, :-1, :] if x.shape[1] > 1 else x
+        y, _ = self.dynamics_gru(prefix)
+        return self.dynamics_context(y[:, -1])
+
+    def dynamics_prediction_from_context(
+        self, context_h: torch.Tensor, mu: torch.Tensor, upper: float | torch.Tensor = 1.3
+    ) -> torch.Tensor:
+        upper_t = torch.as_tensor(upper, dtype=mu.dtype, device=mu.device)
+        mu_norm = (mu / torch.clamp(upper_t, min=1e-6)).reshape(-1, 1)
+        return self.dynamics_head(torch.cat([context_h, mu_norm], dim=-1))
+
+    def dynamics_prediction(
+        self, x: torch.Tensor, mu: torch.Tensor, upper: float | torch.Tensor = 1.3
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self._encode_dynamics_context(x)
+        pred = self.dynamics_prediction_from_context(h, mu, upper)
+        idx = torch.as_tensor(self.dynamics_indices, dtype=torch.long, device=x.device)
+        target = torch.index_select(x[:, -1, :], 1, idx)
+        return pred, target
+
+    def _physics_evidence(
+        self, x: torch.Tensor, base_mu: torch.Tensor, upper: float | torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        """Compute detached local observability and inverse-dynamics evidence."""
+        idx = torch.as_tensor(self.dynamics_indices, dtype=torch.long, device=x.device)
+        observed = torch.index_select(x[:, -1, :], 1, idx)
+        dyn_h = self._encode_dynamics_context(x)
+        upper_t = torch.as_tensor(upper, dtype=base_mu.dtype, device=base_mu.device)
+        upper_scalar = float(upper_t.detach().cpu())
+
+        # Prevent point-estimation losses from altering the local physics model.
+        mu0 = base_mu.detach()
+        dyn_detached = dyn_h.detach()
+        dmu = self.counterfactual_delta
+        mu_plus = torch.clamp(mu0 + dmu, min=0.0, max=upper_scalar)
+        mu_minus = torch.clamp(mu0 - dmu, min=0.0, max=upper_scalar)
+        g_plus = self.dynamics_prediction_from_context(dyn_detached, mu_plus, upper)
+        g_minus = self.dynamics_prediction_from_context(dyn_detached, mu_minus, upper)
+        denom = torch.clamp((mu_plus - mu_minus).reshape(-1, 1), min=1e-4)
+        sensitivity = (g_plus - g_minus) / denom
+        sensitivity = sensitivity.detach()
+        information_raw = torch.mean(sensitivity.square(), dim=-1)
+        identifiability = information_raw / (information_raw + self.identifiability_lambda)
+        identifiability = torch.clamp(identifiability, 0.0, 1.0)
+
+        g_base = self.dynamics_prediction_from_context(dyn_detached, mu0, upper).detach()
+        residual_vector = observed.detach() - g_base
+        residual_base = torch.mean(residual_vector.square(), dim=-1)
+        sens_energy = torch.sum(sensitivity.square(), dim=-1)
+        correction = torch.sum(sensitivity * residual_vector, dim=-1) / (
+            sens_energy + self.inverse_dynamics_ridge
+        )
+        correction = torch.clamp(correction, -self.inverse_dynamics_max_step, self.inverse_dynamics_max_step)
+        correction = correction.detach()
+
+        mu_full = torch.clamp(mu0 + self.physics_correction_scale * correction, 0.0, upper_scalar)
+        g_full = self.dynamics_prediction_from_context(dyn_detached, mu_full, upper).detach()
+        residual_full = torch.mean((observed.detach() - g_full).square(), dim=-1)
+        normalized_improvement = (residual_base - residual_full) / torch.clamp(
+            residual_base + residual_full, min=1e-8
+        )
+        return {
+            "context": dyn_h,
+            "identifiability": identifiability.detach(),
+            "information_raw": information_raw.detach(),
+            "residual_base": residual_base.detach(),
+            "residual_full": residual_full.detach(),
+            "correction": correction,
+            "normalized_improvement": normalized_improvement.detach(),
+        }
+
+    def _project(
+        self, mu: torch.Tensor, lower: torch.Tensor | None, upper: float | torch.Tensor
+    ) -> torch.Tensor:
+        upper_t = torch.as_tensor(upper, dtype=mu.dtype, device=mu.device)
+        out = torch.clamp(mu, min=0.0)
+        out = torch.minimum(out, upper_t.expand_as(out))
+        if self.use_bound:
+            if lower is None:
+                raise ValueError("SafeGripCI12Net requires lower when use_bound=True")
+            out = torch.maximum(out, lower)
+        return out
+
+    def forward_details(
+        self,
+        x: torch.Tensor,
+        lower: torch.Tensor | None = None,
+        upper: float | torch.Tensor = 1.3,
+        excitation: torch.Tensor | None = None,
+        prior_mu: torch.Tensor | None = None,
+        prior_mask: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        del excitation, prior_mu, prior_mask  # v1.2 does not use proxy/state inputs.
+        h = self.encode(x)
+        base_mu, base_latent = self._base_prediction(h, upper)
+        change_probability = (
+            torch.sigmoid(self.change_head(h).squeeze(-1))
+            if self.use_regime_head
+            else torch.zeros_like(base_mu)
+        )
+        aleatoric_scale = (
+            nn.functional.softplus(self.aleatoric_head(h).squeeze(-1)) + self.aleatoric_floor
+            if self.use_aleatoric_feature
+            else torch.full_like(base_mu, self.aleatoric_floor)
+        )
+
+        phys = self._physics_evidence(x, base_mu, upper)
+        ident = phys["identifiability"]
+        ident_for_gate = ident if self.use_identifiability_feature else torch.zeros_like(ident)
+        corr = phys["correction"] if self.use_physics_correction else torch.zeros_like(base_mu)
+        residual_feature = torch.log1p(torch.clamp(phys["residual_base"], min=0.0))
+        corr_feature = corr / max(self.inverse_dynamics_max_step, 1e-6)
+        scale_feature = (
+            torch.clamp(aleatoric_scale / max(float(torch.as_tensor(upper).detach().cpu()), 1e-6), 0.0, 2.0)
+            if self.use_aleatoric_feature
+            else torch.zeros_like(base_mu)
+        )
+        info_raw_feature = torch.log1p(torch.clamp(phys["information_raw"], min=0.0))
+        gate_features = torch.stack([
+            ident_for_gate,
+            residual_feature,
+            corr_feature,
+            change_probability,
+            scale_feature,
+            info_raw_feature,
+        ], dim=-1)
+
+        if not self.use_physics_correction:
+            gate = torch.zeros_like(base_mu)
+            gate_logit = torch.full_like(base_mu, -20.0)
+        elif self.use_utility_gate:
+            gate_logit = self.gate_head(torch.cat([h, gate_features], dim=-1)).squeeze(-1)
+            gate = torch.sigmoid(gate_logit)
+        else:
+            gate = torch.ones_like(base_mu)
+            gate_logit = torch.full_like(base_mu, 20.0)
+
+        applied_correction = gate * self.physics_correction_scale * corr
+        raw_prediction = base_mu + applied_correction
+        prediction = self._project(raw_prediction, lower, upper)
+        physics_candidate_raw = base_mu + self.physics_correction_scale * corr
+        physics_candidate = self._project(physics_candidate_raw, lower, upper)
+
+        # Dynamics residual after the actually applied correction is a diagnostic
+        # only; it is not used to backpropagate point loss into G.
+        dyn_h_det = phys["context"].detach()
+        idx = torch.as_tensor(self.dynamics_indices, dtype=torch.long, device=x.device)
+        observed = torch.index_select(x[:, -1, :], 1, idx).detach()
+        g_final = self.dynamics_prediction_from_context(dyn_h_det, prediction.detach(), upper).detach()
+        residual_final = torch.mean((observed - g_final).square(), dim=-1)
+
+        upper_t = torch.as_tensor(upper, dtype=prediction.dtype, device=prediction.device)
+        frac = torch.clamp(prediction / torch.clamp(upper_t, min=1e-6), 1e-5, 1.0 - 1e-5)
+        latent = self._logit(frac)
+        gate_confidence = torch.clamp(2.0 * torch.abs(gate - 0.5), 0.0, 1.0)
+        uq_scalars = torch.stack([
+            ident,
+            gate,
+            gate_confidence,
+            change_probability,
+            torch.clamp(scale_feature, 0.0, 1.0),
+        ], dim=-1)
+        uq_h = self.uq_fuse(torch.cat([h, uq_scalars], dim=-1))
+
+        zero = torch.zeros_like(prediction)
+        one = torch.ones_like(prediction)
+        # Compatibility fields intentionally map old names onto the new
+        # semantics so existing result exporters remain usable.
+        return {
+            "prediction": prediction,
+            "raw_prediction": raw_prediction,
+            "base_prediction": base_mu,
+            "prior_prediction": base_mu,
+            "context_prior_prediction": base_mu,
+            "candidate_prediction": physics_candidate,
+            "inverse_candidate_prediction": physics_candidate,
+            "inverse_candidate_raw": physics_candidate_raw,
+            "latent": latent,
+            "prior_latent": base_latent,
+            "evidence_delta": corr,
+            "innovation": corr,
+            "effective_innovation": applied_correction,
+            "fused_delta_mu": applied_correction,
+            "reliability": gate,
+            "authority": gate,
+            "physics_gate": gate,
+            "gate_logit": gate_logit,
+            "identifiability": ident,
+            "acceptance": gate,
+            "information_raw": phys["information_raw"],
+            "dynamics_residual_prior": phys["residual_base"],
+            "dynamics_residual_candidate": residual_final,
+            "normalized_improvement": phys["normalized_improvement"],
+            "veto_probability": 1.0 - gate,
+            "counterfactual_delta_mu": corr,
+            "counterfactual_agreement": gate_confidence,
+            "information_scale_cv": zero,
+            "local_linearity": one,
+            "agreement_veto_probability": zero,
+            "persistent_state_used": zero,
+            "adaptive_persistence": zero,
+            "expert_weights": torch.stack([zero, 1.0 - gate, gate], dim=-1),
+            "expert_weight_prior": zero,
+            "expert_weight_neural": 1.0 - gate,
+            "expert_weight_inverse": gate,
+            "direction_agreement": torch.tanh(8.0 * corr * applied_correction),
+            "magnitude_agreement": gate,
+            "change_probability": change_probability,
+            "aleatoric_scale": aleatoric_scale,
+            "physics_correction": corr,
+            "applied_physics_correction": applied_correction,
+            "gate_confidence": gate_confidence,
+            "features": uq_h,
+        }
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        lower: torch.Tensor | None = None,
+        upper: float | torch.Tensor = 1.3,
+        excitation: torch.Tensor | None = None,
+        **kwargs,
+    ):
+        d = self.forward_details(x, lower=lower, upper=upper, excitation=excitation, **kwargs)
+        return d["prediction"], d["latent"], d["reliability"]
+
+
+# Legacy public names remain pinned to v1.1 so old experiments/tests are reproducible.
 SafeGripV3Net = SafeGripCI11Net
 SafeGripV2Net = SafeGripCI11Net
+# Current proposal alias.
+SafeGripV4Net = SafeGripCI12Net
 
 
 class SafeGripBackboneNet(nn.Module):

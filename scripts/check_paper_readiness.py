@@ -31,12 +31,10 @@ required_abl = [
     "ablation_design.json",
 ]
 PRIMARY_ABLATIONS = {
-    "safegrip_backbone_raw", "safegrip_persistent", "safegrip_neural_innovation",
-    "safegrip_no_identifiability", "safegrip_excitation_proxy", "safegrip_no_acceptance",
-    "safegrip_no_cf_agreement", "safegrip_single_scale_cf",
-    "safegrip_no_linearity_consistency", "safegrip_no_agreement_veto",
-    "safegrip_no_counterfactual_ranking", "safegrip_no_innovation_supervision",
-    "safegrip_no_bound", "safegrip_no_uq", "safegrip",
+    "safegrip_base_temporal", "safegrip_no_dynamic_loss", "safegrip_no_safety_loss",
+    "safegrip_no_physics_residual", "safegrip_no_utility_gate", "safegrip_no_identifiability",
+    "safegrip_no_bound", "safegrip_no_regime_head", "safegrip_no_heteroscedastic",
+    "safegrip_no_uq", "safegrip",
 }
 PAPER_MODELS = {
     "todorovic2022_cnn", "lampe2023_lstm", "lampe2023_gru",

@@ -40,51 +40,40 @@ training:
   hidden: 64
   dropout: 0.1
 proposal:
-  hidden: 32
-  gru_hidden: 16
+  hidden: 48
+  gru_hidden: 32
+  conv_channels: 24
+  gru_layers: 2
   dropout: 0.1
   lr: 0.001
   weight_decay: 0.0001
-  batch_size: 512
+  batch_size: 256
   huber_beta: 0.05
-  uq_epochs: 100
-  uq_lr: 0.001
-  uq_scale_floor: 0.005
-  evidence_window: 8
-  delta_scale: 0.3
-  state_persistence: 0.8
   counterfactual_delta: 0.08
   identifiability_lambda: 0.001
-  acceptance_temperature: 12.0
-  acceptance_margin: 0.0
-  innovation_loss_weight: 0.35
+  inverse_dynamics_ridge: 0.001
+  inverse_dynamics_max_step: 0.1
+  physics_correction_scale: 0.5
+  base_loss_weight: 0.75
+  dynamic_loss_weight: 0.25
+  safety_loss_weight: 0.2
+  unsafe_margin: 0.02
+  utility_gate_loss_weight: 0.3
+  utility_gate_beta: 0.02
+  change_loss_weight: 0.1
+  change_threshold: 0.02
+  smooth_loss_weight: 0.05
+  heteroscedastic_loss_weight: 0.05
+  aleatoric_floor: 0.005
   dynamics_loss_weight: 0.1
   counterfactual_loss_weight: 0.05
-  do_no_harm_weight: 0.1
   counterfactual_margin: 0.02
-  dynamics_pretrain_epochs: 8
-  information_beta: 1.0
-  counterfactual_scale_span: 2.0
-  linearity_penalty: 0.5
-  agreement_temperature: 10.0
-  agreement_threshold: 0.35
-  agreement_strength: 0.15
-  acceptance_tolerance: 0.1
-  acceptance_strength: 0.35
-  inverse_dynamics_ridge: 0.001
-  inverse_dynamics_max_step: 0.12
-  candidate_loss_weight: 0.15
-  cf_agreement_loss_weight: 0.03
-  direction_loss_weight: 0.05
-  state_update_loss_weight: 0.35
-  disagreement_beta: 0.35
-  arbitration_loss_weight: 0.3
-  prior_loss_weight: 0.05
-  teacher_forcing_start: 0.8
-  teacher_forcing_end: 0.0
-  persistence_min: 0.05
-  persistence_max: 0.98
-  inverse_expert_scale: 0.75
+  dynamics_pretrain_epochs: 3
+  uq_epochs: 60
+  uq_lr: 0.001
+  uq_scale_floor: 0.005
+  information_beta: 0.5
+  disagreement_beta: 0.25
 baseline:
   todorovic2022_cnn:
     sequence_length: 100

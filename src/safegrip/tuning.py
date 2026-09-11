@@ -22,42 +22,46 @@ def require_optuna():
 
 
 def suggest_safegrip(trial, cfg):
+    """Validation-only search space for the SafeGrip-CI v1.2 point path."""
     space=cfg.get("tuning",{}).get("space",{})
+    p=cfg.get("proposal",{})
     return {
-        "sequence_length":trial.suggest_categorical("sequence_length",space.get("sequence_length",[8,16,24,32,64])),
-        "hidden":trial.suggest_categorical("hidden",space.get("hidden",[32,64,96])),
-        "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[16,32,64])),
+        "sequence_length":trial.suggest_categorical("sequence_length",space.get("sequence_length",[32,48,64,100])),
+        "hidden":trial.suggest_categorical("hidden",space.get("hidden",[64,96,128])),
+        "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[64,96,128])),
+        "conv_channels":trial.suggest_categorical("conv_channels",space.get("conv_channels",[32,48,64])),
+        "gru_layers":trial.suggest_categorical("gru_layers",space.get("gru_layers",[1,2])),
         "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
         "lr":trial.suggest_float("lr",*space.get("lr",[1e-4,3e-3]),log=True),
         "weight_decay":trial.suggest_float("weight_decay",*space.get("weight_decay",[1e-6,1e-3]),log=True),
-        "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[128,256,512])),
+        "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[64,128,256])),
         "huber_beta":trial.suggest_categorical("huber_beta",space.get("huber_beta",[0.03,0.05,0.10])),
-        "evidence_window":trial.suggest_categorical("evidence_window",space.get("evidence_window",[4,8,12,16])),
-        "delta_scale":trial.suggest_categorical("delta_scale",space.get("delta_scale",[0.2,0.3,0.5,0.8])),
-        "state_persistence":trial.suggest_categorical("state_persistence",space.get("state_persistence",[0.5,0.7,0.8,0.9,0.97])),
-        "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.03,0.05,0.08,0.12])),
+        "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.04,0.08,0.12])),
         "identifiability_lambda":trial.suggest_categorical("identifiability_lambda",space.get("identifiability_lambda",[1e-4,1e-3,1e-2])),
-        "acceptance_temperature":trial.suggest_categorical("acceptance_temperature",space.get("acceptance_temperature",[6.0,12.0,20.0])),
-        "acceptance_margin":trial.suggest_categorical("acceptance_margin",space.get("acceptance_margin",[-0.02,0.0,0.02])),
-        "acceptance_tolerance":trial.suggest_categorical("acceptance_tolerance",space.get("acceptance_tolerance",[0.05,0.10,0.20])),
-        "acceptance_strength":trial.suggest_categorical("acceptance_strength",space.get("acceptance_strength",[0.2,0.35,0.5])),
         "inverse_dynamics_ridge":trial.suggest_categorical("inverse_dynamics_ridge",space.get("inverse_dynamics_ridge",[1e-4,1e-3,1e-2])),
-        "inverse_dynamics_max_step":trial.suggest_categorical("inverse_dynamics_max_step",space.get("inverse_dynamics_max_step",[0.06,0.12,0.20])),
-        "inverse_expert_scale":trial.suggest_categorical("inverse_expert_scale",space.get("inverse_expert_scale",[0.25,0.5,0.75,1.0])),
-        "arbitration_loss_weight":trial.suggest_categorical("arbitration_loss_weight",space.get("arbitration_loss_weight",[0.10,0.20,0.30,0.50])),
-        "prior_loss_weight":trial.suggest_categorical("prior_loss_weight",space.get("prior_loss_weight",[0.0,0.03,0.05,0.10])),
-        "teacher_forcing_start":trial.suggest_categorical("teacher_forcing_start",space.get("teacher_forcing_start",[0.5,0.8,1.0])),
-        "innovation_loss_weight":trial.suggest_categorical("innovation_loss_weight",space.get("innovation_loss_weight",[0.10,0.20,0.35])),
-        "state_update_loss_weight":trial.suggest_categorical("state_update_loss_weight",space.get("state_update_loss_weight",[0.20,0.35,0.50])),
-        "candidate_loss_weight":trial.suggest_categorical("candidate_loss_weight",space.get("candidate_loss_weight",[0.10,0.25,0.40])),
-        "direction_loss_weight":trial.suggest_categorical("direction_loss_weight",space.get("direction_loss_weight",[0.0,0.03,0.05,0.10])),
+        "inverse_dynamics_max_step":trial.suggest_categorical("inverse_dynamics_max_step",space.get("inverse_dynamics_max_step",[0.06,0.10,0.14])),
+        "physics_correction_scale":trial.suggest_categorical("physics_correction_scale",space.get("physics_correction_scale",[0.25,0.5,0.75,1.0])),
+        "base_loss_weight":trial.suggest_categorical("base_loss_weight",space.get("base_loss_weight",[0.5,0.75,1.0])),
+        "dynamic_loss_weight":trial.suggest_categorical("dynamic_loss_weight",space.get("dynamic_loss_weight",[0.1,0.25,0.5])),
+        "safety_loss_weight":trial.suggest_categorical("safety_loss_weight",space.get("safety_loss_weight",[0.05,0.1,0.2,0.35])),
+        "unsafe_margin":trial.suggest_categorical("unsafe_margin",space.get("unsafe_margin",[0.0,0.02,0.05])),
+        "utility_gate_loss_weight":trial.suggest_categorical("utility_gate_loss_weight",space.get("utility_gate_loss_weight",[0.1,0.3,0.5])),
+        "change_loss_weight":trial.suggest_categorical("change_loss_weight",space.get("change_loss_weight",[0.05,0.1,0.2])),
+        "change_threshold":trial.suggest_categorical("change_threshold",space.get("change_threshold",[0.01,0.02,0.04])),
+        "smooth_loss_weight":trial.suggest_categorical("smooth_loss_weight",space.get("smooth_loss_weight",[0.0,0.03,0.05,0.1])),
+        "heteroscedastic_loss_weight":trial.suggest_categorical("heteroscedastic_loss_weight",space.get("heteroscedastic_loss_weight",[0.0,0.03,0.05,0.1])),
         "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
         "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.02,0.05,0.10])),
         "counterfactual_margin":trial.suggest_categorical("counterfactual_margin",space.get("counterfactual_margin",[0.0,0.01,0.02,0.05])),
         "dynamics_pretrain_epochs":trial.suggest_categorical("dynamics_pretrain_epochs",space.get("dynamics_pretrain_epochs",[3,5,8,12])),
-        "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.05,0.10,0.20])),
-        # UQ-only: carried explicitly but not suggested against point-RMSE.
-        "information_beta":float(cfg.get("proposal",{}).get("information_beta",1.0)),
+        # UQ-only parameters remain fixed during point-RMSE selection.
+        "information_beta":float(p.get("information_beta",0.5)),
+        "disagreement_beta":float(p.get("disagreement_beta",0.25)),
+        "uq_scale_floor":float(p.get("uq_scale_floor",0.005)),
+        "uq_lr":float(p.get("uq_lr",1e-3)),
+        "uq_epochs":int(p.get("uq_epochs",100)),
+        "aleatoric_floor":float(p.get("aleatoric_floor",0.005)),
+        "utility_gate_beta":float(p.get("utility_gate_beta",0.02)),
     }
 
 def _gaussian_nll(y,p,s):
@@ -90,7 +94,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v110_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v120_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)
@@ -129,16 +133,16 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
 
 
 SENSITIVITY_DEFAULT_PARAMETERS = (
-    "state_persistence",
-    "counterfactual_delta",
-    "identifiability_lambda",
+    "physics_correction_scale",
     "inverse_dynamics_max_step",
-    "inverse_expert_scale",
-    "arbitration_loss_weight",
-    "prior_loss_weight",
-    "teacher_forcing_start",
-    "innovation_loss_weight",
-    "direction_loss_weight",
+    "identifiability_lambda",
+    "base_loss_weight",
+    "dynamic_loss_weight",
+    "safety_loss_weight",
+    "utility_gate_loss_weight",
+    "change_loss_weight",
+    "smooth_loss_weight",
+    "heteroscedastic_loss_weight",
     "dynamics_pretrain_epochs",
 )
 

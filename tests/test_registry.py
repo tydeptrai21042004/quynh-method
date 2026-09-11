@@ -37,15 +37,19 @@ def test_primary_ci_ablations_have_distinct_semantics():
     assert len(set(specs.values()))==len(PRIMARY_ABLATION_VARIANTS)
 
 
-def test_full_ci_uses_raw_features_and_counterfactual_authority():
+def test_full_ci_v12_uses_raw_features_and_selective_physics_correction():
     from safegrip.benchmark import _proposal_flags
     f=_proposal_flags("safegrip")
     assert f["feature_mode"]=="raw"
-    assert f["use_persistent_state"] is True
-    assert f["use_identifiability"] is True
-    assert f["use_acceptance"] is True
+    assert f["model_kind"]=="ci12"
+    assert f["use_persistent_state"] is False
+    assert f["use_physics_correction"] is True
+    assert f["use_utility_gate"] is True
+    assert f["use_identifiability_feature"] is True
+    assert f["use_dynamic_loss"] is True
+    assert f["use_safety_loss"] is True
+    assert f["use_regime_head"] is True
     assert f["use_excitation_proxy"] is False
-    assert f["use_innovation_supervision"] is True
 
 
 def test_excitation_proxy_is_explicit_comparator_not_full_method():
@@ -58,19 +62,37 @@ def test_excitation_proxy_is_explicit_comparator_not_full_method():
     assert full["use_excitation_proxy"] is False
 
 
-def test_v10_counterfactual_ablation_family_is_registered():
+def test_v11_legacy_ablation_family_remains_registered_but_full_is_v12():
     from safegrip.benchmark import PROPOSAL_VARIANTS, _proposal_flags
-    expected={
+    legacy={
         "safegrip_single_scale_cf", "safegrip_no_linearity_consistency",
         "safegrip_no_agreement_veto", "safegrip_no_counterfactual_ranking",
         "safegrip_no_state_update_loss", "safegrip_no_direction_loss",
         "safegrip_no_dynamics_pretrain",
     }
-    assert expected.issubset(PROPOSAL_VARIANTS)
-    assert _proposal_flags("safegrip")["use_multiscale_counterfactual"] is False
-    assert _proposal_flags("safegrip")["use_learned_arbitration"] is True
-    assert _proposal_flags("safegrip")["use_inverse_expert"] is True
-    assert _proposal_flags("safegrip")["use_adaptive_persistence"] is True
-    assert _proposal_flags("safegrip")["use_split_innovation"] is True
+    assert legacy.issubset(PROPOSAL_VARIANTS)
+    full=_proposal_flags("safegrip")
+    assert full["model_kind"]=="ci12"
+    assert full["use_learned_arbitration"] is False
+    assert full["use_adaptive_persistence"] is False
+    assert full["use_split_innovation"] is False
     assert _proposal_flags("safegrip_single_scale_cf")["use_multiscale_counterfactual"] is False
     assert _proposal_flags("safegrip_no_agreement_veto")["use_agreement_veto"] is False
+
+
+def test_v12_decisive_ablation_family_is_registered():
+    from safegrip.benchmark import PRIMARY_ABLATION_VARIANTS, _proposal_flags
+    expected={
+        "safegrip_base_temporal", "safegrip_no_dynamic_loss", "safegrip_no_safety_loss",
+        "safegrip_no_physics_residual", "safegrip_no_utility_gate", "safegrip_no_identifiability",
+        "safegrip_no_bound", "safegrip_no_regime_head", "safegrip_no_heteroscedastic",
+        "safegrip_no_uq", "safegrip",
+    }
+    assert expected==set(PRIMARY_ABLATION_VARIANTS)
+    assert _proposal_flags("safegrip_no_physics_residual")["use_physics_correction"] is False
+    assert _proposal_flags("safegrip_no_utility_gate")["use_physics_correction"] is True
+    assert _proposal_flags("safegrip_no_utility_gate")["use_utility_gate"] is False
+    assert _proposal_flags("safegrip_no_heteroscedastic")["use_heteroscedastic_loss"] is False
+    assert _proposal_flags("safegrip_no_heteroscedastic")["use_aleatoric_feature"] is False
+    base=_proposal_flags("safegrip_base_temporal")
+    assert base["use_physics_correction"] is False and base["use_uq"] is False

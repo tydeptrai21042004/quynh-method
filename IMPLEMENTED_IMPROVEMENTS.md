@@ -1,5 +1,20 @@
 # Implemented improvements
 
+## v1.2.0 — risk-aware selective physics correction
+
+- made a Conv1D + multi-layer GRU raw-sensor temporal estimator the primary friction predictor;
+- removed recursive friction state, adaptive persistence, split direction/magnitude innovation and three-way arbitration from the full proposal;
+- kept inverse dynamics only as a bounded residual correction, not an equal full estimator;
+- added a learned correction-utility gate supervised by the training-time useful fraction of the physics correction;
+- redefined counterfactual identifiability strictly as local observability evidence;
+- detached physics evidence before the point/gate path so the point loss cannot improve by warping the dynamics model;
+- added explicit friction-change loss, regime-change supervision and conditional stable-regime smoothing;
+- added asymmetric unsafe-overestimation loss;
+- added a heteroscedastic aleatoric head while retaining disjoint block-max split-conformal calibration;
+- replaced the primary ablation set with 10 direct mechanism controls plus the full proposal;
+- updated proposal tuning/sensitivity to v1.2 point-relevant parameters;
+- added v1.2 regression tests and end-to-end synthetic execution validation.
+
 ## v1.1.0 — dual-expert adaptive-state revision
 
 - added learned prior/neural/inverse arbitration;

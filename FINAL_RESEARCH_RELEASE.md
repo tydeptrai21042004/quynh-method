@@ -1,25 +1,29 @@
-# SafeGrip-Open v1.0.0 — multi-scale counterfactual trust-region release
+# SafeGrip-Open v1.2.0 — risk-aware selective physics-correction release
 
-v1.0.0 keeps the leakage controls, LiRA decoding, trajectory segmentation, baseline provenance, split-role separation, physical-support audit, persistent state and counterfactual-identifiability core. It strengthens the proposal with multi-scale counterfactual observability, cross-scale consistency discounting, corrected inverse-dynamics agreement, and an identifiability-weighted agreement veto.
+v1.2.0 is a proposal redesign driven by the real v1.1 trust evidence. The previous full estimator was safer than the strongest GRU comparator but did not win on RMSE and its arbitration was dominated by the persistent prior. v1.2 therefore simplifies the point path instead of adding more gates.
 
-## Proposal changes
+## Active proposal
 
-- three-scale finite-difference friction sensitivity instead of a single displacement;
-- robust median information aggregation;
-- cross-scale coefficient-of-variation diagnostic and local-linearity discount;
-- corrected 0–1 candidate/inverse-dynamics agreement;
-- inference-time disagreement veto, activated only in proportion to local friction identifiability;
-- additional mechanism diagnostics exported to benchmark predictions and metrics.
+- strong raw-sensor Conv1D + GRU temporal base estimator;
+- no recursive friction-state dependence in the full path;
+- separate friction-conditioned causal dynamics model;
+- counterfactual sensitivity used strictly as observability evidence;
+- bounded damped inverse-dynamics residual correction;
+- one learned correction-utility gate rather than prior/neural/inverse arbitration;
+- explicit friction-change and regime-change learning;
+- asymmetric unsafe-overestimation objective;
+- conditional physics projection;
+- heteroscedastic evidence and block-max split-conformal UQ.
 
 ## Experimental hardening
 
-- new primary ablations for single-scale counterfactuals, linearity consistency, agreement veto and counterfactual ranking;
-- supplementary loss/pretraining ablations;
-- expanded point-model hyperparameter search, including state persistence and inverse-dynamics trust-region settings;
-- UQ-only `information_beta` removed from point-RMSE search;
-- one-factor-at-a-time validation sensitivity command;
-- explicit endpoint-hash outputs for tuning/sensitivity reproducibility.
+- 11-variant primary v1.2 ablation with one mechanism question per control;
+- v1.2 validation-only tuning/sensitivity space;
+- same validation-endpoint hash parity checks for proposal and tuned baselines;
+- same matched-seed/trajectory hierarchical bootstrap protocol;
+- same feature, label-budget, common-conformal and projection fairness controls;
+- release hash audit and paper-readiness gate updated to the v1.2 mechanism set.
 
-## Validation
+## Validation status
 
-The repository test suite passes **59 tests**. This release does not assert improved LiRA accuracy before a locked real-data tuning and multi-seed paper run is executed.
+The local repository unit/regression suite passes. A synthetic end-to-end execution smoke test is used only to check interfaces/training stability. It is **not** evidence that v1.2 beats any real-data baseline. Run TRUST on real LiRA before PAPER mode and report REVIEW if any scientific-health/fairness/statistics/ablation gate fails.

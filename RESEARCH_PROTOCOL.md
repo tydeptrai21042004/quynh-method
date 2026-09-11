@@ -1,53 +1,58 @@
-# SafeGrip research protocol — v0.9.0
+# SafeGrip research protocol — v1.2.0
 
 ## Primary question
 
-Can a persistent friction-state estimator improve reliability by separating three jobs that standard end-to-end regression usually entangles: candidate friction correction, local friction identifiability, and counterfactual rejection of harmful updates?
+Can a strong raw-sensor temporal friction estimator be made **safer without sacrificing accuracy** by selectively applying a bounded inverse-dynamics residual only when inference-time evidence predicts that the correction is useful?
 
 ## Claim boundary
 
-SafeGrip-CI is not presented as a complete tire model. The mechanics lower endpoint remains a conditional feasibility constraint. Counterfactual identifiability and inverse-dynamics agreement are learned/model-based quantities and must be validated empirically through ablation, held-out routes and external data where possible.
+SafeGrip-CI v1.2 is a hybrid estimator, not a complete tire model. Counterfactual sensitivity is interpreted as local friction observability, not as correctness. The inverse-dynamics branch is a local residual correction, not an independent ground-truth physics estimator. Physical projection is a safety constraint and must not be credited with RMSE improvement unless controlled ablations support that statement.
 
-## Current point estimator
+No v1.2 superiority claim is valid until a new locked real-LiRA TRUST/PAPER run is completed. Historical v1.0/v1.1 results only motivate the redesign.
 
-The full estimator is described in `SAFEGRIP_CI_METHOD.md`:
+## Full point estimator
 
-1. persistent prior friction state with segment reset;
-2. independently supervised raw-sensor candidate innovation;
-3. friction-conditioned causal dynamics model;
-4. local counterfactual identifiability;
-5. normalized asymmetric counterfactual veto;
-6. detached local inverse-dynamics agreement objective;
-7. bounded update inside `[L,U]`.
+The full estimator is specified in `SAFEGRIP_CI_V12_METHOD.md`:
 
-The full proposal does not consume the handcrafted SafeGrip excitation feature.
+1. Conv1D + multi-layer GRU temporal representation from raw causal sensor windows;
+2. direct neural friction estimate;
+3. separate friction-conditioned causal dynamics model;
+4. single-scale local counterfactual observability;
+5. damped, trust-region-bounded inverse-dynamics residual correction;
+6. learned correction-utility gate using inference-available evidence only;
+7. explicit friction-change and regime-change supervision;
+8. asymmetric unsafe-overestimation loss;
+9. physical feasible-set projection;
+10. heteroscedastic evidence plus disjoint block-max split-conformal UQ.
 
-## Training
+The full proposal does not consume the handcrafted SafeGrip excitation proxy and does not recursively feed the previous friction prediction into the point estimator.
 
-Training labels are restricted to the training split. Lower-bound calibration and UQ calibration remain disjoint. The dynamics model is warm-started, followed by joint optimization using point, raw-innovation, candidate, direction, inverse-dynamics-agreement, dynamics, counterfactual-ranking and do-no-harm terms. Test labels are never used for selection or calibration.
+## Leakage and split roles
 
-## Physics lower bound
+Training labels are used only on training endpoints. Hyperparameter selection is validation-only. Lower-bound calibration and UQ calibration remain disjoint roles. Test labels are used only for final evaluation/statistics. Tuning manifests must prove proposal/baseline validation-endpoint parity.
 
-The conditional vector force-balance lower endpoint is retained. It constrains the final point estimate by parameterization; the paper should not claim it improves RMSE unless the ablation supports that claim.
+## Dynamics branch separation
 
-## LiRA target boundary
-
-LiRA/VIAFRIK provides a standardized road-friction reference aligned to the vehicle trajectory. It should not be described as direct instantaneous tire `mu_max` measurement from the passenger vehicle.
+The dynamics model is trained with true training friction labels and a counterfactual ranking loss. Local physics evidence is detached before entering the point correction/gate path, preventing point loss from improving by distorting the dynamics model. The utility-gate target is constructed only from training labels; inference receives no friction label.
 
 ## Required primary ablations
 
-1. raw temporal backbone;
-2. persistent state only;
-3. persistent state + unconditional neural innovation;
-4. no counterfactual identifiability;
-5. handcrafted excitation proxy instead of identifiability;
-6. no asymmetric veto (identifiability-only authority);
-7. no inverse-dynamics agreement objective;
-8. no direct innovation supervision;
-9. no mechanics lower bound;
-10. no UQ;
-11. full SafeGrip-CI.
+1. `safegrip_base_temporal`;
+2. `safegrip_no_dynamic_loss`;
+3. `safegrip_no_safety_loss`;
+4. `safegrip_no_physics_residual`;
+5. `safegrip_no_utility_gate`;
+6. `safegrip_no_identifiability`;
+7. `safegrip_no_bound`;
+8. `safegrip_no_regime_head`;
+9. `safegrip_no_heteroscedastic`;
+10. `safegrip_no_uq`;
+11. `safegrip`.
+
+The primary table uses frozen full-model hyperparameters. Optional retuned ablations are supplementary only.
 
 ## Selection and reporting
 
-Validation RMSE remains the point-estimator selection metric. Report MAE, RMSE, R2, unsafe overestimation, per-seed variability, paired hierarchical bootstrap comparisons, prior/candidate/final RMSE, candidate- and accepted-update direction correlations, mean identifiability, mean trust/veto, inverse-dynamics agreement, update magnitude, coverage and interval width. Test endpoint and independent segment counts must remain visible in the health report.
+Validation RMSE remains the point-estimator selection metric. Final reporting must include MAE, RMSE, R2, unsafe-overestimation mean/rate, per-seed variability, paired hierarchical bootstrap comparisons, base/final/full-physics-candidate RMSE, correction-vs-needed correlation, utility-gate diagnostics, observability, change probability, aleatoric evidence, physical projection rates, PICP and MPIW.
+
+A strong paper claim should require positive R2 and a competitive accuracy-safety trade-off against the strongest literature comparator, not merely a lower unsafe rate with substantially worse point accuracy.

@@ -1,154 +1,81 @@
-# SafeGrip-CI v1.0 ablation and hyperparameter protocol
+# SafeGrip-CI v1.2 ablation and hyperparameter protocol
 
-## 1. Controlled primary ablation
+## 1. Scientific question
 
-All primary variants use identical split definitions, validation/test endpoint identities, seeds, and the **same frozen full-model hyperparameters**. This makes the primary table a component-removal study rather than a collection of separately optimized systems.
+The primary question is whether selective physics correction improves the **accuracy-safety trade-off** of a strong raw-sensor temporal estimator. The ablation table therefore tests one v1.2 mechanism at a time instead of mixing historical v1.0/v1.1 gates.
 
-The primary set is:
+## 2. Controlled primary ablation
 
-- `safegrip_backbone_raw`
-- `safegrip_persistent`
-- `safegrip_neural_innovation`
-- `safegrip_no_identifiability`
-- `safegrip_excitation_proxy`
-- `safegrip_no_acceptance`
-- `safegrip_no_cf_agreement`
-- `safegrip_single_scale_cf`
-- `safegrip_no_linearity_consistency`
-- `safegrip_no_agreement_veto`
-- `safegrip_no_counterfactual_ranking`
-- `safegrip_no_innovation_supervision`
-- `safegrip_no_bound`
-- `safegrip_no_uq`
-- `safegrip`
+All primary variants use identical data splits, endpoint identities and seeds. In the frozen primary table, every variant reuses the selected full-model hyperparameters unless disabling a component necessarily makes its associated weight irrelevant.
 
-The most important comparisons are:
+- `safegrip_base_temporal`: direct Conv1D+GRU estimator, no physics residual path.
+- `safegrip_no_dynamic_loss`: removes explicit friction-change supervision.
+- `safegrip_no_safety_loss`: removes asymmetric unsafe-overestimation training penalty.
+- `safegrip_no_physics_residual`: disables inverse-dynamics point correction while retaining the strong base estimator.
+- `safegrip_no_utility_gate`: applies the available bounded physics correction without learned selective gating.
+- `safegrip_no_identifiability`: removes counterfactual observability from utility-gate evidence.
+- `safegrip_no_bound`: removes final physical projection.
+- `safegrip_no_regime_head`: removes regime-change supervision/feature.
+- `safegrip_no_heteroscedastic`: removes heteroscedastic training evidence.
+- `safegrip_no_uq`: identical point model with predictive UQ disabled.
+- `safegrip`: full v1.2 proposal.
 
-1. `safegrip_excitation_proxy` vs `safegrip`: learned counterfactual observability vs handcrafted excitation;
-2. `safegrip_single_scale_cf` vs `safegrip`: single-point finite difference vs multi-scale counterfactual observability;
-3. `safegrip_no_linearity_consistency` vs `safegrip`: magnitude-only sensitivity vs cross-scale-consistent sensitivity;
-4. `safegrip_no_acceptance` vs `safegrip`: contribution of the normalized residual veto;
-5. `safegrip_no_agreement_veto` vs `safegrip`: contribution of inference-time inverse-dynamics disagreement veto;
-6. `safegrip_no_cf_agreement` vs `safegrip`: total contribution of inverse-dynamics agreement (training + inference);
-7. `safegrip_no_counterfactual_ranking` vs `safegrip`: whether the dynamics model actually needs to discriminate friction hypotheses;
-8. `safegrip_no_innovation_supervision` vs `safegrip`: contribution of separating candidate learning from authority.
+The decisive comparisons are the full model versus each variant above. The `no_uq` variant is expected to have identical point predictions and is excluded from point-path distinctness checks.
 
-## 2. Supplementary optimization ablations
+## 3. Frozen versus retuned ablations
 
-These variants test how the estimator is trained rather than changing its central inference mechanism:
+The primary ablation must remain frozen after selecting the full proposal. This isolates mechanisms. A separately labelled supplementary retuned-ablation experiment may be used to test whether a removed component simply changes the optimum hyperparameter region; it must not replace the frozen table.
 
-- `safegrip_no_state_update_loss`
-- `safegrip_no_direction_loss`
-- `safegrip_no_dynamics_pretrain`
+## 4. v1.2 point-model search space
 
-Run them in the supplement or optimization section instead of expanding the main ablation table excessively.
+Point-RMSE tuning is validation-only. The test set remains locked.
 
-## 3. Fixed-vs-retuned ablation rule
+### Temporal representation
 
-The **primary** ablation must reuse the selected full-model hyperparameters. Otherwise each removal is confounded by a new optimization problem.
+- `sequence_length`: 32, 48, 64, 100
+- `hidden`: 64, 96, 128
+- `gru_hidden`: 64, 96, 128
+- `conv_channels`: 32, 48, 64
+- `gru_layers`: 1, 2
+- dropout, learning rate, weight decay, batch size and Huber beta
 
-A separate robustness check can retune each ablation:
+### Physics residual
 
-```bash
-safegrip tune-ablation --dataset lira --trials 15
-```
-
-Report this as a supplementary result only. If a component-removal model is poor under frozen settings but recovers after retuning, say so explicitly.
-
-## 4. Point-model hyperparameter search
-
-The proposal search is now expanded to the parameters that can materially alter the point estimator.
-
-### Representation / optimization
-
-- `sequence_length`: 8, 16, 24, 32, 64
-- `hidden`: 32, 64, 96
-- `gru_hidden`: 16, 32, 64
-- `dropout`: continuous 0.0–0.3
-- `lr`: log-uniform 1e-4–3e-3
-- `weight_decay`: log-uniform 1e-6–1e-3
-- `batch_size`: 128, 256, 512
-- `huber_beta`: 0.03, 0.05, 0.10
-
-### Persistent innovation state
-
-- `evidence_window`: 4, 8, 12, 16
-- `delta_scale`: 0.2, 0.3, 0.5, 0.8
-- `state_persistence`: 0.5, 0.7, 0.8, 0.9, 0.97
-
-### Multi-scale counterfactual observability
-
-- `counterfactual_delta`: 0.03/0.04–0.12 depending on preset
-- `counterfactual_scale_span`: 1.5, 2.0, 3.0
-- `identifiability_lambda`: 1e-4, 1e-3, 1e-2
-- `linearity_penalty`: 0.0, 0.25, 0.5, 1.0
-
-### Residual trust-region veto
-
-- `acceptance_temperature`: 6, 12, 20
-- `acceptance_margin`: -0.02, 0.0, 0.02
-- `acceptance_tolerance`: 0.05, 0.10, 0.20
-- `acceptance_strength`: 0.2, 0.35, 0.5
-
-### Inverse-dynamics agreement
-
-- `agreement_temperature`: 6, 10, 16
-- `agreement_threshold`: 0.2, 0.35, 0.5
-- `agreement_strength`: 0.0, 0.1, 0.2, 0.35
-- `inverse_dynamics_ridge`: 1e-4, 1e-3, 1e-2
-- `inverse_dynamics_max_step`: 0.06, 0.12, 0.20
-
-### Training-objective weights
-
-- `innovation_loss_weight`
-- `state_update_loss_weight`
-- `candidate_loss_weight`
-- `cf_agreement_loss_weight`
-- `direction_loss_weight`
+- `counterfactual_delta`
+- `identifiability_lambda`
+- `inverse_dynamics_ridge`
+- `inverse_dynamics_max_step`
+- `physics_correction_scale`
 - `dynamics_loss_weight`
 - `counterfactual_loss_weight`
-- `counterfactual_margin`
-- `dynamics_pretrain_epochs`
-- `do_no_harm_weight`
-
-`information_beta` is intentionally **not tuned against point RMSE**. It affects UQ inflation after the point estimator is selected and is therefore fixed during point-model search.
-
-## 5. Trial budgets
-
-The default full-development configuration uses 80 proposal trials. `kaggle_trust.yaml` uses 60, while `kaggle_small.yaml` uses 20 as a plumbing/development compromise.
-
-The expanded space is much larger than v0.9, so small trial counts should not be interpreted as strong optimization evidence. For the final paper, report the exact search space, trial count, seed, objective, and validation endpoint hash.
-
-## 6. Hyperparameter sensitivity study
-
-After choosing `best_hparams.yaml`, run a stability study without test labels:
-
-```bash
-safegrip sensitivity \
-  --dataset lira \
-  --proposal-hparams results/lira_tuning/best_hparams.yaml
-```
-
-By default it sweeps:
-
-- `state_persistence`
-- `counterfactual_delta`
-- `counterfactual_scale_span`
-- `identifiability_lambda`
-- `linearity_penalty`
-- `acceptance_strength`
-- `agreement_strength`
-- `inverse_dynamics_max_step`
-- `innovation_loss_weight`
 - `dynamics_pretrain_epochs`
 
-Outputs:
+### Risk/dynamics/gate objectives
 
-- `hyperparameter_sensitivity.csv`
-- `hyperparameter_sensitivity.json`
+- `base_loss_weight`
+- `dynamic_loss_weight`
+- `safety_loss_weight`
+- `unsafe_margin`
+- `utility_gate_loss_weight`
+- `change_loss_weight`
+- `change_threshold`
+- `smooth_loss_weight`
+- `heteroscedastic_loss_weight`
 
-The CSV includes validation RMSE/MAE and mechanism diagnostics such as mean authority, identifiability, acceptance, scale-CV, local linearity, and counterfactual agreement. Use this to show whether performance degrades smoothly or collapses around a narrow setting.
+UQ-only inflation/calibration parameters are not selected by final test RMSE.
 
-## 7. Statistical comparison
+## 5. Tuning fairness
 
-Final conclusions should use independently trained seeds and matched trajectory-aware resampling. Do not treat heavily overlapping temporal endpoints as independent samples. Point accuracy, physical-bound behavior, uncertainty calibration, authority diagnostics, and low-excitation behavior should be reported separately.
+For paper mode:
+
+1. proposal and literature baselines receive equal stated search-trial budgets;
+2. each tunes only on the locked validation endpoints;
+3. endpoint hashes must match across proposal/baseline tuning;
+4. final paper metrics use untouched test endpoints and five fixed seeds;
+5. hierarchical paired bootstrap resamples matched seeds and trajectory segments rather than treating overlapping windows as independent samples.
+
+## 6. Trust-mode success criteria
+
+TRUST is a scientific screening stage, not a paper claim. At minimum, require the automatic health/fairness/statistics/ablation gates to pass. For a strong final claim, target GRU-level or better RMSE while preserving the proposal's safety advantage, positive R2, non-degenerate prediction variance and calibrated but non-pathological intervals.
+
+No v1.2 superiority claim should be made from v1.1 results or synthetic smoke tests.
