@@ -651,9 +651,290 @@ class SafeGripCINet(nn.Module):
         return d["prediction"], d["latent"], d["reliability"]
 
 
-# Public/backward-compatible names.  v1.0 uses the CI implementation.
-SafeGripV3Net = SafeGripCINet
-SafeGripV2Net = SafeGripCINet
+class SafeGripCI11Net(SafeGripCINet):
+    """SafeGrip-CI v1.1 with dual correction experts and learned arbitration.
+
+    v1.1 keeps the v1.0 counterfactual dynamics model as an observability and
+    inverse-dynamics instrument, but no longer treats identifiability or
+    disagreement as a chain of multiplicative gates.  Instead it estimates
+    three mutually exclusive actions at every endpoint: keep the persistent
+    prior, apply the learned neural correction, or apply a local
+    inverse-dynamics correction.  A small arbitration head mixes those actions
+    using only inference-time evidence.
+
+    The persistent state can also use a learned, sample-dependent persistence
+    coefficient.  The neural innovation is factorized into direction and
+    magnitude, making the most failure-prone part of the update explicitly
+    trainable and auditable.
+    """
+
+    def __init__(self, *args,
+                 use_dual_expert: bool = False,
+                 use_learned_arbitration: bool = False,
+                 use_inverse_expert: bool = True,
+                 use_adaptive_persistence: bool = False,
+                 use_split_innovation: bool = False,
+                 persistence_min: float = 0.05,
+                 persistence_max: float = 0.98,
+                 inverse_expert_scale: float = 1.0,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self.use_dual_expert = bool(use_dual_expert)
+        self.use_learned_arbitration = bool(use_learned_arbitration) and self.use_dual_expert
+        self.use_inverse_expert = bool(use_inverse_expert) and self.use_dual_expert
+        self.use_adaptive_persistence = bool(use_adaptive_persistence) and self.use_persistent_state
+        self.use_split_innovation = bool(use_split_innovation) and self.use_innovation
+        self.persistence_min = min(max(float(persistence_min), 0.0), 0.95)
+        self.persistence_max = min(max(float(persistence_max), self.persistence_min + 1e-3), 0.999)
+        self.inverse_expert_scale = max(0.0, float(inverse_expert_scale))
+        inner = max(16, self.hidden // 2)
+
+        # Factorized innovation: sign/direction and magnitude are optimized
+        # separately.  This retains a bounded latent correction while giving the
+        # training objective direct access to direction errors.
+        self.innovation_direction_head = nn.Sequential(
+            nn.Linear(self.hidden, inner), nn.SiLU(), nn.Linear(inner, 1)
+        )
+        self.innovation_magnitude_head = nn.Sequential(
+            nn.Linear(self.hidden, inner), nn.SiLU(), nn.Linear(inner, 1)
+        )
+
+        # Adaptive state persistence starts at the configured scalar persistence,
+        # then learns a context-dependent deviation.  Initializing the final
+        # layer to zero makes the v1.1 model safe to warm-start from v1.0 behavior.
+        self.persistence_head = nn.Sequential(
+            nn.Linear(self.hidden, inner), nn.SiLU(), nn.Linear(inner, 1)
+        )
+        final_p = self.persistence_head[-1]
+        nn.init.zeros_(final_p.weight)
+        frac = (self.state_persistence - self.persistence_min) / max(
+            self.persistence_max - self.persistence_min, 1e-6
+        )
+        frac = min(max(frac, 1e-4), 1.0 - 1e-4)
+        nn.init.constant_(final_p.bias, math.log(frac / (1.0 - frac)))
+
+        # Evidence vector = [I, A, normalized residual improvement,
+        # inverse correction, neural correction, direction agreement,
+        # magnitude agreement, cross-scale variability].
+        arb_in = 2 * self.hidden + 8
+        self.arbitration_head = nn.Sequential(
+            nn.Linear(arb_in, self.hidden), nn.SiLU(), nn.LayerNorm(self.hidden),
+            nn.Dropout(0.05), nn.Linear(self.hidden, 3),
+        )
+        # Conservative initial policy: prefer the prior, allow modest neural and
+        # inverse-dynamics corrections.  Training can move away from this.
+        final_a = self.arbitration_head[-1]
+        nn.init.zeros_(final_a.weight)
+        with torch.no_grad():
+            final_a.bias.copy_(torch.tensor([1.15, 0.0, -0.15], dtype=final_a.bias.dtype))
+
+        self.uq_evidence = nn.Sequential(nn.Linear(5, self.hidden), nn.SiLU())
+        self.uq_fuse_v11 = nn.Sequential(
+            nn.Linear(4 * self.hidden, self.hidden), nn.SiLU(), nn.LayerNorm(self.hidden)
+        )
+
+    def _encode_innovation(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        h, legacy_nu = super()._encode_innovation(x)
+        if not self.use_split_innovation or not self.use_temporal:
+            return h, legacy_nu
+        direction = torch.tanh(self.innovation_direction_head(h).squeeze(-1))
+        magnitude = self.delta_scale * torch.sigmoid(self.innovation_magnitude_head(h).squeeze(-1))
+        return h, direction * magnitude
+
+    def _innovation_parts(self, h: torch.Tensor, innovation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.use_split_innovation:
+            direction = torch.tanh(self.innovation_direction_head(h).squeeze(-1))
+            magnitude = self.delta_scale * torch.sigmoid(self.innovation_magnitude_head(h).squeeze(-1))
+            return direction, magnitude
+        direction = torch.tanh(innovation / max(self.delta_scale, 1e-6))
+        magnitude = torch.abs(innovation)
+        return direction, magnitude
+
+    def _adaptive_rho(self, prior_h: torch.Tensor) -> torch.Tensor:
+        if not self.use_adaptive_persistence:
+            return torch.full(
+                (prior_h.shape[0],), self.state_persistence,
+                dtype=prior_h.dtype, device=prior_h.device,
+            )
+        raw = self.persistence_head(prior_h).squeeze(-1)
+        return self.persistence_min + (self.persistence_max - self.persistence_min) * torch.sigmoid(raw)
+
+    @staticmethod
+    def _direction_agreement(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        scale = torch.clamp(torch.abs(a) + torch.abs(b), min=1e-4)
+        return torch.tanh(6.0 * (a * b) / scale.square())
+
+    @staticmethod
+    def _magnitude_agreement(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        eps = 1e-4
+        ratio = (torch.abs(a) + eps) / (torch.abs(b) + eps)
+        return torch.exp(-torch.abs(torch.log(ratio)))
+
+    def forward_details(self, x: torch.Tensor, lower: torch.Tensor | None = None,
+                        upper: float | torch.Tensor = 1.3,
+                        excitation: torch.Tensor | None = None,
+                        prior_mu: torch.Tensor | None = None,
+                        prior_mask: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+        prior_h, q_context = self._encode_prior(x)
+        context_prior = self._latent_to_support(q_context, lower, upper)
+        adaptive_rho = self._adaptive_rho(prior_h)
+
+        if prior_mu is None or not self.use_persistent_state:
+            q_prior = q_context
+            prior_prediction = context_prior
+            persistent_mask = torch.zeros_like(q_context, dtype=torch.bool)
+            adaptive_rho = torch.zeros_like(q_context)
+        else:
+            pmu = prior_mu.reshape(-1).to(dtype=x.dtype, device=x.device)
+            if prior_mask is None:
+                persistent_mask = torch.ones_like(q_context, dtype=torch.bool)
+            else:
+                persistent_mask = prior_mask.reshape(-1).to(device=x.device, dtype=torch.bool)
+            mixed_mu = adaptive_rho * pmu + (1.0 - adaptive_rho) * context_prior
+            q_state = self._support_to_latent(mixed_mu, lower, upper)
+            q_prior = torch.where(persistent_mask, q_state, q_context)
+            prior_prediction = self._latent_to_support(q_prior, lower, upper)
+            adaptive_rho = torch.where(persistent_mask, adaptive_rho, torch.zeros_like(adaptive_rho))
+
+        innovation_h, innovation = self._encode_innovation(x)
+        if not self.use_innovation:
+            innovation = torch.zeros_like(innovation)
+        innovation_direction, innovation_magnitude = self._innovation_parts(innovation_h, innovation)
+        q_candidate = q_prior + innovation
+        candidate_prediction = self._latent_to_support(q_candidate, lower, upper)
+        dyn_h = self._encode_dynamics_context(x)
+
+        (legacy_authority, info_gain, acceptance, information_raw, r_prior, r_candidate,
+         normalized_improvement, veto_probability, cf_delta_mu, cf_agreement,
+         information_scale_cv, local_linearity, agreement_veto_probability) = self._counterfactual_authority(
+            x, dyn_h, prior_prediction, candidate_prediction, upper, excitation=excitation
+        )
+
+        neural_delta_mu = candidate_prediction - prior_prediction
+        direction_agreement = self._direction_agreement(neural_delta_mu, cf_delta_mu)
+        magnitude_agreement = self._magnitude_agreement(neural_delta_mu, cf_delta_mu)
+
+        if self.use_learned_arbitration:
+            scalars = torch.stack([
+                info_gain,
+                acceptance,
+                torch.clamp(normalized_improvement, -1.0, 1.0),
+                cf_delta_mu / max(self.inverse_dynamics_max_step, 1e-4),
+                neural_delta_mu / max(self.inverse_dynamics_max_step, 1e-4),
+                direction_agreement,
+                magnitude_agreement,
+                torch.clamp(information_scale_cv, 0.0, 5.0) / 5.0,
+            ], dim=-1)
+            arbitration_logits = self.arbitration_head(torch.cat([innovation_h, dyn_h, scalars], dim=-1))
+            expert_weights = torch.softmax(arbitration_logits, dim=-1)
+            w_prior, w_neural, w_inverse = expert_weights.unbind(dim=-1)
+
+            if not self.use_innovation:
+                w_prior = w_prior + w_neural
+                w_neural = torch.zeros_like(w_neural)
+            if not self.use_inverse_expert:
+                w_prior = w_prior + w_inverse
+                w_inverse = torch.zeros_like(w_inverse)
+            else:
+                # Identifiability is an availability certificate for the local
+                # inverse model, not a correctness score for the neural expert.
+                available_inverse = w_inverse * torch.clamp(info_gain, 0.0, 1.0)
+                w_prior = w_prior + (w_inverse - available_inverse)
+                w_inverse = available_inverse
+
+            fused_delta_mu = (
+                w_neural * neural_delta_mu
+                + w_inverse * self.inverse_expert_scale * cf_delta_mu
+            )
+            pred_mu = prior_prediction + fused_delta_mu
+            upper_t = torch.as_tensor(upper, dtype=pred_mu.dtype, device=pred_mu.device)
+            if self.use_bound:
+                if lower is None:
+                    raise ValueError("SafeGripCI11Net requires lower when use_bound=True")
+                pred = torch.maximum(pred_mu, lower)
+                pred = torch.minimum(pred, upper_t.expand_as(pred))
+            else:
+                pred = torch.clamp(pred_mu, min=0.0)
+                pred = torch.minimum(pred, upper_t.expand_as(pred))
+            q = self._support_to_latent(pred, lower, upper)
+            effective_innovation = q - q_prior
+            authority = torch.clamp(w_neural + w_inverse, 0.0, 1.0)
+            expert_weights = torch.stack([w_prior, w_neural, w_inverse], dim=-1)
+        else:
+            arbitration_logits = torch.zeros((x.shape[0], 3), dtype=x.dtype, device=x.device)
+            expert_weights = torch.stack([
+                1.0 - legacy_authority,
+                legacy_authority,
+                torch.zeros_like(legacy_authority),
+            ], dim=-1)
+            effective_innovation = legacy_authority * innovation
+            q = q_prior + effective_innovation
+            pred = self._latent_to_support(q, lower, upper)
+            authority = legacy_authority
+            fused_delta_mu = pred - prior_prediction
+
+        uq_evidence = self.uq_evidence(torch.stack([
+            torch.clamp(info_gain, 0.0, 1.0),
+            torch.clamp(cf_agreement, 0.0, 1.0),
+            torch.clamp((direction_agreement + 1.0) * 0.5, 0.0, 1.0),
+            torch.clamp(magnitude_agreement, 0.0, 1.0),
+            torch.clamp(authority, 0.0, 1.0),
+        ], dim=-1))
+        if self.use_learned_arbitration:
+            uq_h = self.uq_fuse_v11(torch.cat([prior_h, innovation_h, dyn_h, uq_evidence], dim=-1))
+        else:
+            uq_h = self.uq_fuse(torch.cat([prior_h, innovation_h, dyn_h], dim=-1))
+
+        inverse_candidate = prior_prediction + self.inverse_expert_scale * cf_delta_mu
+        upper_t = torch.as_tensor(upper, dtype=inverse_candidate.dtype, device=inverse_candidate.device)
+        if self.use_bound and lower is not None:
+            inverse_candidate = torch.maximum(inverse_candidate, lower)
+        inverse_candidate = torch.minimum(torch.clamp(inverse_candidate, min=0.0), upper_t.expand_as(inverse_candidate))
+
+        return {
+            "prediction": pred,
+            "prior_prediction": prior_prediction,
+            "context_prior_prediction": context_prior,
+            "candidate_prediction": candidate_prediction,
+            "inverse_candidate_prediction": inverse_candidate,
+            "latent": q,
+            "prior_latent": q_prior,
+            "evidence_delta": innovation,
+            "innovation": innovation,
+            "innovation_direction": innovation_direction,
+            "innovation_magnitude": innovation_magnitude,
+            "effective_innovation": effective_innovation,
+            "fused_delta_mu": fused_delta_mu,
+            "reliability": authority,
+            "authority": authority,
+            "identifiability": info_gain,
+            "acceptance": acceptance,
+            "information_raw": information_raw,
+            "dynamics_residual_prior": r_prior,
+            "dynamics_residual_candidate": r_candidate,
+            "normalized_improvement": normalized_improvement,
+            "veto_probability": veto_probability,
+            "counterfactual_delta_mu": cf_delta_mu,
+            "counterfactual_agreement": cf_agreement,
+            "direction_agreement": direction_agreement,
+            "magnitude_agreement": magnitude_agreement,
+            "information_scale_cv": information_scale_cv,
+            "local_linearity": local_linearity,
+            "agreement_veto_probability": agreement_veto_probability,
+            "persistent_state_used": persistent_mask.to(dtype=x.dtype),
+            "adaptive_persistence": adaptive_rho,
+            "arbitration_logits": arbitration_logits,
+            "expert_weights": expert_weights,
+            "expert_weight_prior": expert_weights[:, 0],
+            "expert_weight_neural": expert_weights[:, 1],
+            "expert_weight_inverse": expert_weights[:, 2],
+            "features": uq_h,
+        }
+
+
+# Public/backward-compatible names.  v1.1 uses the dual-expert CI implementation.
+SafeGripV3Net = SafeGripCI11Net
+SafeGripV2Net = SafeGripCI11Net
 
 
 class SafeGripBackboneNet(nn.Module):

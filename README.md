@@ -1,4 +1,9 @@
-# SafeGrip-Open v1.0.0
+# SafeGrip-Open v1.1.0
+
+## SafeGrip-CI v1.1
+
+The active proposal is now a **dual-expert adaptive friction-state estimator**. It combines a learned direction/magnitude correction with a local inverse-dynamics correction and learns a three-action arbitration policy: keep the prior, use the neural correction, or use the inverse correction. Counterfactual identifiability is treated as observability evidence rather than a direct multiplicative correctness gate. Adaptive persistence and scheduled teacher forcing reduce the near-static-state and train/inference mismatch observed in the v1.0 trust run. See `SAFEGRIP_CI_V11_METHOD.md`.
+
 
 ## SafeGrip-CI (v1.0.0)
 

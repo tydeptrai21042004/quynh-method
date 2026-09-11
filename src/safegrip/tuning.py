@@ -36,22 +36,20 @@ def suggest_safegrip(trial, cfg):
         "delta_scale":trial.suggest_categorical("delta_scale",space.get("delta_scale",[0.2,0.3,0.5,0.8])),
         "state_persistence":trial.suggest_categorical("state_persistence",space.get("state_persistence",[0.5,0.7,0.8,0.9,0.97])),
         "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.03,0.05,0.08,0.12])),
-        "counterfactual_scale_span":trial.suggest_categorical("counterfactual_scale_span",space.get("counterfactual_scale_span",[1.5,2.0,3.0])),
         "identifiability_lambda":trial.suggest_categorical("identifiability_lambda",space.get("identifiability_lambda",[1e-4,1e-3,1e-2])),
-        "linearity_penalty":trial.suggest_categorical("linearity_penalty",space.get("linearity_penalty",[0.0,0.25,0.5,1.0])),
         "acceptance_temperature":trial.suggest_categorical("acceptance_temperature",space.get("acceptance_temperature",[6.0,12.0,20.0])),
         "acceptance_margin":trial.suggest_categorical("acceptance_margin",space.get("acceptance_margin",[-0.02,0.0,0.02])),
         "acceptance_tolerance":trial.suggest_categorical("acceptance_tolerance",space.get("acceptance_tolerance",[0.05,0.10,0.20])),
         "acceptance_strength":trial.suggest_categorical("acceptance_strength",space.get("acceptance_strength",[0.2,0.35,0.5])),
-        "agreement_temperature":trial.suggest_categorical("agreement_temperature",space.get("agreement_temperature",[6.0,10.0,16.0])),
-        "agreement_threshold":trial.suggest_categorical("agreement_threshold",space.get("agreement_threshold",[0.2,0.35,0.5])),
-        "agreement_strength":trial.suggest_categorical("agreement_strength",space.get("agreement_strength",[0.0,0.1,0.2,0.35])),
         "inverse_dynamics_ridge":trial.suggest_categorical("inverse_dynamics_ridge",space.get("inverse_dynamics_ridge",[1e-4,1e-3,1e-2])),
         "inverse_dynamics_max_step":trial.suggest_categorical("inverse_dynamics_max_step",space.get("inverse_dynamics_max_step",[0.06,0.12,0.20])),
+        "inverse_expert_scale":trial.suggest_categorical("inverse_expert_scale",space.get("inverse_expert_scale",[0.25,0.5,0.75,1.0])),
+        "arbitration_loss_weight":trial.suggest_categorical("arbitration_loss_weight",space.get("arbitration_loss_weight",[0.10,0.20,0.30,0.50])),
+        "prior_loss_weight":trial.suggest_categorical("prior_loss_weight",space.get("prior_loss_weight",[0.0,0.03,0.05,0.10])),
+        "teacher_forcing_start":trial.suggest_categorical("teacher_forcing_start",space.get("teacher_forcing_start",[0.5,0.8,1.0])),
         "innovation_loss_weight":trial.suggest_categorical("innovation_loss_weight",space.get("innovation_loss_weight",[0.10,0.20,0.35])),
         "state_update_loss_weight":trial.suggest_categorical("state_update_loss_weight",space.get("state_update_loss_weight",[0.20,0.35,0.50])),
         "candidate_loss_weight":trial.suggest_categorical("candidate_loss_weight",space.get("candidate_loss_weight",[0.10,0.25,0.40])),
-        "cf_agreement_loss_weight":trial.suggest_categorical("cf_agreement_loss_weight",space.get("cf_agreement_loss_weight",[0.0,0.03,0.08])),
         "direction_loss_weight":trial.suggest_categorical("direction_loss_weight",space.get("direction_loss_weight",[0.0,0.03,0.05,0.10])),
         "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
         "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.02,0.05,0.10])),
@@ -92,7 +90,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v100_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v110_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)
@@ -133,13 +131,14 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
 SENSITIVITY_DEFAULT_PARAMETERS = (
     "state_persistence",
     "counterfactual_delta",
-    "counterfactual_scale_span",
     "identifiability_lambda",
-    "linearity_penalty",
-    "acceptance_strength",
-    "agreement_strength",
     "inverse_dynamics_max_step",
+    "inverse_expert_scale",
+    "arbitration_loss_weight",
+    "prior_loss_weight",
+    "teacher_forcing_start",
     "innovation_loss_weight",
+    "direction_loss_weight",
     "dynamics_pretrain_epochs",
 )
 

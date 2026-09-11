@@ -67,6 +67,10 @@ def test_v10_counterfactual_ablation_family_is_registered():
         "safegrip_no_dynamics_pretrain",
     }
     assert expected.issubset(PROPOSAL_VARIANTS)
-    assert _proposal_flags("safegrip")["use_multiscale_counterfactual"] is True
+    assert _proposal_flags("safegrip")["use_multiscale_counterfactual"] is False
+    assert _proposal_flags("safegrip")["use_learned_arbitration"] is True
+    assert _proposal_flags("safegrip")["use_inverse_expert"] is True
+    assert _proposal_flags("safegrip")["use_adaptive_persistence"] is True
+    assert _proposal_flags("safegrip")["use_split_innovation"] is True
     assert _proposal_flags("safegrip_single_scale_cf")["use_multiscale_counterfactual"] is False
     assert _proposal_flags("safegrip_no_agreement_veto")["use_agreement_veto"] is False

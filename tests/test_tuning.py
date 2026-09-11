@@ -9,10 +9,11 @@ def test_proposal_hyperparameter_space_is_explicit():
     from safegrip.tuning import suggest_safegrip
     hp=suggest_safegrip(DummyTrial(),{"tuning":{"space":{}}})
     for k in ["sequence_length","hidden","gru_hidden","dropout","lr","weight_decay","batch_size","huber_beta",
-              "state_persistence","counterfactual_delta","counterfactual_scale_span","identifiability_lambda",
-              "linearity_penalty","acceptance_temperature","acceptance_margin","agreement_strength",
-              "inverse_dynamics_ridge","inverse_dynamics_max_step","innovation_loss_weight",
-              "state_update_loss_weight","candidate_loss_weight","cf_agreement_loss_weight","direction_loss_weight",
+              "state_persistence","counterfactual_delta","identifiability_lambda",
+              "acceptance_temperature","acceptance_margin",
+              "inverse_dynamics_ridge","inverse_dynamics_max_step","inverse_expert_scale",
+              "arbitration_loss_weight","prior_loss_weight","teacher_forcing_start","innovation_loss_weight",
+              "state_update_loss_weight","candidate_loss_weight","direction_loss_weight",
               "dynamics_loss_weight","counterfactual_loss_weight","counterfactual_margin",
               "dynamics_pretrain_epochs","do_no_harm_weight","information_beta"]:
         assert k in hp

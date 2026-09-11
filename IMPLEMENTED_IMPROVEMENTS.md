@@ -1,5 +1,17 @@
 # Implemented improvements
 
+## v1.1.0 — dual-expert adaptive-state revision
+
+- added learned prior/neural/inverse arbitration;
+- promoted inverse dynamics from veto-only evidence to a correction expert;
+- added adaptive state persistence;
+- factorized neural innovation into direction and magnitude;
+- added scheduled teacher forcing for previous-state training;
+- removed multi-scale linearity discount and agreement veto from the full proposal path;
+- added disagreement-aware UQ inflation;
+- added v1.1 component ablations and regression tests.
+
+
 ## v1.0.0 — multi-scale counterfactual-observability revision
 
 - replaced single-displacement friction sensitivity with three-scale counterfactual sensitivity;

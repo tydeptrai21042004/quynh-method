@@ -77,6 +77,14 @@ proposal:
   cf_agreement_loss_weight: 0.03
   direction_loss_weight: 0.05
   state_update_loss_weight: 0.35
+  disagreement_beta: 0.35
+  arbitration_loss_weight: 0.3
+  prior_loss_weight: 0.05
+  teacher_forcing_start: 0.8
+  teacher_forcing_end: 0.0
+  persistence_min: 0.05
+  persistence_max: 0.98
+  inverse_expert_scale: 0.75
 baseline:
   todorovic2022_cnn:
     sequence_length: 100
@@ -371,6 +379,25 @@ tuning:
     - 0.2
     - 0.35
     - 0.5
+    inverse_expert_scale:
+    - 0.25
+    - 0.5
+    - 0.75
+    - 1.0
+    arbitration_loss_weight:
+    - 0.1
+    - 0.2
+    - 0.3
+    - 0.5
+    prior_loss_weight:
+    - 0.0
+    - 0.03
+    - 0.05
+    - 0.1
+    teacher_forcing_start:
+    - 0.5
+    - 0.8
+    - 1.0
 split:
   train: 0.6
   calibration: 0.1

@@ -257,3 +257,40 @@ def test_safegrip_ci_agreement_veto_attenuates_opposite_inverse_update():
     assert float(a[9]) < 0.1  # learned and inverse-dynamics corrections disagree
     assert float(a[12]) > 0.5
     assert float(a[2]) < float(b[2])
+
+
+def test_safegrip_v11_dual_expert_weights_are_valid_and_bounded():
+    from safegrip.models import SafeGripV3Net
+    model=SafeGripV3Net(5,hidden=16,gru_hidden=8,dropout=0.0,dynamics_indices=[0,1],
+        use_dual_expert=True,use_learned_arbitration=True,use_inverse_expert=True,
+        use_adaptive_persistence=True,use_split_innovation=True,
+        use_multiscale_counterfactual=False,use_linearity_consistency=False,use_agreement_veto=False)
+    x=torch.randn(4,10,5); lo=torch.full((4,),0.1); prior=torch.full((4,),0.6)
+    d=model.forward_details(x,lo,1.3,prior_mu=prior)
+    assert d["expert_weights"].shape==(4,3)
+    assert torch.allclose(d["expert_weights"].sum(-1),torch.ones(4),atol=1e-6)
+    assert torch.all((d["expert_weights"]>=0)&(d["expert_weights"]<=1))
+    assert torch.all(d["prediction"]>=lo-1e-7) and torch.all(d["prediction"]<=1.3+1e-7)
+
+
+def test_safegrip_v11_inverse_expert_is_unavailable_without_observability():
+    from safegrip.models import SafeGripV3Net
+    model=SafeGripV3Net(4,hidden=16,gru_hidden=8,dropout=0.0,dynamics_indices=[0],
+        use_dual_expert=True,use_learned_arbitration=True,use_inverse_expert=True,
+        use_adaptive_persistence=True,use_split_innovation=True)
+    for p in model.dynamics_head.parameters():
+        torch.nn.init.zeros_(p)
+    x=torch.randn(3,8,4); lo=torch.full((3,),0.1); prior=torch.full((3,),0.6)
+    d=model.forward_details(x,lo,1.3,prior_mu=prior)
+    assert torch.allclose(d["identifiability"],torch.zeros_like(d["identifiability"]),atol=1e-8)
+    assert torch.allclose(d["expert_weight_inverse"],torch.zeros_like(d["expert_weight_inverse"]),atol=1e-8)
+
+
+def test_safegrip_v11_adaptive_persistence_stays_in_configured_range():
+    from safegrip.models import SafeGripV3Net
+    model=SafeGripV3Net(4,hidden=16,gru_hidden=8,dropout=0.0,
+        use_adaptive_persistence=True,persistence_min=0.1,persistence_max=0.9)
+    x=torch.randn(5,8,4); lo=torch.full((5,),0.1); prior=torch.full((5,),0.5)
+    d=model.forward_details(x,lo,1.3,prior_mu=prior)
+    rho=d["adaptive_persistence"]
+    assert torch.all(rho>=0.1-1e-6) and torch.all(rho<=0.9+1e-6)

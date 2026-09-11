@@ -1,5 +1,5 @@
 # ============================================================
-# SafeGrip-CI v1.0.0 — FULL CORRECTED KAGGLE SINGLE-CELL DRIVER
+# SafeGrip-CI v1.1.0 — FULL CORRECTED KAGGLE SINGLE-CELL DRIVER
 # Repository:
 #   https://github.com/tydeptrai21042004/quynh-method
 #
@@ -7,7 +7,7 @@
 #   MODE = "trust"
 #
 # TRUST MODE:
-#   - clone the corrected v1.0.0 repository and record exact git commit
+#   - clone the corrected v1.1.0 repository and record exact git commit
 #   - install paper/dev dependencies and run the full pytest suite
 #   - verify the release audit (core repo files/configs/tests/docs)
 #   - download + prepare the real LiRA friction subset
@@ -73,7 +73,7 @@ from typing import Iterable
 # ------------------------------------------------------------
 # Run TRUST first. When it passes, change to PAPER and rerun the cell.
 MODE = "trust"  # "trust" or "paper"
-EXPECTED_VERSION = "1.0.0"
+EXPECTED_VERSION = "1.1.0"
 
 # Source selection. GitHub is the normal path. If the corrected v1.0 repository
 # has not been pushed yet, upload quynh-method-safegrip-v1.0-full.zip as a
@@ -95,13 +95,14 @@ RUN_SENSITIVITY = True
 SENSITIVITY_PARAMETERS = [
     "state_persistence",
     "counterfactual_delta",
-    "counterfactual_scale_span",
     "identifiability_lambda",
-    "linearity_penalty",
-    "acceptance_strength",
-    "agreement_strength",
     "inverse_dynamics_max_step",
+    "inverse_expert_scale",
+    "arbitration_loss_weight",
+    "prior_loss_weight",
+    "teacher_forcing_start",
     "innovation_loss_weight",
+    "direction_loss_weight",
     "dynamics_pretrain_epochs",
 ]
 SENSITIVITY_EPOCHS = None  # None => use tuning.epochs from config
@@ -121,12 +122,12 @@ PRIMARY_ABLATIONS = [
     "safegrip_neural_innovation",
     "safegrip_no_identifiability",
     "safegrip_excitation_proxy",
-    "safegrip_no_acceptance",
-    "safegrip_no_cf_agreement",
-    "safegrip_single_scale_cf",
-    "safegrip_no_linearity_consistency",
-    "safegrip_no_agreement_veto",
+    "safegrip_no_inverse_expert",
+    "safegrip_no_learned_arbitration",
+    "safegrip_fixed_persistence",
+    "safegrip_unsplit_innovation",
     "safegrip_no_counterfactual_ranking",
+    "safegrip_no_dynamics_pretrain",
     "safegrip_no_innovation_supervision",
     "safegrip_no_bound",
     "safegrip_no_uq",
@@ -139,7 +140,6 @@ PRIMARY_ABLATIONS_CSV = ",".join(PRIMARY_ABLATIONS)
 SUPPLEMENTARY_ABLATIONS = [
     "safegrip_no_state_update_loss",
     "safegrip_no_direction_loss",
-    "safegrip_no_dynamics_pretrain",
 ]
 PAPER_ABLATIONS = PRIMARY_ABLATIONS[:-1] + SUPPLEMENTARY_ABLATIONS + ["safegrip"]
 PAPER_ABLATIONS_CSV = ",".join(PAPER_ABLATIONS)
@@ -265,7 +265,7 @@ def verify_release_audit(repo: Path) -> dict:
     """Verify audited repository bytes, excluding only notebook-driver wrappers."""
     audit_path = repo / "RELEASE_AUDIT.json"
     if not audit_path.exists():
-        raise RuntimeError("RELEASE_AUDIT.json is missing from the corrected v1.0.0 repository.")
+        raise RuntimeError("RELEASE_AUDIT.json is missing from the corrected v1.1.0 repository.")
 
     audit = load_json(audit_path)
     release_name = str(audit.get("release", ""))
@@ -696,6 +696,7 @@ def stage_common_metadata(
     for rel in [
         "RELEASE_AUDIT.json",
         "SAFEGRIP_CI_METHOD.md",
+        "SAFEGRIP_CI_V11_METHOD.md",
         "RELATED_WORK_V100.md",
         "PROPOSAL_IMPROVEMENT_REPORT.md",
         "RELATED_WORK_V090.md",
@@ -897,7 +898,7 @@ if safegrip.__version__ != EXPECTED_VERSION:
         f"Found SafeGrip {safegrip.__version__}, but this workflow requires "
         f"SafeGrip {EXPECTED_VERSION}.\n"
         f"Repository commit: {GIT_COMMIT}\n\n"
-        "Push/merge the corrected SafeGrip-CI v1.0.0 files to the configured GitHub branch, "
+        "Push/merge the corrected SafeGrip-CI v1.1.0 files to the configured GitHub branch, "
         "or set SOURCE_MODE='kaggle_zip' and upload the corrected full v1.0 ZIP."
     )
 
@@ -937,7 +938,7 @@ if MODE == "trust":
     SG = f"{sys.executable} -m safegrip.cli --config {CONFIG}"
 
     print("\n" + "#" * 112)
-    print("RUNNING SAFEGRIP-CI v1.0.0 TRUST EXPERIMENT")
+    print("RUNNING SAFEGRIP-CI v1.1.0 TRUST EXPERIMENT")
     print("#" * 112)
 
     run(f"{SG} download --datasets lira", REPO)
@@ -1108,7 +1109,7 @@ elif MODE == "paper":
     SG = f"{sys.executable} -m safegrip.cli --config {CONFIG}"
 
     print("\n" + "#" * 112)
-    print("RUNNING SAFEGRIP-CI v1.0.0 FULL PAPER WORKFLOW")
+    print("RUNNING SAFEGRIP-CI v1.1.0 FULL PAPER WORKFLOW")
     print("#" * 112)
 
     # 10A. Download + prepare real LiRA.
@@ -1560,5 +1561,5 @@ elif MODE == "paper":
             "final manuscript claims until the failed checks are resolved."
         )
 
-print("\nSafeGrip-CI v1.0.0 Kaggle workflow finished.")
+print("\nSafeGrip-CI v1.1.0 Kaggle workflow finished.")
 
