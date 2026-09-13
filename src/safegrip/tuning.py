@@ -22,11 +22,12 @@ def require_optuna():
 
 
 def suggest_safegrip(trial, cfg):
-    """Validation-only search space for the SafeGrip-CI v1.2 point path."""
+    """Validation-only search space for the SafeGrip-CI v1.3 point path."""
     space=cfg.get("tuning",{}).get("space",{})
     p=cfg.get("proposal",{})
     return {
         "sequence_length":trial.suggest_categorical("sequence_length",space.get("sequence_length",[32,48,64,100])),
+        "scaler":trial.suggest_categorical("scaler",space.get("scaler",["minmax","standard"])),
         "hidden":trial.suggest_categorical("hidden",space.get("hidden",[64,96,128])),
         "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[64,96,128])),
         "conv_channels":trial.suggest_categorical("conv_channels",space.get("conv_channels",[32,48,64])),
@@ -37,23 +38,38 @@ def suggest_safegrip(trial, cfg):
         "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[64,128,256])),
         "huber_beta":trial.suggest_categorical("huber_beta",space.get("huber_beta",[0.03,0.05,0.10])),
         "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.04,0.08,0.12])),
-        "identifiability_lambda":trial.suggest_categorical("identifiability_lambda",space.get("identifiability_lambda",[1e-4,1e-3,1e-2])),
-        "inverse_dynamics_ridge":trial.suggest_categorical("inverse_dynamics_ridge",space.get("inverse_dynamics_ridge",[1e-4,1e-3,1e-2])),
+        # Historical v1.2 parameters are kept in the returned dictionary for
+        # checkpoint/config compatibility but are not Optuna dimensions in
+        # v1.3 because entropy identifiability and the energy posterior do not
+        # use the old Jacobian regularizer or Gauss--Newton ridge.
+        "identifiability_lambda":float(p.get("identifiability_lambda",1e-3)),
+        "inverse_dynamics_ridge":float(p.get("inverse_dynamics_ridge",1e-3)),
         "inverse_dynamics_max_step":trial.suggest_categorical("inverse_dynamics_max_step",space.get("inverse_dynamics_max_step",[0.06,0.10,0.14])),
-        "physics_correction_scale":trial.suggest_categorical("physics_correction_scale",space.get("physics_correction_scale",[0.25,0.5,0.75,1.0])),
+        "physics_correction_scale":trial.suggest_categorical("physics_correction_scale",space.get("physics_correction_scale",[0.5,0.75,1.0])),
+        "energy_grid_points":trial.suggest_categorical("energy_grid_points",space.get("energy_grid_points",[5,7,9])),
+        "energy_grid_radius":trial.suggest_categorical("energy_grid_radius",space.get("energy_grid_radius",[0.06,0.10,0.14])),
+        "energy_temperature":trial.suggest_categorical("energy_temperature",space.get("energy_temperature",[0.20,0.35,0.50])),
+        "base_pretrain_epochs":trial.suggest_categorical("base_pretrain_epochs",space.get("base_pretrain_epochs",[5,8,12])),
         "base_loss_weight":trial.suggest_categorical("base_loss_weight",space.get("base_loss_weight",[0.5,0.75,1.0])),
-        "dynamic_loss_weight":trial.suggest_categorical("dynamic_loss_weight",space.get("dynamic_loss_weight",[0.1,0.25,0.5])),
-        "safety_loss_weight":trial.suggest_categorical("safety_loss_weight",space.get("safety_loss_weight",[0.05,0.1,0.2,0.35])),
-        "unsafe_margin":trial.suggest_categorical("unsafe_margin",space.get("unsafe_margin",[0.0,0.02,0.05])),
-        "utility_gate_loss_weight":trial.suggest_categorical("utility_gate_loss_weight",space.get("utility_gate_loss_weight",[0.1,0.3,0.5])),
-        "change_loss_weight":trial.suggest_categorical("change_loss_weight",space.get("change_loss_weight",[0.05,0.1,0.2])),
-        "change_threshold":trial.suggest_categorical("change_threshold",space.get("change_threshold",[0.01,0.02,0.04])),
-        "smooth_loss_weight":trial.suggest_categorical("smooth_loss_weight",space.get("smooth_loss_weight",[0.0,0.03,0.05,0.1])),
+        "dynamic_loss_weight":0.0,
+        "safety_loss_weight":trial.suggest_categorical("safety_loss_weight",space.get("safety_loss_weight",[0.1,0.2,0.35])),
+        "unsafe_margin":trial.suggest_categorical("unsafe_margin",space.get("unsafe_margin",[0.05])),
+        "benefit_gate_loss_weight":trial.suggest_categorical("benefit_gate_loss_weight",space.get("benefit_gate_loss_weight",[0.2,0.35,0.5])),
+        "correction_fraction_loss_weight":trial.suggest_categorical("correction_fraction_loss_weight",space.get("correction_fraction_loss_weight",[0.1,0.25,0.4])),
+        "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.1,0.2,0.35])),
+        "utility_gate_loss_weight":float(p.get("utility_gate_loss_weight",0.35)),
+        # Regime/change/smoothness heads are disabled in the active v1.3 path;
+        # keep their config values fixed instead of wasting tuning budget.
+        "change_loss_weight":0.0,
+        "change_threshold":float(p.get("change_threshold",0.02)),
+        "smooth_loss_weight":0.0,
         "heteroscedastic_loss_weight":trial.suggest_categorical("heteroscedastic_loss_weight",space.get("heteroscedastic_loss_weight",[0.0,0.03,0.05,0.1])),
         "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
-        "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.02,0.05,0.10])),
-        "counterfactual_margin":trial.suggest_categorical("counterfactual_margin",space.get("counterfactual_margin",[0.0,0.01,0.02,0.05])),
-        "dynamics_pretrain_epochs":trial.suggest_categorical("dynamics_pretrain_epochs",space.get("dynamics_pretrain_epochs",[3,5,8,12])),
+        "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.1,0.2,0.35])),
+        "counterfactual_margin":float(p.get("counterfactual_margin",0.02)),
+        "contrastive_temperature":trial.suggest_categorical("contrastive_temperature",space.get("contrastive_temperature",[0.15,0.25,0.40])),
+        "contrastive_negatives":trial.suggest_categorical("contrastive_negatives",space.get("contrastive_negatives",[4,6,8])),
+        "dynamics_pretrain_epochs":trial.suggest_categorical("dynamics_pretrain_epochs",space.get("dynamics_pretrain_epochs",[5,8,12])),
         # UQ-only parameters remain fixed during point-RMSE selection.
         "information_beta":float(p.get("information_beta",0.5)),
         "disagreement_beta":float(p.get("disagreement_beta",0.25)),
@@ -62,6 +78,11 @@ def suggest_safegrip(trial, cfg):
         "uq_epochs":int(p.get("uq_epochs",100)),
         "aleatoric_floor":float(p.get("aleatoric_floor",0.005)),
         "utility_gate_beta":float(p.get("utility_gate_beta",0.02)),
+        "unsafe_temperature":float(p.get("unsafe_temperature",0.02)),
+        "benefit_margin":float(p.get("benefit_margin",0.002)),
+        "do_no_harm_margin":float(p.get("do_no_harm_margin",0.002)),
+        "correction_fraction_beta":float(p.get("correction_fraction_beta",0.05)),
+        "freeze_dynamics_after_pretrain":bool(p.get("freeze_dynamics_after_pretrain",True)),
     }
 
 def _gaussian_nll(y,p,s):
@@ -76,12 +97,13 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
     epochs=int(epochs or cfg.get("tuning",{}).get("epochs",cfg["training"]["epochs_paper"]))
     start=tuning_eval_start(cfg,include_baselines=True); cache={}
 
-    def bundle(seq):
-        if seq not in cache: cache[seq]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,feature_mode="raw")
-        return cache[seq]
+    def bundle(seq,scaler):
+        key=(int(seq),str(scaler))
+        if key not in cache: cache[key]=make_bundle(csv_path,cfg,sequence_length=int(seq),scaler_kind=str(scaler),eval_start=start,feature_mode="raw")
+        return cache[key]
 
     def objective(trial):
-        hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"])
+        hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"],hp["scaler"])
         seed_everything(int(cfg["seed"])+trial.number)
         model,_=fit_proposal("safegrip_no_uq",b,cfg,epochs,hp)
         d=predict_proposal_details(model,"safegrip_no_uq",b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev,ids=b.idv)
@@ -94,7 +116,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v120_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v130_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)
@@ -106,7 +128,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         (out/"param_importance.json").write_text(json.dumps(importance,indent=2),encoding="utf-8")
     except Exception:
         importance={}
-    ref_bundle=bundle(int(best["sequence_length"]))
+    ref_bundle=bundle(int(best["sequence_length"]),best.get("scaler",cfg.get("proposal",{}).get("scaler","minmax")))
     endpoint_ids=ref_bundle.idv.astype(str).tolist()
     endpoint_hash=__import__("hashlib").sha256("\n".join(endpoint_ids).encode()).hexdigest()
     (out/"tuning_endpoint_manifest.json").write_text(json.dumps({"eval_start":start,"n":len(endpoint_ids),"sha256":endpoint_hash,"endpoint_ids":endpoint_ids},indent=2),encoding="utf-8")
@@ -115,9 +137,12 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
              "common_eval_start":start,"validation_endpoint_sha256":endpoint_hash,
              "fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"],
                                 "information_beta":cfg.get("proposal",{}).get("information_beta",1.0),
+                                "identifiability_lambda":"historical v1.2 compatibility only; entropy identifiability has no lambda",
+                                "inverse_dynamics_ridge":"historical v1.2 compatibility only; v1.3 has no Gauss--Newton solve",
+                                "dynamic_change_regime_losses":"disabled in active v1.3 point path",
                                 "uq_reason":"point-model search uses validation RMSE; UQ-only parameters are not searched against a point metric"}}
     if evaluate_test:
-        b=bundle(int(best["sequence_length"])); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
+        b=bundle(int(best["sequence_length"]),best.get("scaler",cfg.get("proposal",{}).get("scaler","minmax"))); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
         d=predict_proposal_details(model,"safegrip",b.Xt,b.lot,b.raw_lot,cfg["mu_upper"],excitation=b.et,ids=b.idt)
         p,s,bound=d["prediction"],d["sigma"],d["bound"]
         summary["final_test_metrics"]=regression_metrics(
@@ -134,15 +159,16 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
 
 SENSITIVITY_DEFAULT_PARAMETERS = (
     "physics_correction_scale",
-    "inverse_dynamics_max_step",
-    "identifiability_lambda",
+    "energy_grid_points",
+    "energy_grid_radius",
+    "energy_temperature",
     "base_loss_weight",
-    "dynamic_loss_weight",
     "safety_loss_weight",
-    "utility_gate_loss_weight",
-    "change_loss_weight",
-    "smooth_loss_weight",
-    "heteroscedastic_loss_weight",
+    "benefit_gate_loss_weight",
+    "correction_fraction_loss_weight",
+    "do_no_harm_weight",
+    "counterfactual_loss_weight",
+    "contrastive_temperature",
     "dynamics_pretrain_epochs",
 )
 
@@ -161,7 +187,7 @@ def run_hyperparameter_sensitivity(csv_path, out_dir, cfg, best_hparams, paramet
     hp0={**cfg.get("proposal",{}), **base}
     seq=int(base.get("sequence_length",cfg.get("sequence_length",16)))
     start=tuning_eval_start(cfg,include_baselines=True)
-    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,feature_mode="raw")
+    b=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind=str(base.get("scaler",cfg.get("proposal",{}).get("scaler","minmax"))),eval_start=start,feature_mode="raw")
     search_space=cfg.get("tuning",{}).get("space",{})
     parameters=list(parameters or SENSITIVITY_DEFAULT_PARAMETERS)
     bad=[k for k in parameters if k not in search_space]
@@ -334,13 +360,13 @@ def tune_ablation_variants(csv_path, out_dir, cfg, variants=None, trials=15, epo
     for vi,variant in enumerate(variants):
         vo=ensure_dir(out/variant); cache={}
         mode=_proposal_flags(variant)["feature_mode"]
-        def bundle(seq):
-            key=int(seq)
+        def bundle(seq,scaler):
+            key=(int(seq),str(scaler))
             if key not in cache:
-                cache[key]=make_bundle(csv_path,cfg,sequence_length=key,scaler_kind="standard",eval_start=start,feature_mode=mode)
+                cache[key]=make_bundle(csv_path,cfg,sequence_length=key[0],scaler_kind=key[1],eval_start=start,feature_mode=mode)
             return cache[key]
         def objective(trial):
-            hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"])
+            hp=suggest_safegrip(trial,cfg); b=bundle(hp["sequence_length"],hp.get("scaler",cfg.get("proposal",{}).get("scaler","minmax")))
             seed_everything(int(cfg["seed"])+100000*vi+trial.number)
             model,_=fit_proposal(variant,b,cfg,epochs,hp)
             d=predict_proposal_details(model,variant,b.Xv,b.lov,b.raw_lov,cfg["mu_upper"],excitation=b.ev,ids=b.idv)
@@ -351,7 +377,7 @@ def tune_ablation_variants(csv_path, out_dir, cfg, variants=None, trials=15, epo
         remaining=max(0,trials-len(study.trials))
         if remaining: study.optimize(objective,n_trials=remaining)
         best=dict(study.best_trial.params); best_all[variant]=best
-        rb=bundle(best["sequence_length"]); ids=rb.idv.astype(str).tolist()
+        rb=bundle(best["sequence_length"],best.get("scaler",cfg.get("proposal",{}).get("scaler","minmax"))); ids=rb.idv.astype(str).tolist()
         eh=__import__("hashlib").sha256("\n".join(ids).encode()).hexdigest()
         (vo/"best_hparams.yaml").write_text(yaml.safe_dump(best,sort_keys=False),encoding="utf-8")
         pd.DataFrame(study.trials_dataframe()).to_csv(vo/"trials.csv",index=False)

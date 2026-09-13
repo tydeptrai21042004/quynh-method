@@ -12,10 +12,13 @@ def test_proposal_hyperparameter_space_is_explicit():
         "sequence_length","hidden","gru_hidden","conv_channels","gru_layers","dropout","lr",
         "weight_decay","batch_size","huber_beta","counterfactual_delta","identifiability_lambda",
         "inverse_dynamics_ridge","inverse_dynamics_max_step","physics_correction_scale",
+        "scaler","energy_grid_points","energy_grid_radius","energy_temperature","base_pretrain_epochs",
         "base_loss_weight","dynamic_loss_weight","safety_loss_weight","unsafe_margin",
+        "benefit_gate_loss_weight","correction_fraction_loss_weight","do_no_harm_weight",
         "utility_gate_loss_weight","change_loss_weight","change_threshold","smooth_loss_weight",
         "heteroscedastic_loss_weight","dynamics_loss_weight","counterfactual_loss_weight",
-        "counterfactual_margin","dynamics_pretrain_epochs","information_beta","disagreement_beta",
+        "contrastive_temperature","contrastive_negatives","counterfactual_margin",
+        "dynamics_pretrain_epochs","information_beta","disagreement_beta",
     ]:
         assert k in hp
 

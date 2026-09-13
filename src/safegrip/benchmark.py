@@ -8,11 +8,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, roc_auc_score
 from joblib import dump
 
 from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, PAPER_BASELINES, QUICK_BASELINES, validate_paper_baselines
-from .models import make_literature_baseline, SafeGripV3Net, SafeGripV4Net, SafeGripBackboneNet, ResidualScaleHead
+from .models import make_literature_baseline, SafeGripV3Net, SafeGripV4Net, SafeGripV5Net, SafeGripBackboneNet, ResidualScaleHead
 from .physics import (
     project_torch, project_numpy, project_interval_numpy, gaussian_interval,
     conformal_lower_correction, apply_lower_correction,
@@ -26,13 +26,17 @@ META={
     "route_id","direction","trip_id","trajectory_id","segment_id","sample_uid","resampled",
 }
 PROPOSAL_VARIANTS=(
-    # SafeGrip-CI v1.2 primary proposal and decisive ablations.
+    # SafeGrip-CI v1.3 primary proposal and decisive ablations.
     "safegrip_base_temporal",
     "safegrip_no_dynamic_loss",
     "safegrip_no_safety_loss",
     "safegrip_no_physics_residual",
     "safegrip_no_utility_gate",
     "safegrip_no_identifiability",
+    "safegrip_no_magnitude_head",
+    "safegrip_no_energy_improvement",
+    "safegrip_no_contrastive_dynamics",
+    "safegrip_no_do_no_harm",
     "safegrip_no_bound",
     "safegrip_no_regime_head",
     "safegrip_no_heteroscedastic",
@@ -68,13 +72,15 @@ PROPOSAL_VARIANTS=(
 )
 PRIMARY_ABLATION_VARIANTS=(
     "safegrip_base_temporal",
-    "safegrip_no_dynamic_loss",
     "safegrip_no_safety_loss",
     "safegrip_no_physics_residual",
     "safegrip_no_utility_gate",
     "safegrip_no_identifiability",
+    "safegrip_no_magnitude_head",
+    "safegrip_no_energy_improvement",
+    "safegrip_no_contrastive_dynamics",
+    "safegrip_no_do_no_harm",
     "safegrip_no_bound",
-    "safegrip_no_regime_head",
     "safegrip_no_heteroscedastic",
     "safegrip_no_uq",
     "safegrip",
@@ -426,6 +432,48 @@ def regression_metrics(y,p,lo=None,mu_upper=1.3,sigma=None,raw_mean=None,project
     return out
 
 
+def selector_metrics(y, base, candidate, final, benefit_probability, correction_fraction,
+                     margin: float = 0.002, threshold: float = 0.5, bins: int = 10):
+    """Diagnostics for the v1.3 selective-physics decision itself.
+
+    The labels here are evaluation-only: a candidate is "helpful" when its
+    absolute error beats the base by more than ``margin``.  They are never fed
+    back into training or hyperparameter selection on the test partition.
+    """
+    y=np.asarray(y,float); base=np.asarray(base,float); candidate=np.asarray(candidate,float)
+    final=np.asarray(final,float); prob=np.clip(np.asarray(benefit_probability,float),0.0,1.0)
+    fraction=np.clip(np.asarray(correction_fraction,float),0.0,1.0)
+    base_err=np.abs(base-y); cand_err=np.abs(candidate-y); final_err=np.abs(final-y)
+    helpful=(cand_err+float(margin)<base_err).astype(int)
+    accepted=prob>=float(threshold)
+    auc=float('nan')
+    if len(np.unique(helpful))>1:
+        try: auc=float(roc_auc_score(helpful,prob))
+        except ValueError: pass
+    brier=float(np.mean((prob-helpful)**2))
+    # Equal-width expected calibration error for the benefit probability.
+    ece=0.0
+    edges=np.linspace(0.0,1.0,max(2,int(bins))+1)
+    for i in range(len(edges)-1):
+        if i==len(edges)-2: m=(prob>=edges[i])&(prob<=edges[i+1])
+        else: m=(prob>=edges[i])&(prob<edges[i+1])
+        if np.any(m):
+            ece+=float(np.mean(m))*abs(float(np.mean(prob[m]))-float(np.mean(helpful[m])))
+    helpful_n=int(np.sum(helpful)); accepted_n=int(np.sum(accepted))
+    return {
+        "candidate_help_rate":float(np.mean(helpful)),
+        "benefit_auc":auc,
+        "benefit_brier":brier,
+        "benefit_ece":float(ece),
+        "selector_coverage_050":float(np.mean(accepted)),
+        "selector_precision_050":float(np.mean(helpful[accepted])) if accepted_n else float('nan'),
+        "selector_recall_050":float(np.sum(helpful[accepted])/helpful_n) if helpful_n else float('nan'),
+        "final_improves_base_rate":float(np.mean(final_err<base_err)),
+        "final_harm_rate_margin":float(np.mean(final_err>base_err+float(margin))),
+        "mean_correction_fraction":float(np.mean(fraction)),
+    }
+
+
 def _deep_loader(X,y,lo,batch):
     return DataLoader(TensorDataset(torch.from_numpy(X),torch.from_numpy(y),torch.from_numpy(lo)),batch_size=batch,shuffle=True)
 
@@ -666,37 +714,44 @@ def _proposal_flags(variant: str) -> dict:
             use_dual_expert=True, use_learned_arbitration=True, use_inverse_expert=True,
             use_adaptive_persistence=True, use_split_innovation=True),
     }
-    # SafeGrip-CI v1.2 uses a simpler direct-temporal + selective-physics path.
-    # Legacy v1.0/v1.1 entries above remain untouched for reproducibility.
-    v12_base=dict(
-        model_kind="ci12", feature_mode="raw", use_temporal=True,
+    # SafeGrip-CI v1.3 uses counterfactual energy landscapes and a two-stage
+    # selector (benefit probability x correction fraction). Legacy v1.0/v1.1
+    # entries above remain untouched for reproducibility.
+    v13_base=dict(
+        model_kind="ci13", feature_mode="raw", use_temporal=True,
         use_bound=True, use_uq=True, use_calibrated_lower=True,
         use_physics_correction=True, use_utility_gate=True,
-        use_identifiability_feature=True, use_dynamic_loss=True,
-        use_safety_loss=True, use_regime_head=True, use_heteroscedastic_loss=True, use_aleatoric_feature=True,
-        use_dynamics_loss=True, use_counterfactual_loss=True, use_dynamics_pretrain=True,
-        use_excitation_proxy=False, use_persistent_state=False, use_innovation=False,
-        use_identifiability=True, use_acceptance=False, use_innovation_supervision=False,
-        use_cf_agreement_loss=False,
+        use_identifiability_feature=True, use_energy_improvement_feature=True,
+        use_magnitude_head=True, use_dynamic_loss=False, use_safety_loss=True,
+        use_do_no_harm=True, use_regime_head=False, use_heteroscedastic_loss=True,
+        use_aleatoric_feature=True, use_dynamics_loss=True, use_counterfactual_loss=True,
+        use_dynamics_pretrain=True, use_excitation_proxy=False, use_persistent_state=False,
+        use_innovation=False, use_identifiability=True, use_acceptance=False,
+        use_innovation_supervision=False, use_cf_agreement_loss=False,
     )
-    v12_specs={
-        "safegrip_base_temporal": dict(v12_base, use_bound=False, use_uq=False, use_physics_correction=False,
-            use_utility_gate=False, use_identifiability_feature=False, use_dynamic_loss=False,
-            use_safety_loss=False, use_regime_head=False, use_heteroscedastic_loss=False, use_aleatoric_feature=False,
-            use_dynamics_loss=False, use_counterfactual_loss=False, use_dynamics_pretrain=False),
-        "safegrip_no_dynamic_loss": dict(v12_base, use_dynamic_loss=False),
-        "safegrip_no_safety_loss": dict(v12_base, use_safety_loss=False),
-        "safegrip_no_physics_residual": dict(v12_base, use_physics_correction=False, use_utility_gate=False),
-        "safegrip_no_utility_gate": dict(v12_base, use_utility_gate=False),
-        "safegrip_no_identifiability": dict(v12_base, use_identifiability_feature=False),
-        "safegrip_no_bound": dict(v12_base, use_bound=False),
-        "safegrip_no_regime_head": dict(v12_base, use_regime_head=False),
-        "safegrip_no_heteroscedastic": dict(v12_base, use_heteroscedastic_loss=False, use_aleatoric_feature=False),
-        "safegrip_no_uq": dict(v12_base, use_uq=False),
-        "safegrip": dict(v12_base),
+    v13_specs={
+        "safegrip_base_temporal": dict(v13_base, use_bound=False, use_uq=False, use_physics_correction=False,
+            use_utility_gate=False, use_identifiability_feature=False, use_energy_improvement_feature=False,
+            use_magnitude_head=False, use_safety_loss=False, use_heteroscedastic_loss=False,
+            use_aleatoric_feature=False, use_dynamics_loss=False, use_counterfactual_loss=False,
+            use_dynamics_pretrain=False, use_do_no_harm=False),
+        "safegrip_no_dynamic_loss": dict(v13_base, use_dynamic_loss=False),
+        "safegrip_no_safety_loss": dict(v13_base, use_safety_loss=False),
+        "safegrip_no_physics_residual": dict(v13_base, use_physics_correction=False, use_utility_gate=False),
+        "safegrip_no_utility_gate": dict(v13_base, use_utility_gate=False, use_magnitude_head=False),
+        "safegrip_no_identifiability": dict(v13_base, use_identifiability_feature=False),
+        "safegrip_no_magnitude_head": dict(v13_base, use_magnitude_head=False),
+        "safegrip_no_energy_improvement": dict(v13_base, use_energy_improvement_feature=False),
+        "safegrip_no_contrastive_dynamics": dict(v13_base, use_counterfactual_loss=False),
+        "safegrip_no_do_no_harm": dict(v13_base, use_do_no_harm=False),
+        "safegrip_no_bound": dict(v13_base, use_bound=False),
+        "safegrip_no_regime_head": dict(v13_base, use_regime_head=False),
+        "safegrip_no_heteroscedastic": dict(v13_base, use_heteroscedastic_loss=False, use_aleatoric_feature=False),
+        "safegrip_no_uq": dict(v13_base, use_uq=False),
+        "safegrip": dict(v13_base),
     }
-    if canonical in v12_specs:
-        out=dict(v12_specs[canonical])
+    if canonical in v13_specs:
+        out=dict(v13_specs[canonical])
     elif canonical in specs:
         out=dict(specs[canonical])
     else:
@@ -719,6 +774,9 @@ def _proposal_flags(variant: str) -> dict:
     out.setdefault("use_safety_loss", False)
     out.setdefault("use_regime_head", False)
     out.setdefault("use_heteroscedastic_loss", False)
+    out.setdefault("use_energy_improvement_feature", False)
+    out.setdefault("use_magnitude_head", False)
+    out.setdefault("use_do_no_harm", False)
     # Removing all counterfactual agreement must remove both its training loss
     # and its inference-time disagreement veto.
     if canonical == "safegrip_no_cf_agreement":
@@ -749,8 +807,8 @@ def _proposal_model(variant: str, b: Bundle, hp: dict):
         )
         model.variant_spec=flags
         return model
-    if flags["model_kind"]=="ci12":
-        model=SafeGripV4Net(
+    if flags["model_kind"]=="ci13":
+        model=SafeGripV5Net(
             len(b.features), dynamics_indices=_dynamics_indices(b.features),
             hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]), dropout=float(hp["dropout"]),
             conv_channels=int(hp.get("conv_channels", max(32, int(hp["hidden"])//2))),
@@ -764,9 +822,14 @@ def _proposal_model(variant: str, b: Bundle, hp: dict):
             use_utility_gate=flags.get("use_utility_gate",True),
             use_identifiability_feature=flags.get("use_identifiability_feature",True),
             use_bound=flags.get("use_bound",True),
-            use_regime_head=flags.get("use_regime_head",True),
+            use_regime_head=flags.get("use_regime_head",False),
             use_aleatoric_feature=flags.get("use_aleatoric_feature",True),
             aleatoric_floor=float(hp.get("aleatoric_floor",0.005)),
+            energy_grid_points=int(hp.get("energy_grid_points",7)),
+            energy_grid_radius=float(hp.get("energy_grid_radius",hp.get("inverse_dynamics_max_step",0.10))),
+            energy_temperature=float(hp.get("energy_temperature",0.35)),
+            use_magnitude_head=flags.get("use_magnitude_head",True),
+            use_energy_improvement_feature=flags.get("use_energy_improvement_feature",True),
         )
         model.information_beta=max(0.0,float(hp.get("information_beta",0.5)))
         model.disagreement_beta=max(0.0,float(hp.get("disagreement_beta",0.25)))
@@ -837,13 +900,19 @@ def proposal_hparams(cfg, overrides=None):
         "arbitration_loss_weight":0.30, "prior_loss_weight":0.05,
         "teacher_forcing_start":0.80, "teacher_forcing_end":0.0,
         "persistence_min":0.05, "persistence_max":0.98, "inverse_expert_scale":1.0,
-        # v1.2 selective-physics proposal.
+        # v1.3 counterfactual-energy selective-physics proposal.
         "conv_channels":48, "gru_layers":2, "physics_correction_scale":1.0,
-        "base_loss_weight":0.75, "dynamic_loss_weight":0.25,
-        "safety_loss_weight":0.20, "unsafe_margin":0.02,
-        "utility_gate_loss_weight":0.30, "utility_gate_beta":0.02,
-        "change_loss_weight":0.10, "change_threshold":0.02,
-        "smooth_loss_weight":0.05, "heteroscedastic_loss_weight":0.05,
+        "energy_grid_points":7, "energy_grid_radius":0.10, "energy_temperature":0.35,
+        "base_pretrain_epochs":8, "base_loss_weight":1.0, "dynamic_loss_weight":0.0,
+        "safety_loss_weight":0.20, "unsafe_margin":0.05, "unsafe_temperature":0.02,
+        "benefit_gate_loss_weight":0.35, "benefit_margin":0.002,
+        "correction_fraction_loss_weight":0.25, "correction_fraction_beta":0.05,
+        "do_no_harm_weight":0.20, "do_no_harm_margin":0.002,
+        "contrastive_temperature":0.25, "contrastive_negatives":6,
+        "freeze_dynamics_after_pretrain":True,
+        "utility_gate_loss_weight":0.35, "utility_gate_beta":0.02,
+        "change_loss_weight":0.0, "change_threshold":0.02,
+        "smooth_loss_weight":0.0, "heteroscedastic_loss_weight":0.05,
         "aleatoric_floor":0.005,
     }
     defaults.update(p); defaults.update(overrides or {}); return defaults
@@ -919,7 +988,8 @@ def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False,
           "expert_weight_prior","expert_weight_neural","expert_weight_inverse",
           "adaptive_persistence","direction_agreement","magnitude_agreement","inverse_candidate_prediction",
           "change_probability","aleatoric_scale","physics_correction","applied_physics_correction","gate_confidence",
-          "raw_prediction")
+          "raw_prediction","benefit_probability","correction_fraction","posterior_entropy","energy_curvature",
+          "inverse_candidate_raw")
     store={k:[] for k in keys}
     excitation_arr=None if excitation is None else np.asarray(excitation,dtype=np.float32)
     X=np.asarray(X,dtype=np.float32); lower=np.asarray(lower,dtype=np.float32)
@@ -983,6 +1053,10 @@ def _forward_point(model, X, lower, mu_upper, batch=1024, return_features=False,
             cat("change_probability",np.zeros_like(pred)),cat("aleatoric_scale",np.zeros_like(pred)),
             cat("physics_correction",np.zeros_like(pred)),cat("applied_physics_correction",np.zeros_like(pred)),
             cat("gate_confidence",np.ones_like(pred)),cat("raw_prediction",pred.copy()),
+            cat("benefit_probability",cat("acceptance",np.zeros_like(pred))),
+            cat("correction_fraction",np.ones_like(pred)),
+            cat("posterior_entropy",np.ones_like(pred)),cat("energy_curvature",np.zeros_like(pred)),
+            cat("inverse_candidate_raw",cat("inverse_candidate_prediction",pred.copy())),
         )
     return pred,latent,rel
 
@@ -1039,19 +1113,18 @@ def _masked_mean(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (x*mask_f).sum()/torch.clamp(mask_f.sum(),min=1.0)
 
 
-def _fit_proposal_v12(variant,b:Bundle,cfg,epochs,hp_overrides=None):
-    """Train SafeGrip-CI v1.2 with direct estimation + selective physics correction.
+def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
+    """Train SafeGrip-CI v1.3 with staged counterfactual-energy correction.
 
-    The point estimator is trained to be strong on its own.  Dynamics evidence
-    is trained by a separate friction-conditioned objective, while the utility
-    gate receives a training-only oracle fraction that answers a single
-    question: how much of the bounded inverse-dynamics correction would reduce
-    the current absolute friction error?  No friction label enters the gate at
-    inference time.
+    Stage A learns a competitive direct temporal estimator.  Stage B trains the
+    friction-conditioned dynamics model with reconstruction plus multi-negative
+    contrastive discrimination.  Stage C trains the selective correction path,
+    supervising (i) whether the physics candidate helps and (ii) the useful
+    correction fraction as separate targets.  By default the dynamics model is
+    frozen after Stage B so point losses cannot reshape the physical evidence.
     """
     flags=_proposal_flags(variant)
     hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
-    opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
     lo_train=b.raw_lotr
     lo_val=b.lov if flags["use_calibrated_lower"] else b.raw_lov
     prev_idx,pair_valid=_previous_pair_indices(b.idtr,1)
@@ -1062,44 +1135,77 @@ def _fit_proposal_v12(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     )
     dl=DataLoader(dataset,batch_size=int(hp["batch_size"]),shuffle=True)
     mu_u=float(cfg["mu_upper"]); huber_beta=float(hp.get("huber_beta",0.05))
-    best=None; bestloss=float("inf"); bad=0; patience=int(cfg["training"].get("patience",10))
+    patience=int(cfg["training"].get("patience",10))
 
-    base_w=max(0.0,float(hp.get("base_loss_weight",0.75)))
-    dyn_delta_w=max(0.0,float(hp.get("dynamic_loss_weight",0.25))) if flags.get("use_dynamic_loss",True) else 0.0
+    base_w=max(0.0,float(hp.get("base_loss_weight",1.0)))
+    dyn_delta_w=max(0.0,float(hp.get("dynamic_loss_weight",0.0))) if flags.get("use_dynamic_loss",False) else 0.0
     safety_w=max(0.0,float(hp.get("safety_loss_weight",0.20))) if flags.get("use_safety_loss",True) else 0.0
-    gate_w=max(0.0,float(hp.get("utility_gate_loss_weight",0.30))) if flags.get("use_utility_gate",True) else 0.0
-    change_w=max(0.0,float(hp.get("change_loss_weight",0.10))) if flags.get("use_regime_head",True) else 0.0
-    smooth_w=max(0.0,float(hp.get("smooth_loss_weight",0.05))) if flags.get("use_regime_head",True) else 0.0
+    benefit_w=max(0.0,float(hp.get("benefit_gate_loss_weight",hp.get("utility_gate_loss_weight",0.35)))) if flags.get("use_utility_gate",True) else 0.0
+    fraction_w=max(0.0,float(hp.get("correction_fraction_loss_weight",0.25))) if flags.get("use_utility_gate",True) and flags.get("use_magnitude_head",True) else 0.0
+    harm_w=max(0.0,float(hp.get("do_no_harm_weight",0.20))) if flags.get("use_do_no_harm",True) else 0.0
+    change_w=max(0.0,float(hp.get("change_loss_weight",0.0))) if flags.get("use_regime_head",False) else 0.0
+    smooth_w=max(0.0,float(hp.get("smooth_loss_weight",0.0))) if flags.get("use_regime_head",False) else 0.0
     hetero_w=max(0.0,float(hp.get("heteroscedastic_loss_weight",0.05))) if flags.get("use_heteroscedastic_loss",True) else 0.0
     dynamics_w=max(0.0,float(hp.get("dynamics_loss_weight",0.10))) if flags.get("use_dynamics_loss",True) else 0.0
-    cf_w=max(0.0,float(hp.get("counterfactual_loss_weight",0.05))) if flags.get("use_counterfactual_loss",True) else 0.0
-    unsafe_margin=max(0.0,float(hp.get("unsafe_margin",0.02)))
+    cf_w=max(0.0,float(hp.get("counterfactual_loss_weight",0.20))) if flags.get("use_counterfactual_loss",True) else 0.0
+    unsafe_margin=max(0.0,float(hp.get("unsafe_margin",0.05)))
+    unsafe_temperature=max(1e-4,float(hp.get("unsafe_temperature",0.02)))
+    help_margin=max(0.0,float(hp.get("benefit_margin",0.002)))
+    harm_margin=max(0.0,float(hp.get("do_no_harm_margin",0.002)))
     change_threshold=max(1e-5,float(hp.get("change_threshold",0.02)))
-    cf_margin=max(0.0,float(hp.get("counterfactual_margin",0.02)))
+    contrastive_temperature=max(1e-3,float(hp.get("contrastive_temperature",0.25)))
+    contrastive_negatives=max(2,int(hp.get("contrastive_negatives",6)))
 
-    # Pretrain G so local sensitivity and residual correction are meaningful
-    # before the utility gate starts learning from them.
+    # Stage A: make the direct estimator competitive before any physics path is
+    # allowed to influence it.  Only the temporal/base modules are optimized.
+    base_modules=[model.temporal_conv,model.temporal_gru,model.static_encoder,model.temporal_proj,model.fuse,model.base_head]
+    base_params=[p for m in base_modules for p in m.parameters()]
+    base_pre_epochs=int(hp.get("base_pretrain_epochs",8))
+    if base_pre_epochs>0:
+        base_opt=torch.optim.AdamW(base_params,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
+        for _pre in range(min(base_pre_epochs,max(1,int(epochs)))):
+            model.train()
+            for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
+                xb=xb.to(dev); yb=yb.to(dev); base_opt.zero_grad()
+                h=model.encode(xb); base,_=model._base_prediction(h,mu_u)
+                loss=nn.functional.smooth_l1_loss(base,yb,beta=huber_beta)
+                if safety_w>0:
+                    # Smooth surrogate aligned with the reported unsafe event
+                    # prediction - target > unsafe_margin.
+                    risk=nn.functional.softplus((base-yb-unsafe_margin)/unsafe_temperature)*unsafe_temperature
+                    loss=loss+0.5*safety_w*risk.mean()
+                loss.backward(); torch.nn.utils.clip_grad_norm_(base_params,5.0); base_opt.step()
+
+    # Stage B: force G(context, mu) to be friction-discriminative.  Plain next-
+    # sensor reconstruction alone can ignore mu; the multi-negative objective
+    # makes that shortcut expensive.
+    dyn_params=list(model.dynamics_gru.parameters())+list(model.dynamics_context.parameters())+list(model.dynamics_head.parameters())
     pre_epochs=int(hp.get("dynamics_pretrain_epochs",8)) if flags.get("use_dynamics_pretrain",True) and flags.get("use_dynamics_loss",True) else 0
     if pre_epochs>0:
-        dyn_params=list(model.dynamics_gru.parameters())+list(model.dynamics_context.parameters())+list(model.dynamics_head.parameters())
         dyn_opt=torch.optim.AdamW(dyn_params,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
         for _pre in range(min(pre_epochs,max(1,int(epochs)))):
             model.train()
             for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
                 xb=xb.to(dev); yb=yb.to(dev); dyn_opt.zero_grad()
                 dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
-                loss=nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
+                loss=dynamics_w*nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
                 if cf_w>0:
-                    true_err=torch.mean((dyn_true-dyn_target).square(),dim=-1)
-                    delta=float(hp.get("counterfactual_delta",0.08))
-                    wrong_lo=torch.clamp(yb-delta,min=0.0,max=mu_u)
-                    wrong_hi=torch.clamp(yb+delta,min=0.0,max=mu_u)
-                    p_lo,_=model.dynamics_prediction(xb,wrong_lo,mu_u)
-                    p_hi,_=model.dynamics_prediction(xb,wrong_hi,mu_u)
-                    wrong_err=0.5*(torch.mean((p_lo-dyn_target).square(),dim=-1)+torch.mean((p_hi-dyn_target).square(),dim=-1))
-                    loss=loss+max(cf_w,0.05)*torch.relu(cf_margin+true_err-wrong_err).mean()
+                    cf_loss,_=model.counterfactual_dynamics_loss(
+                        xb,yb,mu_u,temperature=contrastive_temperature,negatives=contrastive_negatives
+                    )
+                    loss=loss+cf_w*cf_loss
                 loss.backward(); torch.nn.utils.clip_grad_norm_(dyn_params,5.0); dyn_opt.step()
 
+    freeze_dynamics=bool(hp.get("freeze_dynamics_after_pretrain",True)) and pre_epochs>0
+    if freeze_dynamics:
+        for p in dyn_params:
+            p.requires_grad_(False)
+
+    trainable=[p for p in model.parameters() if p.requires_grad]
+    opt=torch.optim.AdamW(trainable,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
+    best=None; bestloss=float("inf"); bad=0
+
+    # Stage C: train direct estimator + two-stage selective correction.
     for _epoch in range(max(1,int(epochs))):
         model.train()
         for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
@@ -1110,52 +1216,59 @@ def _fit_proposal_v12(variant,b:Bundle,cfg,epochs,hp_overrides=None):
             pred=d["prediction"]
             loss=nn.functional.smooth_l1_loss(pred,yb,beta=huber_beta)
 
-            # Keep the direct temporal estimator competitive even when physics
-            # correction is active; this avoids the v1.1 failure where state/
-            # arbitration compensated for a weak point estimator.
             if base_w>0:
                 loss=loss+base_w*nn.functional.smooth_l1_loss(d["base_prediction"],yb,beta=huber_beta)
 
             need_prev=(dyn_delta_w>0 or change_w>0 or smooth_w>0)
-            dprev=None
-            target_delta=None
+            dprev=None; target_delta=None
             if need_prev:
-                dprev=model.forward_details(xp,lp,mu_u)
-                target_delta=yb-yp
-
+                dprev=model.forward_details(xp,lp,mu_u); target_delta=yb-yp
             if dyn_delta_w>0 and dprev is not None:
                 delta_err=nn.functional.smooth_l1_loss(
                     pred-dprev["prediction"],target_delta,beta=max(huber_beta,0.03),reduction="none"
                 )
                 loss=loss+dyn_delta_w*_masked_mean(delta_err,pair_mask)
-
             if change_w>0 and dprev is not None:
                 change_target=(torch.abs(target_delta)>change_threshold).to(pred.dtype)
-                change_loss=nn.functional.binary_cross_entropy(
+                ce=nn.functional.binary_cross_entropy(
                     torch.clamp(d["change_probability"],1e-5,1-1e-5),change_target,reduction="none"
                 )
-                loss=loss+change_w*_masked_mean(change_loss,pair_mask)
-
+                loss=loss+change_w*_masked_mean(ce,pair_mask)
             if smooth_w>0 and dprev is not None:
                 stable=pair_mask & (torch.abs(target_delta)<=change_threshold)
-                smooth=torch.abs(pred-dprev["prediction"])
-                loss=loss+smooth_w*_masked_mean(smooth,stable)
+                loss=loss+smooth_w*_masked_mean(torch.abs(pred-dprev["prediction"]),stable)
 
             if safety_w>0:
-                unsafe=torch.relu(pred-yb-unsafe_margin)
-                loss=loss+safety_w*torch.mean(unsafe.square())
+                risk=nn.functional.softplus((pred-yb-unsafe_margin)/unsafe_temperature)*unsafe_temperature
+                loss=loss+safety_w*risk.mean()
 
-            if gate_w>0 and flags.get("use_physics_correction",True):
-                # Oracle *fraction* of the full bounded physics correction.
-                # This directly trains "how much of this correction is useful?"
-                # instead of classifying among unrelated experts.
+            if flags.get("use_physics_correction",True) and flags.get("use_utility_gate",True):
                 base=d["base_prediction"].detach()
-                full=d.get("inverse_candidate_raw",d["inverse_candidate_prediction"]).detach()
+                full=d["inverse_candidate_raw"].detach()
                 delta=full-base
-                oracle=torch.clamp(((yb-base)*delta)/(delta.square()+1e-6),0.0,1.0).detach()
-                active=torch.abs(delta)>1e-4
-                gate_err=nn.functional.smooth_l1_loss(d["physics_gate"],oracle,beta=float(hp.get("utility_gate_beta",0.02)),reduction="none")
-                loss=loss+gate_w*_masked_mean(gate_err,active)
+                active=torch.abs(delta)>1e-5
+                base_err=torch.abs(base-yb)
+                candidate_err=torch.abs(full-yb)
+                help_target=(candidate_err+help_margin<base_err).to(pred.dtype).detach()
+                if benefit_w>0:
+                    p_help=torch.clamp(d["benefit_probability"],1e-5,1.0-1e-5)
+                    bce=nn.functional.binary_cross_entropy(p_help,help_target,reduction="none")
+                    # Train on all samples: knowing when *not* to use physics is
+                    # as important as recognizing helpful corrections.
+                    loss=loss+benefit_w*bce.mean()
+                if fraction_w>0:
+                    oracle=torch.clamp(((yb-base)*delta)/(delta.square()+1e-6),0.0,1.0).detach()
+                    useful=active & (help_target>0.5)
+                    frac_err=nn.functional.smooth_l1_loss(
+                        d["correction_fraction"],oracle,beta=float(hp.get("correction_fraction_beta",0.05)),reduction="none"
+                    )
+                    loss=loss+fraction_w*_masked_mean(frac_err,useful)
+
+            if harm_w>0:
+                base_err=torch.abs(d["base_prediction"].detach()-yb)
+                final_err=torch.abs(pred-yb)
+                harm=torch.relu(final_err-base_err-harm_margin)
+                loss=loss+harm_w*torch.mean(harm.square())
 
             if hetero_w>0:
                 scale=torch.clamp(d["aleatoric_scale"],min=float(hp.get("aleatoric_floor",0.005)),max=mu_u)
@@ -1163,20 +1276,16 @@ def _fit_proposal_v12(variant,b:Bundle,cfg,epochs,hp_overrides=None):
                 nll=0.5*torch.clamp(err.square(),max=100.0)+torch.log(scale)
                 loss=loss+hetero_w*nll.mean()
 
-            if dynamics_w>0:
+            if dynamics_w>0 and not freeze_dynamics:
                 dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
                 loss=loss+dynamics_w*nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
                 if cf_w>0:
-                    true_err=torch.mean((dyn_true-dyn_target).square(),dim=-1)
-                    delta=float(hp.get("counterfactual_delta",0.08))
-                    wrong_lo=torch.clamp(yb-delta,min=0.0,max=mu_u)
-                    wrong_hi=torch.clamp(yb+delta,min=0.0,max=mu_u)
-                    d_lo,_=model.dynamics_prediction(xb,wrong_lo,mu_u)
-                    d_hi,_=model.dynamics_prediction(xb,wrong_hi,mu_u)
-                    wrong_err=0.5*(torch.mean((d_lo-dyn_target).square(),dim=-1)+torch.mean((d_hi-dyn_target).square(),dim=-1))
-                    loss=loss+cf_w*torch.relu(cf_margin+true_err-wrong_err).mean()
+                    cf_loss,_=model.counterfactual_dynamics_loss(
+                        xb,yb,mu_u,temperature=contrastive_temperature,negatives=contrastive_negatives
+                    )
+                    loss=loss+cf_w*cf_loss
 
-            loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step()
+            loss.backward(); torch.nn.utils.clip_grad_norm_(trainable,5.0); opt.step()
 
         v=_forward_point(model,b.Xv,np.asarray(lo_val,np.float32),mu_u,return_features=False,
                          excitation=b.ev,ids=b.idv,stateful=False)[0]
@@ -1221,8 +1330,8 @@ def fit_proposal(variant,b:Bundle,cfg,epochs,hp_overrides=None):
     flags=_proposal_flags(variant)
     if getattr(b,"feature_mode",None) != flags["feature_mode"]:
         raise ValueError(f"{variant} requires feature_mode={flags['feature_mode']}, got {getattr(b,'feature_mode',None)}")
-    if flags.get("model_kind")=="ci12":
-        return _fit_proposal_v12(variant,b,cfg,epochs,hp_overrides)
+    if flags.get("model_kind")=="ci13":
+        return _fit_proposal_v13(variant,b,cfg,epochs,hp_overrides)
     hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
     opt=torch.optim.AdamW(model.parameters(),lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
     lo_train=b.raw_lotr
@@ -1420,7 +1529,8 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
      cf_delta_mu,cf_agreement,information_scale_cv,local_linearity,agreement_veto_probability,
      expert_weight_prior,expert_weight_neural,expert_weight_inverse,adaptive_persistence,
      direction_agreement,magnitude_agreement,inverse_candidate,change_probability,aleatoric_scale,
-     physics_correction,applied_physics_correction,gate_confidence,raw_prediction)=vals
+     physics_correction,applied_physics_correction,gate_confidence,raw_prediction,benefit_probability,
+     correction_fraction,posterior_entropy,energy_curvature,inverse_candidate_raw)=vals
     details={
         "prediction":prediction,"raw_mean":raw_prediction,"latent_score":latent,
         "prior_latent":prior_latent,"prior_prediction":prior,"candidate_prediction":candidate,
@@ -1439,6 +1549,9 @@ def predict_proposal_details(model,variant,X,lo,raw_lo,mu_upper,batch=1024,excit
         "base_prediction":prior,"physics_gate":authority,"change_probability":change_probability,
         "aleatoric_scale":aleatoric_scale,"physics_correction":physics_correction,
         "applied_physics_correction":applied_physics_correction,"gate_confidence":gate_confidence,
+        "benefit_probability":benefit_probability,"correction_fraction":correction_fraction,
+        "posterior_entropy":posterior_entropy,"energy_curvature":energy_curvature,
+        "inverse_candidate_raw":inverse_candidate_raw,
         "persistent_state_used":persistent_used,"sigma":None,"bound":bound,
     }
     if flags["use_uq"] and getattr(model,"scale_head",None) is not None:
@@ -1705,7 +1818,8 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         proposal_seq - 1,
         max([int(hp["sequence_length"]) - 1 for hp in baseline_plan.values()] or [0]),
     )
-    proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind="standard",eval_start=start,feature_mode="raw")
+    proposal_scaler=str((hp_overrides or {}).get("scaler",cfg.get("proposal",{}).get("scaler","minmax")))
+    proposal_bundle=make_bundle(csv_path,cfg,sequence_length=proposal_seq,scaler_kind=proposal_scaler,eval_start=start,feature_mode="raw")
     _save_bundle_meta(out,proposal_bundle,cfg)
     if preset == "paper":
         seed_list=list(cfg.get("evaluation",{}).get("seeds",[cfg["seed"]]))
@@ -1793,8 +1907,9 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     seed_veto=[]; seed_norm_improve=[]; seed_cf_delta=[]; seed_cf_agreement=[]
     seed_info_cv=[]; seed_linearity=[]; seed_agreement_veto=[]
     seed_w_prior=[]; seed_w_neural=[]; seed_w_inverse=[]; seed_adaptive_rho=[]
-    seed_dir_agree=[]; seed_mag_agree=[]; seed_inverse_candidate=[]
+    seed_dir_agree=[]; seed_mag_agree=[]; seed_inverse_candidate=[]; seed_inverse_candidate_raw=[]
     seed_change_prob=[]; seed_aleatoric=[]; seed_physics_corr=[]; seed_applied_corr=[]; seed_gate_conf=[]
+    seed_benefit=[]; seed_fraction=[]; seed_entropy=[]; seed_curvature=[]
     seed_uq_initial_scales=[]
     seed_pi_low=[]; seed_pi_high=[]; seed_pi_low_raw=[]; seed_pi_high_raw=[]; seed_gates=[]; seed_q=[]; seed_blocks=[]; seed_uq_counts=[]
     for seed in seed_list:
@@ -1811,6 +1926,9 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
                                               raw_mean=d["raw_mean"],
                                               interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
                                               interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw")),
+                         **selector_metrics(proposal_bundle.yt,d["base_prediction"],d["inverse_candidate_raw"],d["prediction"],
+                                            d["benefit_probability"],d["correction_fraction"],
+                                            margin=float((final_hp or {}).get("benefit_margin",0.002))),
                          "conformal_q":float(d.get("conformal_q",np.nan)),
                          "mean_reliability":float(np.mean(d["reliability"])),
                          "mean_gate":float(np.mean(d["reliability"])),
@@ -1832,6 +1950,10 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
                          "mean_magnitude_agreement":float(np.mean(d["magnitude_agreement"])),
                          "mean_physics_gate":float(np.mean(d["physics_gate"])),
                          "mean_gate_confidence":float(np.mean(d["gate_confidence"])),
+                         "mean_benefit_probability":float(np.mean(d["benefit_probability"])),
+                         "mean_correction_fraction":float(np.mean(d["correction_fraction"])),
+                         "mean_posterior_entropy":float(np.mean(d["posterior_entropy"])),
+                         "mean_energy_curvature":float(np.mean(d["energy_curvature"])),
                          "mean_change_probability":float(np.mean(d["change_probability"])),
                          "mean_aleatoric_scale":float(np.mean(d["aleatoric_scale"])),
                          "mean_abs_physics_correction":float(np.mean(np.abs(d["physics_correction"]))),
@@ -1854,9 +1976,10 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         seed_info_cv.append(d["information_scale_cv"]); seed_linearity.append(d["local_linearity"]); seed_agreement_veto.append(d["agreement_veto_probability"])
         seed_w_prior.append(d["expert_weight_prior"]); seed_w_neural.append(d["expert_weight_neural"]); seed_w_inverse.append(d["expert_weight_inverse"])
         seed_adaptive_rho.append(d["adaptive_persistence"]); seed_dir_agree.append(d["direction_agreement"]); seed_mag_agree.append(d["magnitude_agreement"])
-        seed_inverse_candidate.append(d["inverse_candidate_prediction"])
+        seed_inverse_candidate.append(d["inverse_candidate_prediction"]); seed_inverse_candidate_raw.append(d["inverse_candidate_raw"])
         seed_change_prob.append(d["change_probability"]); seed_aleatoric.append(d["aleatoric_scale"])
         seed_physics_corr.append(d["physics_correction"]); seed_applied_corr.append(d["applied_physics_correction"]); seed_gate_conf.append(d["gate_confidence"])
+        seed_benefit.append(d["benefit_probability"]); seed_fraction.append(d["correction_fraction"]); seed_entropy.append(d["posterior_entropy"]); seed_curvature.append(d["energy_curvature"])
         seed_candidates.append(d["candidate_prediction"]); seed_persistent.append(d["persistent_state_used"])
         seed_uq_initial_scales.append(float(getattr(model,"uq_scale_initialization",np.nan)))
         if d["sigma"] is not None: proposal_sigmas.append(d["sigma"])
@@ -1893,9 +2016,14 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     preds[name+"_direction_agreement"]=np.mean(np.stack(seed_dir_agree),axis=0)
     preds[name+"_magnitude_agreement"]=np.mean(np.stack(seed_mag_agree),axis=0)
     preds[name+"_inverse_candidate"]=np.mean(np.stack(seed_inverse_candidate),axis=0)
+    preds[name+"_inverse_candidate_raw"]=np.mean(np.stack(seed_inverse_candidate_raw),axis=0)
     preds[name+"_base"]=preds[name+"_prior"]
     preds[name+"_physics_gate"]=np.mean(np.stack(seed_gates),axis=0)
     preds[name+"_gate_confidence"]=np.mean(np.stack(seed_gate_conf),axis=0)
+    preds[name+"_benefit_probability"]=np.mean(np.stack(seed_benefit),axis=0)
+    preds[name+"_correction_fraction"]=np.mean(np.stack(seed_fraction),axis=0)
+    preds[name+"_posterior_entropy"]=np.mean(np.stack(seed_entropy),axis=0)
+    preds[name+"_energy_curvature"]=np.mean(np.stack(seed_curvature),axis=0)
     preds[name+"_change_probability"]=np.mean(np.stack(seed_change_prob),axis=0)
     preds[name+"_aleatoric_scale"]=np.mean(np.stack(seed_aleatoric),axis=0)
     preds[name+"_physics_correction"]=np.mean(np.stack(seed_physics_corr),axis=0)
@@ -1908,13 +2036,14 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         preds[name+"_pi95_high_raw"]=np.mean(np.stack(seed_pi_high_raw),axis=0)
 
     (out/"proposal_reliability.json").write_text(json.dumps({
-        "method":"SafeGrip-CI v1.2 risk-aware selective physics correction",
-        "primary_estimator":"raw-sensor Conv1D + two-layer GRU temporal estimator",
-        "physics_role":"bounded local inverse-dynamics residual correction; never an equal standalone expert",
-        "utility_gate":"scalar correction fraction trained with a training-only oracle useful-fraction target; inference uses only raw-sensor/dynamics evidence",
-        "identifiability":"counterfactual local sensitivity is an observability feature supplied to the utility gate, not a correctness multiplier",
-        "regime_model":"auxiliary friction-change probability plus delta-friction supervision; no recursive friction state is used",
-        "risk_training":"asymmetric unsafe-overestimation hinge loss augments Huber point loss",
+        "method":"SafeGrip-CI v1.3 counterfactual energy-guided selective physics correction",
+        "primary_estimator":"raw-sensor Conv1D + two-layer GRU temporal estimator with direct pretraining",
+        "physics_role":"posterior-mean candidate from a local friction-hypothesis energy landscape; never an equal standalone expert",
+        "utility_gate":"two-stage selector: benefit probability multiplied by learned correction fraction; inference uses only raw-sensor/dynamics evidence",
+        "identifiability":"one minus normalized posterior entropy over local friction hypotheses",
+        "dynamics_training":"friction-conditioned endpoint reconstruction plus multi-negative contrastive friction discrimination",
+        "regime_model":"disabled by default in v1.3; no recursive friction state is used",
+        "risk_training":"metric-aligned smooth unsafe-overestimation surrogate plus explicit do-no-harm loss",
         "handcrafted_excitation_used_by_full_proposal":False,
         "persistent_state_used_by_full_proposal":False,
         "per_seed_uq_initial_scale":seed_uq_initial_scales,
@@ -1950,9 +2079,9 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
         "calibration_labels_used_in_gradient_training":False,
         "proposal_feature_engineering_label_free":True,
-        "proposal_point_loss":"Huber final estimate + direct-base supervision + friction-change loss + asymmetric unsafe-overestimation loss + utility-gate fraction loss + regime-change loss + heteroscedastic NLL + dynamics ranking",
-        "proposal_architecture":"strong raw-sensor Conv1D-GRU estimator + bounded inverse-dynamics residual correction + one learned utility gate",
-        "proposal_reliability":"counterfactual identifiability is an observability feature; the gate learns how much physics correction is useful rather than selecting among experts",
+        "proposal_point_loss":"Huber final estimate + direct-base supervision + metric-aligned unsafe-overestimation surrogate + benefit classification + correction-fraction regression + do-no-harm loss + heteroscedastic NLL",
+        "proposal_architecture":"strong raw-sensor Conv1D-GRU estimator + K-hypothesis counterfactual energy landscape + posterior-mean physics candidate + benefit gate x magnitude head",
+        "proposal_reliability":"entropy-based counterfactual identifiability and dynamics-energy improvement inform whether physics should be used and how much",
         "proposal_bound_parameterization":"physics feasible-set projection is applied only after the selective residual correction",
         "proposal_uq":"heteroscedastic representation + post-hoc residual scale + observability/gate-uncertainty inflation + block-max split-conformal multiplier",
         "proposal_uq_dependence_note":"block-max calibration is a conservative dependence mitigation, not an arbitrary-dependence finite-sample guarantee",
@@ -1986,11 +2115,13 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     bad=[v for v in variants if v not in PROPOSAL_VARIANTS]
     if bad: raise ValueError("Unknown proposal variants: "+", ".join(bad))
     # Cache one leakage-safe bundle for each actual representation required.
+    # Controlled ablations use the same selected scaler as the full proposal.
+    proposal_scaler=str((hp_overrides or {}).get("scaler",cfg.get("proposal",{}).get("scaler","minmax")))
     bundles={}
     for v in variants:
         mode=_proposal_flags(v)["feature_mode"]
         if mode not in bundles:
-            bundles[mode]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind="standard",eval_start=start,feature_mode=mode)
+            bundles[mode]=make_bundle(csv_path,cfg,sequence_length=seq,scaler_kind=proposal_scaler,eval_start=start,feature_mode=mode)
     ref=bundles[_proposal_flags(variants[0])["feature_mode"]]
     for mode,b in bundles.items(): _assert_same_targets(ref,b,f"ablation_bundle_{mode}")
     _save_bundle_meta(out,ref,cfg)
@@ -2008,6 +2139,7 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
         variant_veto=[]; variant_norm=[]; variant_cf_delta=[]; variant_cf_agree=[]
         variant_info_cv=[]; variant_linearity=[]; variant_agreement_veto=[]
         variant_gate_conf=[]; variant_change=[]; variant_aleatoric=[]; variant_phys_corr=[]; variant_applied_corr=[]
+        variant_benefit=[]; variant_fraction=[]; variant_entropy=[]; variant_curvature=[]; variant_candidate_raw=[]
         for seed in seed_list:
             seed_everything(int(seed)); t0=time.time(); model,hp=fit_proposal(variant,vb,cfg,epochs,hp_overrides)
             d=predict_proposal_details(model,variant,vb.Xt,vb.lot,vb.raw_lot,cfg["mu_upper"],excitation=vb.et,ids=vb.idt)
@@ -2015,6 +2147,9 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
                  **regression_metrics(vb.yt,d["prediction"],d["bound"],cfg["mu_upper"],d["sigma"],raw_mean=d["raw_mean"],
                     interval_low=d.get("pi95_low_physics"),interval_high=d.get("pi95_high_physics"),
                     interval_low_raw=d.get("pi95_low_raw"),interval_high_raw=d.get("pi95_high_raw")),
+                 **selector_metrics(vb.yt,d["base_prediction"],d["inverse_candidate_raw"],d["prediction"],
+                                    d["benefit_probability"],d["correction_fraction"],
+                                    margin=float(hp.get("benefit_margin",0.002))),
                  "conformal_q":float(d.get("conformal_q",np.nan)),
                  "mean_reliability":float(np.mean(d["reliability"])),
                  "mean_gate":float(np.mean(d["reliability"])),
@@ -2034,6 +2169,10 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
                  "mean_aleatoric_scale":float(np.mean(d["aleatoric_scale"])),
                  "mean_abs_physics_correction":float(np.mean(np.abs(d["physics_correction"]))),
                  "mean_abs_applied_physics_correction":float(np.mean(np.abs(d["applied_physics_correction"]))),
+                 "mean_benefit_probability":float(np.mean(d["benefit_probability"])),
+                 "mean_correction_fraction":float(np.mean(d["correction_fraction"])),
+                 "mean_posterior_entropy":float(np.mean(d["posterior_entropy"])),
+                 "mean_energy_curvature":float(np.mean(d["energy_curvature"])),
                  "base_rmse":float(np.sqrt(np.mean((vb.yt-d["base_prediction"])**2))),
                  "prior_rmse":float(np.sqrt(np.mean((vb.yt-d["prior_prediction"])**2))),
                  "candidate_rmse":float(np.sqrt(np.mean((vb.yt-d["candidate_prediction"])**2))),
@@ -2046,6 +2185,8 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
             variant_info_cv.append(d["information_scale_cv"]); variant_linearity.append(d["local_linearity"]); variant_agreement_veto.append(d["agreement_veto_probability"])
             variant_gate_conf.append(d["gate_confidence"]); variant_change.append(d["change_probability"]); variant_aleatoric.append(d["aleatoric_scale"])
             variant_phys_corr.append(d["physics_correction"]); variant_applied_corr.append(d["applied_physics_correction"])
+            variant_benefit.append(d["benefit_probability"]); variant_fraction.append(d["correction_fraction"])
+            variant_entropy.append(d["posterior_entropy"]); variant_curvature.append(d["energy_curvature"]); variant_candidate_raw.append(d["inverse_candidate_raw"])
             if d["sigma"] is not None: variant_sigma.append(d["sigma"])
             if "pi95_low_physics" in d: lo_int.append(d["pi95_low_physics"]); hi_int.append(d["pi95_high_physics"])
         preds[variant]=np.mean(np.stack(variant_preds),axis=0); preds[variant+"_raw"]=np.mean(np.stack(variant_raw),axis=0)
@@ -2065,6 +2206,11 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
         preds[variant+"_aleatoric_scale"]=np.mean(np.stack(variant_aleatoric),axis=0)
         preds[variant+"_physics_correction"]=np.mean(np.stack(variant_phys_corr),axis=0)
         preds[variant+"_applied_physics_correction"]=np.mean(np.stack(variant_applied_corr),axis=0)
+        preds[variant+"_benefit_probability"]=np.mean(np.stack(variant_benefit),axis=0)
+        preds[variant+"_correction_fraction"]=np.mean(np.stack(variant_fraction),axis=0)
+        preds[variant+"_posterior_entropy"]=np.mean(np.stack(variant_entropy),axis=0)
+        preds[variant+"_energy_curvature"]=np.mean(np.stack(variant_curvature),axis=0)
+        preds[variant+"_inverse_candidate_raw"]=np.mean(np.stack(variant_candidate_raw),axis=0)
         if variant_sigma: preds[variant+"_sigma"]=np.mean(np.stack(variant_sigma),axis=0)
         if lo_int:
             preds[variant+"_pi95_low_physics"]=np.mean(np.stack(lo_int),axis=0); preds[variant+"_pi95_high_physics"]=np.mean(np.stack(hi_int),axis=0)
@@ -2072,18 +2218,20 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     by_seed=pd.DataFrame(results); summary=_aggregate_seed_metrics(results)
     summary.to_csv(out/"ablation_metrics.csv",index=False); by_seed.to_csv(out/"ablation_metrics_by_seed.csv",index=False); preds.to_csv(out/"ablation_predictions.csv",index=False)
     (out/"ablation_design.json").write_text(json.dumps({
-        "proposal":"SafeGrip-CI v1.2 risk-aware selective physics correction",
+        "proposal":"SafeGrip-CI v1.3 counterfactual-energy guided selective physics correction",
         "primary_variants":variants,
         "semantic_specs":semantic,
         "key_comparisons":[
-            "safegrip_base_temporal vs safegrip tests the net gain of physics/risk mechanisms over the direct estimator",
-            "safegrip_no_dynamic_loss vs safegrip tests explicit friction-change supervision",
-            "safegrip_no_safety_loss vs safegrip tests asymmetric unsafe-overestimation training",
-            "safegrip_no_physics_residual vs safegrip tests whether inverse-dynamics correction improves the direct estimate",
+            "safegrip_base_temporal vs safegrip tests the net gain of the complete selective-physics mechanism over the matched temporal estimator",
+            "safegrip_no_safety_loss vs safegrip tests metric-aligned unsafe-overestimation training",
+            "safegrip_no_physics_residual vs safegrip tests whether the counterfactual energy candidate improves the direct estimate",
             "safegrip_no_utility_gate vs safegrip tests selective correction against unconditional physics correction",
-            "safegrip_no_identifiability vs safegrip tests counterfactual observability as a gate feature",
+            "safegrip_no_identifiability vs safegrip tests entropy-derived local identifiability as selector evidence",
+            "safegrip_no_magnitude_head vs safegrip tests separating help probability from correction magnitude",
+            "safegrip_no_energy_improvement vs safegrip tests whether counterfactual residual improvement is useful inference-time evidence",
+            "safegrip_no_contrastive_dynamics vs safegrip tests friction-discriminative contrastive dynamics pretraining",
+            "safegrip_no_do_no_harm vs safegrip tests the explicit correction harm penalty",
             "safegrip_no_bound vs safegrip tests the physics feasible-set safety projection",
-            "safegrip_no_regime_head vs safegrip tests transition-aware temporal regularization",
             "safegrip_no_heteroscedastic vs safegrip tests uncertainty-aware representation training",
             "safegrip_no_uq vs safegrip is the UQ-only control with identical point path",
         ],

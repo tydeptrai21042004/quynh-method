@@ -1318,11 +1318,414 @@ class SafeGripCI12Net(nn.Module):
         return d["prediction"], d["latent"], d["reliability"]
 
 
+class SafeGripCI13Net(SafeGripCI12Net):
+    """SafeGrip-CI v1.3: counterfactual-energy guided selective physics.
+
+    v1.3 replaces the single finite-difference/Gauss--Newton physics step with
+    an explicit local friction-hypothesis energy landscape.  The dynamics model
+    evaluates K nearby friction hypotheses, a soft energy posterior forms the
+    physics candidate, entropy measures local identifiability, and two separate
+    heads answer the two questions that were entangled in v1.2:
+
+      1. ``benefit_probability``: should the physics candidate be trusted?
+      2. ``correction_fraction``: if trusted, how much of it should be applied?
+
+    The final correction gate is their product.  All physics evidence entering
+    the point path is detached, so the point-estimation loss cannot make the
+    dynamics model look artificially informative.  The dynamics model is meant
+    to be trained with the multi-negative contrastive objective implemented in
+    :meth:`counterfactual_dynamics_loss`.
+    """
+
+    def __init__(
+        self,
+        d: int,
+        dynamics_indices: list[int] | tuple[int, ...] | None = None,
+        hidden: int = 96,
+        gru_hidden: int = 96,
+        dropout: float = 0.10,
+        conv_channels: int | None = None,
+        gru_layers: int = 2,
+        counterfactual_delta: float = 0.08,
+        identifiability_lambda: float = 1e-3,
+        inverse_dynamics_ridge: float = 1e-3,
+        inverse_dynamics_max_step: float = 0.10,
+        physics_correction_scale: float = 1.0,
+        use_physics_correction: bool = True,
+        use_utility_gate: bool = True,
+        use_identifiability_feature: bool = True,
+        use_bound: bool = True,
+        use_regime_head: bool = False,
+        use_aleatoric_feature: bool = True,
+        aleatoric_floor: float = 0.005,
+        energy_grid_points: int = 7,
+        energy_grid_radius: float | None = None,
+        energy_temperature: float = 0.35,
+        use_magnitude_head: bool = True,
+        use_energy_improvement_feature: bool = True,
+    ):
+        super().__init__(
+            d=d,
+            dynamics_indices=dynamics_indices,
+            hidden=hidden,
+            gru_hidden=gru_hidden,
+            dropout=dropout,
+            conv_channels=conv_channels,
+            gru_layers=gru_layers,
+            counterfactual_delta=counterfactual_delta,
+            identifiability_lambda=identifiability_lambda,
+            inverse_dynamics_ridge=inverse_dynamics_ridge,
+            inverse_dynamics_max_step=inverse_dynamics_max_step,
+            physics_correction_scale=physics_correction_scale,
+            use_physics_correction=use_physics_correction,
+            use_utility_gate=use_utility_gate,
+            use_identifiability_feature=use_identifiability_feature,
+            use_bound=use_bound,
+            use_regime_head=use_regime_head,
+            use_aleatoric_feature=use_aleatoric_feature,
+            aleatoric_floor=aleatoric_floor,
+        )
+        points=max(3,int(energy_grid_points))
+        if points % 2 == 0:
+            points += 1
+        self.energy_grid_points=points
+        self.energy_grid_radius=max(
+            1e-4,
+            float(inverse_dynamics_max_step if energy_grid_radius is None else energy_grid_radius),
+        )
+        self.energy_temperature=max(1e-3,float(energy_temperature))
+        self.use_magnitude_head=bool(use_magnitude_head) and self.use_utility_gate
+        self.use_energy_improvement_feature=bool(use_energy_improvement_feature)
+
+        # Nine inference-available scalar signals accompany the temporal state:
+        # entropy identifiability, energy improvement, base residual, signed and
+        # absolute candidate step, posterior entropy, local curvature, optional
+        # regime change probability, and aleatoric scale.
+        gate_dim=self.hidden+9
+        self.benefit_head=nn.Sequential(
+            nn.Linear(gate_dim,self.hidden),nn.SiLU(),nn.LayerNorm(self.hidden),
+            nn.Dropout(dropout),nn.Linear(self.hidden,1),
+        )
+        self.magnitude_head=nn.Sequential(
+            nn.Linear(gate_dim,self.hidden),nn.SiLU(),nn.LayerNorm(self.hidden),
+            nn.Dropout(dropout),nn.Linear(self.hidden,1),
+        )
+        nn.init.zeros_(self.benefit_head[-1].weight)
+        nn.init.constant_(self.benefit_head[-1].bias,-1.25)
+        nn.init.zeros_(self.magnitude_head[-1].weight)
+        nn.init.constant_(self.magnitude_head[-1].bias,0.0)
+
+        # v1.3 UQ representation uses identifiability + separate gate factors.
+        self.uq_fuse=nn.Sequential(
+            nn.Linear(self.hidden+6,self.hidden),nn.SiLU(),nn.LayerNorm(self.hidden)
+        )
+
+    def _candidate_offsets(self, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+        return torch.linspace(
+            -self.energy_grid_radius,self.energy_grid_radius,self.energy_grid_points,
+            dtype=dtype,device=device,
+        )
+
+    def _energy_landscape(
+        self, x: torch.Tensor, base_mu: torch.Tensor, upper: float | torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        """Evaluate local friction hypotheses with the detached dynamics model."""
+        idx=torch.as_tensor(self.dynamics_indices,dtype=torch.long,device=x.device)
+        observed=torch.index_select(x[:,-1,:],1,idx).detach()
+        dyn_h=self._encode_dynamics_context(x)
+        dyn_detached=dyn_h.detach()
+        upper_t=torch.as_tensor(upper,dtype=base_mu.dtype,device=base_mu.device)
+
+        mu0=base_mu.detach()
+        offsets=self._candidate_offsets(mu0.dtype,mu0.device)
+        candidates=torch.clamp(mu0[:,None]+offsets[None,:],min=0.0,max=upper_t)
+        bsz,k=candidates.shape
+        ctx=dyn_detached[:,None,:].expand(-1,k,-1).reshape(bsz*k,-1)
+        pred=self.dynamics_prediction_from_context(ctx,candidates.reshape(-1),upper)
+        pred=pred.reshape(bsz,k,-1).detach()
+        energies=torch.mean((pred-observed[:,None,:]).square(),dim=-1)
+
+        # Dimensionless per-sample scaling prevents arbitrary sensor scale from
+        # collapsing the soft energy posterior.  Temperature controls only the
+        # relative sharpness of the local landscape.
+        emin=energies.min(dim=-1,keepdim=True).values
+        spread=torch.mean(torch.abs(energies-emin),dim=-1,keepdim=True).clamp_min(1e-8)
+        logits=-(energies-emin)/(self.energy_temperature*spread)
+        weights=torch.softmax(logits,dim=-1)
+        # Convert posterior imbalance into a displacement from the base rather
+        # than averaging clipped hypothesis values directly.  This keeps a
+        # flat posterior neutral even when mu_B is near a physical boundary,
+        # where clipping would otherwise duplicate one side of the grid and
+        # create a spurious inward correction.
+        posterior_offset=torch.sum(weights*offsets[None,:],dim=-1)
+        candidate_mu=torch.clamp(mu0+posterior_offset,min=0.0,max=upper_t)
+        correction=torch.clamp(
+            candidate_mu-mu0,
+            min=-self.inverse_dynamics_max_step,
+            max=self.inverse_dynamics_max_step,
+        ).detach()
+
+        entropy=-(weights*torch.log(weights.clamp_min(1e-8))).sum(dim=-1)
+        entropy_norm=entropy/max(math.log(float(k)),1e-8)
+        identifiability=torch.clamp(1.0-entropy_norm,0.0,1.0).detach()
+
+        center=k//2
+        residual_base=energies[:,center]
+        # Evaluate the posterior-mean friction as a single interpretable
+        # candidate rather than treating posterior expected energy as the final
+        # physical residual.
+        g_candidate=self.dynamics_prediction_from_context(
+            dyn_detached,candidate_mu.detach(),upper
+        ).detach()
+        residual_candidate=torch.mean((g_candidate-observed).square(),dim=-1)
+        normalized_improvement=(residual_base-residual_candidate)/torch.clamp(
+            residual_base+residual_candidate,min=1e-8
+        )
+
+        if k>=3:
+            left=energies[:,center-1]
+            right=energies[:,center+1]
+            local_scale=torch.clamp(torch.mean(energies,dim=-1),min=1e-8)
+            curvature=torch.relu(left+right-2.0*residual_base)/local_scale
+        else:
+            curvature=torch.zeros_like(residual_base)
+
+        # A bounded separation statistic is retained as ``information_raw`` for
+        # backward-compatible exporters.  v1.3 identifiability itself is entropy.
+        energy_mean=torch.mean(energies,dim=-1)
+        separation=(energy_mean-energies.min(dim=-1).values)/torch.clamp(
+            energy_mean+energies.min(dim=-1).values,min=1e-8
+        )
+        separation=torch.clamp(separation,min=0.0,max=1.0)
+        return {
+            "context":dyn_h,
+            "candidate_grid":candidates.detach(),
+            "energy_grid":energies.detach(),
+            "energy_weights":weights.detach(),
+            "candidate_mu":candidate_mu.detach(),
+            "correction":correction,
+            "identifiability":identifiability,
+            "posterior_entropy":entropy_norm.detach(),
+            "information_raw":separation.detach(),
+            "residual_base":residual_base.detach(),
+            "residual_candidate":residual_candidate.detach(),
+            "normalized_improvement":normalized_improvement.detach(),
+            "energy_curvature":curvature.detach(),
+        }
+
+    def counterfactual_dynamics_loss(
+        self,
+        x: torch.Tensor,
+        true_mu: torch.Tensor,
+        upper: float | torch.Tensor = 1.3,
+        temperature: float = 0.25,
+        negatives: int = 6,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Multi-negative contrastive objective that forces G to use friction.
+
+        The positive hypothesis is the labelled training friction.  Symmetric
+        negative hypotheses are generated around it and the energy of the true
+        friction is trained to rank below all alternatives.  Labels are used
+        only in this training objective; inference remains label free.
+        """
+        context=self._encode_dynamics_context(x)
+        idx=torch.as_tensor(self.dynamics_indices,dtype=torch.long,device=x.device)
+        target=torch.index_select(x[:,-1,:],1,idx)
+        upper_t=torch.as_tensor(upper,dtype=true_mu.dtype,device=true_mu.device)
+        n=max(2,int(negatives))
+        # Use evenly-spaced non-zero offsets with a wider range than the local
+        # inference grid so the dynamics representation must discriminate mu.
+        half=max(1,n//2)
+        mag=torch.linspace(
+            self.counterfactual_delta,
+            max(self.counterfactual_delta,self.energy_grid_radius*1.5),
+            half,dtype=true_mu.dtype,device=true_mu.device,
+        )
+        offsets=torch.cat([-torch.flip(mag,dims=[0]),mag],dim=0)
+        if offsets.numel()>n:
+            offsets=offsets[:n]
+        wrong=torch.clamp(true_mu[:,None]+offsets[None,:],min=0.0,max=upper_t)
+        hypotheses=torch.cat([true_mu[:,None],wrong],dim=-1)
+        bsz,k=hypotheses.shape
+        ctx=context[:,None,:].expand(-1,k,-1).reshape(bsz*k,-1)
+        pred=self.dynamics_prediction_from_context(ctx,hypotheses.reshape(-1),upper)
+        pred=pred.reshape(bsz,k,-1)
+        energy=torch.mean((pred-target[:,None,:]).square(),dim=-1)
+        scale=torch.mean(torch.abs(energy-energy[:,:1]),dim=-1,keepdim=True).detach().clamp_min(1e-6)
+        logits=-(energy-energy.min(dim=-1,keepdim=True).values)/(max(float(temperature),1e-3)*scale)
+        labels=torch.zeros(bsz,dtype=torch.long,device=x.device)
+        loss=nn.functional.cross_entropy(logits,labels)
+        positive=energy[:,0]
+        best_negative=energy[:,1:].min(dim=-1).values
+        stats={
+            "positive_energy":positive.detach(),
+            "best_negative_energy":best_negative.detach(),
+            "ranking_accuracy":(positive<best_negative).to(x.dtype).mean().detach(),
+        }
+        return loss,stats
+
+    def _physics_evidence(
+        self, x: torch.Tensor, base_mu: torch.Tensor, upper: float | torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        # Compatibility hook: callers of the old private method receive v1.3
+        # landscape evidence instead of a Gauss--Newton derivative.
+        return self._energy_landscape(x,base_mu,upper)
+
+    def forward_details(
+        self,
+        x: torch.Tensor,
+        lower: torch.Tensor | None = None,
+        upper: float | torch.Tensor = 1.3,
+        excitation: torch.Tensor | None = None,
+        prior_mu: torch.Tensor | None = None,
+        prior_mask: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        del excitation,prior_mu,prior_mask
+        h=self.encode(x)
+        base_mu,base_latent=self._base_prediction(h,upper)
+        change_probability=(
+            torch.sigmoid(self.change_head(h).squeeze(-1))
+            if self.use_regime_head else torch.zeros_like(base_mu)
+        )
+        aleatoric_scale=(
+            nn.functional.softplus(self.aleatoric_head(h).squeeze(-1))+self.aleatoric_floor
+            if self.use_aleatoric_feature else torch.full_like(base_mu,self.aleatoric_floor)
+        )
+
+        phys=self._energy_landscape(x,base_mu,upper)
+        ident=phys["identifiability"]
+        corr=phys["correction"] if self.use_physics_correction else torch.zeros_like(base_mu)
+        upper_scalar=max(float(torch.as_tensor(upper).detach().cpu()),1e-6)
+        ident_feature=ident if self.use_identifiability_feature else torch.zeros_like(ident)
+        improve_feature=(
+            phys["normalized_improvement"] if self.use_energy_improvement_feature
+            else torch.zeros_like(base_mu)
+        )
+        residual_feature=torch.log1p(torch.clamp(phys["residual_base"],min=0.0))
+        corr_feature=corr/max(self.inverse_dynamics_max_step,1e-6)
+        abs_corr_feature=torch.abs(corr_feature)
+        # Do not feed posterior entropy separately from identifiability: they
+        # are complements, so doing both would make the no-identifiability
+        # ablation leak the very feature it is meant to remove.  Energy
+        # separation is a distinct counterfactual-evidence statistic.
+        separation_feature=phys["information_raw"]
+        curvature_feature=torch.tanh(torch.clamp(phys["energy_curvature"],min=0.0))
+        scale_feature=(
+            torch.clamp(aleatoric_scale/upper_scalar,0.0,2.0)
+            if self.use_aleatoric_feature else torch.zeros_like(base_mu)
+        )
+        gate_scalars=torch.stack([
+            ident_feature,improve_feature,residual_feature,corr_feature,
+            abs_corr_feature,separation_feature,curvature_feature,
+            change_probability,scale_feature,
+        ],dim=-1)
+        gate_input=torch.cat([h,gate_scalars],dim=-1)
+
+        if not self.use_physics_correction:
+            benefit_probability=torch.zeros_like(base_mu)
+            correction_fraction=torch.zeros_like(base_mu)
+            benefit_logit=torch.full_like(base_mu,-20.0)
+            magnitude_logit=torch.full_like(base_mu,-20.0)
+        elif not self.use_utility_gate:
+            benefit_probability=torch.ones_like(base_mu)
+            correction_fraction=torch.ones_like(base_mu)
+            benefit_logit=torch.full_like(base_mu,20.0)
+            magnitude_logit=torch.full_like(base_mu,20.0)
+        else:
+            benefit_logit=self.benefit_head(gate_input).squeeze(-1)
+            benefit_probability=torch.sigmoid(benefit_logit)
+            if self.use_magnitude_head:
+                magnitude_logit=self.magnitude_head(gate_input).squeeze(-1)
+                correction_fraction=torch.sigmoid(magnitude_logit)
+            else:
+                magnitude_logit=torch.full_like(base_mu,20.0)
+                correction_fraction=torch.ones_like(base_mu)
+
+        gate=benefit_probability*correction_fraction
+        applied_correction=gate*self.physics_correction_scale*corr
+        raw_prediction=base_mu+applied_correction
+        prediction=self._project(raw_prediction,lower,upper)
+        physics_candidate_raw=base_mu+self.physics_correction_scale*corr
+        physics_candidate=self._project(physics_candidate_raw,lower,upper)
+
+        dyn_h_det=phys["context"].detach()
+        idx=torch.as_tensor(self.dynamics_indices,dtype=torch.long,device=x.device)
+        observed=torch.index_select(x[:,-1,:],1,idx).detach()
+        g_final=self.dynamics_prediction_from_context(dyn_h_det,prediction.detach(),upper).detach()
+        residual_final=torch.mean((observed-g_final).square(),dim=-1)
+
+        upper_t=torch.as_tensor(upper,dtype=prediction.dtype,device=prediction.device)
+        frac=torch.clamp(prediction/torch.clamp(upper_t,min=1e-6),1e-5,1.0-1e-5)
+        latent=self._logit(frac)
+        benefit_confidence=torch.clamp(2.0*torch.abs(benefit_probability-0.5),0.0,1.0)
+        uq_scalars=torch.stack([
+            ident,benefit_probability,correction_fraction,gate,
+            benefit_confidence,torch.clamp(scale_feature,0.0,1.0),
+        ],dim=-1)
+        uq_h=self.uq_fuse(torch.cat([h,uq_scalars],dim=-1))
+
+        zero=torch.zeros_like(prediction); one=torch.ones_like(prediction)
+        return {
+            "prediction":prediction,
+            "raw_prediction":raw_prediction,
+            "base_prediction":base_mu,
+            "prior_prediction":base_mu,
+            "context_prior_prediction":base_mu,
+            "candidate_prediction":physics_candidate,
+            "inverse_candidate_prediction":physics_candidate,
+            "inverse_candidate_raw":physics_candidate_raw,
+            "latent":latent,
+            "prior_latent":base_latent,
+            "evidence_delta":corr,
+            "innovation":corr,
+            "effective_innovation":applied_correction,
+            "fused_delta_mu":applied_correction,
+            "reliability":gate,
+            "authority":gate,
+            "physics_gate":gate,
+            "gate_logit":benefit_logit,
+            "benefit_probability":benefit_probability,
+            "benefit_logit":benefit_logit,
+            "correction_fraction":correction_fraction,
+            "magnitude_logit":magnitude_logit,
+            "identifiability":ident,
+            "acceptance":benefit_probability,
+            "information_raw":phys["information_raw"],
+            "posterior_entropy":phys["posterior_entropy"],
+            "energy_curvature":phys["energy_curvature"],
+            "dynamics_residual_prior":phys["residual_base"],
+            "dynamics_residual_candidate":phys["residual_candidate"],
+            "dynamics_residual_final":residual_final,
+            "normalized_improvement":phys["normalized_improvement"],
+            "veto_probability":1.0-benefit_probability,
+            "counterfactual_delta_mu":corr,
+            "counterfactual_agreement":benefit_confidence,
+            "information_scale_cv":phys["posterior_entropy"],
+            "local_linearity":torch.clamp(phys["energy_curvature"],0.0,1.0),
+            "agreement_veto_probability":1.0-benefit_probability,
+            "persistent_state_used":zero,
+            "adaptive_persistence":zero,
+            "expert_weights":torch.stack([zero,1.0-gate,gate],dim=-1),
+            "expert_weight_prior":zero,
+            "expert_weight_neural":1.0-gate,
+            "expert_weight_inverse":gate,
+            "direction_agreement":torch.tanh(8.0*corr*applied_correction),
+            "magnitude_agreement":correction_fraction,
+            "change_probability":change_probability,
+            "aleatoric_scale":aleatoric_scale,
+            "physics_correction":corr,
+            "applied_physics_correction":applied_correction,
+            "gate_confidence":benefit_confidence,
+            "features":uq_h,
+        }
+
 # Legacy public names remain pinned to v1.1 so old experiments/tests are reproducible.
 SafeGripV3Net = SafeGripCI11Net
 SafeGripV2Net = SafeGripCI11Net
-# Current proposal alias.
+# v1.2 public alias retained for reproducibility.
 SafeGripV4Net = SafeGripCI12Net
+# Current v1.3 proposal alias.
+SafeGripV5Net = SafeGripCI13Net
 
 
 class SafeGripBackboneNet(nn.Module):

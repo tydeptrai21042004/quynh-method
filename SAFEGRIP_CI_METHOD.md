@@ -1,16 +1,9 @@
-# SafeGrip-CI method — current release v1.2
+# SafeGrip-CI method — current release v1.3
 
-The active SafeGrip-CI method is defined in **`SAFEGRIP_CI_V12_METHOD.md`**.
+The active proposal is **Counterfactual Energy-Guided Selective Physics Correction**.
 
-SafeGrip-CI v1.2 is a risk-aware selective-physics-correction estimator:
+A causal Conv1D+GRU produces the primary friction estimate. A separately pretrained friction-conditioned dynamics network scores a local grid of nearby friction hypotheses. Their energy posterior produces a physics candidate, posterior entropy gives local identifiability, and two learned heads separately estimate (1) whether physics is likely to help and (2) what fraction of the proposed correction should be used. The final correction is followed by the optional physical feasible-set projection and leakage-safe conformal UQ.
 
-1. a strong raw-sensor Conv1D+GRU network predicts the primary friction estimate;
-2. a separate friction-conditioned dynamics model measures local counterfactual observability;
-3. a damped inverse-dynamics step proposes a bounded residual correction;
-4. a learned utility gate predicts how much of that correction to apply using inference-available evidence;
-5. point training includes explicit friction-change, regime-change and unsafe-overestimation objectives;
-6. the final estimate is physically projected and uncertainty is calibrated by disjoint block-max split conformal prediction.
+The dynamics network is trained with endpoint reconstruction plus multi-negative counterfactual friction discrimination and is frozen by default during selective-correction training. The point objective includes direct base supervision, metric-aligned unsafe-overestimation loss, selector supervision, and an explicit do-no-harm term.
 
-The full v1.2 proposal has no recursive friction-state prior, adaptive persistence, direction/magnitude split, three-expert arbitration, agreement veto or multi-scale linearity authority chain.
-
-For exact equations, objective definitions, semantics and the primary ablation set, use `SAFEGRIP_CI_V12_METHOD.md`. `SAFEGRIP_CI_V11_METHOD.md`, `SAFEGRIP_V3_METHOD.md` and `SAFEGRIP_V2_METHOD.md` are historical implementation records only.
+See `SAFEGRIP_CI_V13_METHOD.md` for the complete method and equations. Historical v1.1/v1.2 implementations remain available for reproducibility in `SAFEGRIP_CI_V11_METHOD.md` and `SAFEGRIP_CI_V12_METHOD.md`.

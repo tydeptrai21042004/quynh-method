@@ -1,58 +1,42 @@
-# SafeGrip research protocol — v1.2.0
+# SafeGrip research protocol — v1.3.0
 
-## Primary question
+## Primary research question
 
-Can a strong raw-sensor temporal friction estimator be made **safer without sacrificing accuracy** by selectively applying a bounded inverse-dynamics residual only when inference-time evidence predicts that the correction is useful?
+Can a strong raw-sensor temporal friction estimator obtain a better **accuracy-safety trade-off** when a separately trained dynamics model is used only to construct an inference-time counterfactual friction-energy landscape and the resulting physics correction is selectively applied?
 
-## Claim boundary
+## Claim discipline
 
-SafeGrip-CI v1.2 is a hybrid estimator, not a complete tire model. Counterfactual sensitivity is interpreted as local friction observability, not as correctness. The inverse-dynamics branch is a local residual correction, not an independent ground-truth physics estimator. Physical projection is a safety constraint and must not be credited with RMSE improvement unless controlled ablations support that statement.
+SafeGrip-CI v1.3 is a hybrid estimator, not a complete tire model. Low counterfactual energy is evidence of compatibility with the learned dynamics model, not proof of physical truth. Entropy-derived identifiability measures concentration of the local energy landscape, not correctness. Physical projection is a safety constraint. No superiority claim is valid until the locked real-LiRA TRUST/PAPER protocol is rerun.
 
-No v1.2 superiority claim is valid until a new locked real-LiRA TRUST/PAPER run is completed. Historical v1.0/v1.1 results only motivate the redesign.
+## Locked point path
 
-## Full point estimator
+1. causal raw-sensor Conv1D+GRU base estimate;
+2. separately pretrained friction-conditioned dynamics model;
+3. odd local grid of counterfactual friction hypotheses around the detached base estimate;
+4. dynamics-energy posterior and posterior-mean physics candidate;
+5. entropy identifiability, energy-improvement and curvature evidence;
+6. help-probability head and correction-fraction head;
+7. selective correction with explicit do-no-harm and metric-aligned overestimation training;
+8. optional conditional physical projection;
+9. disjoint block-max split-conformal UQ calibration.
 
-The full estimator is specified in `SAFEGRIP_CI_V12_METHOD.md`:
+## Leakage controls
 
-1. Conv1D + multi-layer GRU temporal representation from raw causal sensor windows;
-2. direct neural friction estimate;
-3. separate friction-conditioned causal dynamics model;
-4. single-scale local counterfactual observability;
-5. damped, trust-region-bounded inverse-dynamics residual correction;
-6. learned correction-utility gate using inference-available evidence only;
-7. explicit friction-change and regime-change supervision;
-8. asymmetric unsafe-overestimation loss;
-9. physical feasible-set projection;
-10. heteroscedastic evidence plus disjoint block-max split-conformal UQ.
+- Dataset split precedes partition-local imputation/scaling.
+- Temporal windows cannot cross trajectory/segment/split boundaries.
+- Test labels are locked during tuning.
+- Oracle help/fraction targets are training-only and are never inference inputs.
+- Physics evidence is detached before selector/point use.
+- Dynamics is pretrained separately and frozen by default during selector training.
+- Lower-bound calibration and predictive-UQ calibration use disjoint roles.
 
-The full proposal does not consume the handcrafted SafeGrip excitation proxy and does not recursively feed the previous friction prediction into the point estimator.
+## Required evaluation
 
-## Leakage and split roles
-
-Training labels are used only on training endpoints. Hyperparameter selection is validation-only. Lower-bound calibration and UQ calibration remain disjoint roles. Test labels are used only for final evaluation/statistics. Tuning manifests must prove proposal/baseline validation-endpoint parity.
-
-## Dynamics branch separation
-
-The dynamics model is trained with true training friction labels and a counterfactual ranking loss. Local physics evidence is detached before entering the point correction/gate path, preventing point loss from improving by distorting the dynamics model. The utility-gate target is constructed only from training labels; inference receives no friction label.
-
-## Required primary ablations
-
-1. `safegrip_base_temporal`;
-2. `safegrip_no_dynamic_loss`;
-3. `safegrip_no_safety_loss`;
-4. `safegrip_no_physics_residual`;
-5. `safegrip_no_utility_gate`;
-6. `safegrip_no_identifiability`;
-7. `safegrip_no_bound`;
-8. `safegrip_no_regime_head`;
-9. `safegrip_no_heteroscedastic`;
-10. `safegrip_no_uq`;
-11. `safegrip`.
-
-The primary table uses frozen full-model hyperparameters. Optional retuned ablations are supplementary only.
-
-## Selection and reporting
-
-Validation RMSE remains the point-estimator selection metric. Final reporting must include MAE, RMSE, R2, unsafe-overestimation mean/rate, per-seed variability, paired hierarchical bootstrap comparisons, base/final/full-physics-candidate RMSE, correction-vs-needed correlation, utility-gate diagnostics, observability, change probability, aleatoric evidence, physical projection rates, PICP and MPIW.
-
-A strong paper claim should require positive R2 and a competitive accuracy-safety trade-off against the strongest literature comparator, not merely a lower unsafe rate with substantially worse point accuracy.
+- matched seeds and test endpoints;
+- strong published literature baselines;
+- matched temporal-base control;
+- projection-parity and label/feature-budget fairness controls;
+- hierarchical seed/trajectory statistics;
+- all 13 primary v1.3 ablations;
+- selector diagnostics: help probability, correction fraction, identifiability/entropy, correction coverage and harm rate;
+- real-data scientific-health gates before any paper-ready claim.

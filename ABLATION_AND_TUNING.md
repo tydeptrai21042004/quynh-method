@@ -1,81 +1,50 @@
-# SafeGrip-CI v1.2 ablation and hyperparameter protocol
+# SafeGrip-CI v1.3 ablation and hyperparameter protocol
 
-## 1. Scientific question
+## Primary question
 
-The primary question is whether selective physics correction improves the **accuracy-safety trade-off** of a strong raw-sensor temporal estimator. The ablation table therefore tests one v1.2 mechanism at a time instead of mixing historical v1.0/v1.1 gates.
+The ablation table must test whether the **counterfactual-energy selective correction** improves a matched temporal estimator and which pieces are necessary. Historical v1.0/v1.1/v1.2 mechanisms are not mixed into the primary table.
 
-## 2. Controlled primary ablation
+## Primary controlled variants
 
-All primary variants use identical data splits, endpoint identities and seeds. In the frozen primary table, every variant reuses the selected full-model hyperparameters unless disabling a component necessarily makes its associated weight irrelevant.
+1. `safegrip_base_temporal` — matched direct temporal estimator, no physics correction.
+2. `safegrip_no_safety_loss` — removes metric-aligned overestimation objective.
+3. `safegrip_no_physics_residual` — removes counterfactual physics correction.
+4. `safegrip_no_utility_gate` — applies the physics correction unconditionally.
+5. `safegrip_no_identifiability` — removes entropy-identifiability selector evidence.
+6. `safegrip_no_magnitude_head` — uses help probability without a learned correction fraction.
+7. `safegrip_no_energy_improvement` — removes candidate-vs-base energy-improvement evidence.
+8. `safegrip_no_contrastive_dynamics` — removes friction-discriminative counterfactual dynamics loss.
+9. `safegrip_no_do_no_harm` — removes correction-harm regularization.
+10. `safegrip_no_bound` — removes the conditional physics projection.
+11. `safegrip_no_heteroscedastic` — removes heteroscedastic training/evidence.
+12. `safegrip_no_uq` — identical point path, no predictive UQ layer.
+13. `safegrip` — full v1.3 proposal.
 
-- `safegrip_base_temporal`: direct Conv1D+GRU estimator, no physics residual path.
-- `safegrip_no_dynamic_loss`: removes explicit friction-change supervision.
-- `safegrip_no_safety_loss`: removes asymmetric unsafe-overestimation training penalty.
-- `safegrip_no_physics_residual`: disables inverse-dynamics point correction while retaining the strong base estimator.
-- `safegrip_no_utility_gate`: applies the available bounded physics correction without learned selective gating.
-- `safegrip_no_identifiability`: removes counterfactual observability from utility-gate evidence.
-- `safegrip_no_bound`: removes final physical projection.
-- `safegrip_no_regime_head`: removes regime-change supervision/feature.
-- `safegrip_no_heteroscedastic`: removes heteroscedastic training evidence.
-- `safegrip_no_uq`: identical point model with predictive UQ disabled.
-- `safegrip`: full v1.2 proposal.
+All variants use the same selected point-model hyperparameters unless a separately labelled retuned-ablation study is run.
 
-The decisive comparisons are the full model versus each variant above. The `no_uq` variant is expected to have identical point predictions and is excluded from point-path distinctness checks.
+## Validation-only point-model tuning
 
-## 3. Frozen versus retuned ablations
+The main v1.3 search includes temporal capacity/optimizer settings plus:
 
-The primary ablation must remain frozen after selecting the full proposal. This isolates mechanisms. A separately labelled supplementary retuned-ablation experiment may be used to test whether a removed component simply changes the optimum hyperparameter region; it must not replace the frozen table.
+- sequence length and scaler (`minmax` / `standard`);
+- counterfactual grid points, radius and energy temperature;
+- physics correction scale/trust-region size;
+- base-pretraining duration;
+- base and safety loss weights;
+- help-head and correction-fraction loss weights;
+- do-no-harm weight;
+- counterfactual dynamics loss weight/temperature/negative count;
+- dynamics-pretraining duration;
+- heteroscedastic representation loss.
 
-## 4. v1.2 point-model search space
+The primary selection metric is validation RMSE, identical in role to comparator selection. Test labels are never consulted by tuning.
 
-Point-RMSE tuning is validation-only. The test set remains locked.
+## Sensitivity analysis
 
-### Temporal representation
+After selection, one-factor-at-a-time validation sensitivity focuses on:
 
-- `sequence_length`: 32, 48, 64, 100
-- `hidden`: 64, 96, 128
-- `gru_hidden`: 64, 96, 128
-- `conv_channels`: 32, 48, 64
-- `gru_layers`: 1, 2
-- dropout, learning rate, weight decay, batch size and Huber beta
+`physics_correction_scale`, `energy_grid_points`, `energy_grid_radius`, `energy_temperature`, `base_loss_weight`, `safety_loss_weight`, `benefit_gate_loss_weight`, `correction_fraction_loss_weight`, `do_no_harm_weight`, `counterfactual_loss_weight`, `contrastive_temperature`, and `dynamics_pretrain_epochs`.
 
-### Physics residual
+## Interpretation rule
 
-- `counterfactual_delta`
-- `identifiability_lambda`
-- `inverse_dynamics_ridge`
-- `inverse_dynamics_max_step`
-- `physics_correction_scale`
-- `dynamics_loss_weight`
-- `counterfactual_loss_weight`
-- `dynamics_pretrain_epochs`
-
-### Risk/dynamics/gate objectives
-
-- `base_loss_weight`
-- `dynamic_loss_weight`
-- `safety_loss_weight`
-- `unsafe_margin`
-- `utility_gate_loss_weight`
-- `change_loss_weight`
-- `change_threshold`
-- `smooth_loss_weight`
-- `heteroscedastic_loss_weight`
-
-UQ-only inflation/calibration parameters are not selected by final test RMSE.
-
-## 5. Tuning fairness
-
-For paper mode:
-
-1. proposal and literature baselines receive equal stated search-trial budgets;
-2. each tunes only on the locked validation endpoints;
-3. endpoint hashes must match across proposal/baseline tuning;
-4. final paper metrics use untouched test endpoints and five fixed seeds;
-5. hierarchical paired bootstrap resamples matched seeds and trajectory segments rather than treating overlapping windows as independent samples.
-
-## 6. Trust-mode success criteria
-
-TRUST is a scientific screening stage, not a paper claim. At minimum, require the automatic health/fairness/statistics/ablation gates to pass. For a strong final claim, target GRU-level or better RMSE while preserving the proposal's safety advantage, positive R2, non-degenerate prediction variance and calibrated but non-pathological intervals.
-
-No v1.2 superiority claim should be made from v1.1 results or synthetic smoke tests.
+A mechanism earns a paper claim only if the locked ablation shows a meaningful and reproducible effect. Near-identical predictions are evidence that the mechanism is inactive, not evidence of robustness. `safegrip_no_uq` is expected to have identical point predictions to the full model.

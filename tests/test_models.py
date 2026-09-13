@@ -368,3 +368,108 @@ def test_safegrip_v12_raw_inverse_candidate_is_pre_projection_correction():
     expected=d["base_prediction"]+0.5*d["physics_correction"]
     assert torch.allclose(d["inverse_candidate_raw"],expected,atol=1e-7)
     assert torch.all(d["inverse_candidate_prediction"]>=lo-1e-7)
+
+
+def test_safegrip_v13_energy_landscape_outputs_two_stage_selector():
+    from safegrip.models import SafeGripV5Net
+    torch.manual_seed(10)
+    model=SafeGripV5Net(6,hidden=24,gru_hidden=16,conv_channels=16,dropout=0.0,
+                        dynamics_indices=[0,1],energy_grid_points=7,energy_grid_radius=0.1)
+    x=torch.randn(5,12,6); lo=torch.linspace(0.05,0.25,5)
+    d=model.forward_details(x,lo,1.3)
+    required={"prediction","base_prediction","benefit_probability","correction_fraction",
+              "physics_gate","posterior_entropy","energy_curvature","normalized_improvement",
+              "identifiability","physics_correction"}
+    assert required <= set(d)
+    assert torch.all((d["benefit_probability"]>=0)&(d["benefit_probability"]<=1))
+    assert torch.all((d["correction_fraction"]>=0)&(d["correction_fraction"]<=1))
+    assert torch.allclose(d["physics_gate"],d["benefit_probability"]*d["correction_fraction"],atol=1e-7)
+    assert torch.all((d["identifiability"]>=0)&(d["identifiability"]<=1))
+    assert torch.all((d["posterior_entropy"]>=0)&(d["posterior_entropy"]<=1+1e-6))
+    assert torch.all(d["prediction"]>=lo-1e-7)
+    assert torch.all(d["prediction"]<=1.3+1e-7)
+
+
+def test_safegrip_v13_flat_energy_landscape_has_zero_identifiability_and_no_step():
+    from safegrip.models import SafeGripV5Net
+    torch.manual_seed(11)
+    model=SafeGripV5Net(5,hidden=20,gru_hidden=12,conv_channels=12,dropout=0.0,
+                        dynamics_indices=[0,1])
+    # Zeroing the dynamics head makes every friction hypothesis identical.
+    for p in model.dynamics_head.parameters():
+        torch.nn.init.zeros_(p)
+    x=torch.randn(4,10,5); lo=torch.zeros(4)
+    d=model.forward_details(x,lo,1.3)
+    assert torch.allclose(d["identifiability"],torch.zeros_like(d["identifiability"]),atol=1e-6)
+    assert torch.allclose(d["physics_correction"],torch.zeros_like(d["physics_correction"]),atol=1e-6)
+    assert torch.allclose(d["prediction"],d["base_prediction"],atol=1e-6)
+
+
+def test_safegrip_v13_unconditional_ablation_applies_full_energy_candidate():
+    from safegrip.models import SafeGripV5Net
+    torch.manual_seed(12)
+    model=SafeGripV5Net(4,hidden=16,gru_hidden=8,conv_channels=8,dropout=0.0,
+                        dynamics_indices=[0],use_utility_gate=False,use_bound=False,
+                        physics_correction_scale=0.75)
+    d=model.forward_details(torch.randn(3,9,4),None,1.3)
+    assert torch.allclose(d["benefit_probability"],torch.ones_like(d["benefit_probability"]))
+    assert torch.allclose(d["correction_fraction"],torch.ones_like(d["correction_fraction"]))
+    expected=torch.clamp(d["base_prediction"]+0.75*d["physics_correction"],0.0,1.3)
+    assert torch.allclose(d["prediction"],expected,atol=1e-6)
+
+
+def test_safegrip_v13_contrastive_dynamics_loss_is_finite_and_differentiable():
+    from safegrip.models import SafeGripV5Net
+    torch.manual_seed(13)
+    model=SafeGripV5Net(5,hidden=20,gru_hidden=12,conv_channels=12,dropout=0.0,
+                        dynamics_indices=[0,1])
+    x=torch.randn(6,10,5); y=torch.rand(6)*1.2
+    loss,stats=model.counterfactual_dynamics_loss(x,y,1.3,temperature=0.25,negatives=6)
+    assert torch.isfinite(loss)
+    assert 0.0 <= float(stats["ranking_accuracy"]) <= 1.0
+    loss.backward()
+    grads=[p.grad for p in model.dynamics_head.parameters() if p.grad is not None]
+    assert grads and all(torch.isfinite(g).all() for g in grads)
+
+
+def test_safegrip_v13_flat_energy_is_neutral_near_upper_boundary():
+    """Clipped hypothesis grids must not create a fake inward correction."""
+    from safegrip.models import SafeGripV5Net
+    torch.manual_seed(14)
+    model=SafeGripV5Net(4,hidden=16,gru_hidden=8,conv_channels=8,dropout=0.0,
+                        dynamics_indices=[0],energy_grid_points=7,energy_grid_radius=0.2)
+    # Make the direct estimate very close to mu_upper and make all energy
+    # hypotheses identical.  A direct average of clipped grid values would be
+    # biased inward here; the v1.3 posterior-offset construction stays neutral.
+    for p in model.base_head.parameters():
+        torch.nn.init.zeros_(p)
+    torch.nn.init.constant_(model.base_head[-1].bias,8.0)
+    for p in model.dynamics_head.parameters():
+        torch.nn.init.zeros_(p)
+    d=model.forward_details(torch.randn(5,9,4),torch.zeros(5),1.3)
+    assert torch.all(d["base_prediction"]>1.29)
+    assert torch.allclose(d["identifiability"],torch.zeros_like(d["identifiability"]),atol=1e-6)
+    assert torch.allclose(d["physics_correction"],torch.zeros_like(d["physics_correction"]),atol=1e-6)
+
+
+def test_safegrip_v13_no_identifiability_does_not_leak_entropy_into_selector():
+    """The no-identifiability ablation must remove both I and its entropy complement."""
+    from safegrip.models import SafeGripV5Net
+    import types
+    torch.manual_seed(15)
+    model=SafeGripV5Net(5,hidden=20,gru_hidden=12,conv_channels=12,dropout=0.0,
+                        dynamics_indices=[0,1],use_identifiability_feature=False)
+    model.eval()
+    x=torch.randn(6,10,5); lo=torch.zeros(6)
+    with torch.no_grad():
+        ref=model.forward_details(x,lo,1.3)["benefit_probability"].clone()
+    original=model._energy_landscape
+    def altered(self,x_,base_,upper_):
+        out=original(x_,base_,upper_)
+        out["identifiability"]=torch.ones_like(out["identifiability"])
+        out["posterior_entropy"]=torch.zeros_like(out["posterior_entropy"])
+        return out
+    model._energy_landscape=types.MethodType(altered,model)
+    with torch.no_grad():
+        changed=model.forward_details(x,lo,1.3)["benefit_probability"]
+    assert torch.allclose(ref,changed,atol=1e-7)

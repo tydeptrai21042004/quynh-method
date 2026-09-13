@@ -1,25 +1,25 @@
 # Validation
 
-## SafeGrip-CI v1.2 checks
+## SafeGrip-CI v1.3 checks
 
-The repository regression suite verifies the literature comparator contracts, leakage-safe LiRA preprocessing, segment-safe windows, physics-bound behavior, historical v1.0/v1.1 compatibility, and the active v1.2 selective-physics path.
+The regression suite covers data leakage controls, LiRA preparation, physics support, literature comparator contracts, historical proposal compatibility, and the active v1.3 point path.
 
-The v1.2-specific tests cover:
+v1.3-specific tests verify:
 
-- direct temporal estimator + selective-physics outputs;
-- valid bounded point predictions;
-- zero friction sensitivity producing zero physics correction;
-- unconditional-physics ablation behavior;
-- inverse-dynamics trust-region step bounds;
-- deterministic removal of the heteroscedastic gate feature;
-- raw inverse-candidate construction before physical projection;
-- distinct semantic specifications for every primary v1.2 ablation;
-- v1.2 tuning-space parameters and sensitivity defaults.
+- counterfactual energy posterior outputs are finite and bounded;
+- entropy identifiability is in [0,1];
+- a flat energy landscape produces near-zero identifiability and no spurious correction;
+- the final gate equals help probability × correction fraction;
+- unconditional-physics ablation applies the complete candidate correction;
+- multi-negative contrastive dynamics loss is differentiable;
+- all 13 primary ablation semantic specifications are distinct where expected;
+- v1.3 tuning-space parameters are registered.
 
-A synthetic end-to-end smoke run is used only to verify training/prediction interfaces and numerical finiteness. It is not a real-data performance result.
+Before packaging, run:
 
-## Required real-data validation
+```bash
+PYTHONPATH=src pytest -q
+python -m compileall -q src tests
+```
 
-Run TRUST on LiRA before PAPER mode. TRUST must re-run the test suite, release audit, preprocessing/physics diagnostics, three-seed proposal/baseline benchmark, fairness controls, matched-seed/trajectory hierarchical statistics, and the complete primary v1.2 ablation. Any scientific-health failure keeps the release at `REVIEW` even when code/fairness audits pass.
-
-Paper mode additionally requires validation-only proposal/baseline tuning with identical endpoint hashes, five-seed final evaluation, controlled five-seed ablations and the repository paper-readiness gate.
+Real-data claims require TRUST on LiRA. TRUST must run release-audit verification, preprocessing/physics diagnostics, the three-seed proposal/baseline benchmark, fairness controls, hierarchical statistics, all primary ablations, and scientific-health checks. Code validation does not substitute for a successful real-data experiment.

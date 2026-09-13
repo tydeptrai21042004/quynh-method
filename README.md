@@ -1,14 +1,16 @@
-# SafeGrip-Open v1.2.0
+# SafeGrip-Open v1.3.0
 
-## SafeGrip-CI v1.2
+## SafeGrip-CI v1.3
 
-The active proposal is **Risk-Aware Selective Physics Correction**. A strong raw-sensor Conv1D+GRU temporal estimator owns the primary friction estimate; a separately trained friction-conditioned dynamics model provides a bounded local inverse-dynamics residual; and one learned utility gate decides how much of that physics residual to apply using inference-available observability, residual, regime-change and uncertainty evidence. The final point estimate is physically projected and uncertainty is calibrated with the existing leakage-safe conformal protocol.
+The active proposal is **Counterfactual Energy-Guided Selective Physics Correction**. A causal raw-sensor Conv1D+GRU owns the primary friction estimate. A separately pretrained friction-conditioned dynamics model scores a local grid of nearby friction hypotheses; the resulting energy posterior produces a physics candidate, normalized posterior entropy gives local identifiability, and two learned heads separately predict whether physics should help and how much of its correction should be applied.
 
-The full v1.2 path intentionally removes recursive friction persistence, adaptive persistence, direction/magnitude splitting and prior/neural/inverse three-way arbitration. Those mechanisms remain only for historical reproducibility. See `SAFEGRIP_CI_V12_METHOD.md` and `ABLATION_AND_TUNING.md`.
+Training is staged: temporal-base pretraining, friction-discriminative dynamics pretraining, then selective-correction training with dynamics frozen by default. The point objective includes direct base supervision, metric-aligned unsafe-overestimation loss at the reported +0.05 threshold, selector supervision and an explicit do-no-harm penalty. Physical projection and block-max split-conformal UQ remain separate safety/calibration layers.
+
+See `SAFEGRIP_CI_V13_METHOD.md`, `SAFEGRIP_CI_METHOD.md`, and `ABLATION_AND_TUNING.md`. Historical v1.1/v1.2 implementations remain available for reproducibility.
 
 ### Current evidence status
 
-v1.2 code has local unit/integration validation, but **no new real LiRA performance claim is made until TRUST is rerun**. The repository keeps the existing fairness, endpoint-parity, matched-seed/trajectory statistics and paper-readiness gates.
+The v1.3 implementation passes local unit/regression validation and an end-to-end synthetic training smoke test. **No v1.3 real-LiRA superiority claim is made until TRUST is rerun.** Existing v1.2 measurements are motivation for the redesign, not v1.3 results.
 
 ## Historical SafeGrip-CI v1.1
 
@@ -126,29 +128,30 @@ Paper-reported scores from non-matching protocols are stored as literature conte
 
 ## Proposal and ablations
 
-Full SafeGrip-CI v1.2:
+Full SafeGrip-CI v1.3:
 
 ```text
 raw causal sensor window
-   -> Conv1D + GRU temporal representation h_t
-   -> direct neural friction estimate mu_base
-   -> regime-change probability + aleatoric scale
+   -> Conv1D + GRU temporal state h_t
+   -> direct base friction estimate mu_B
 
-separate friction-conditioned dynamics model G(context, mu)
-   -> counterfactual local sensitivity / observability I_t
-   -> bounded inverse-dynamics residual correction dmu_ID
+separately pretrained friction-conditioned dynamics model G(context, mu)
+   -> local K-hypothesis friction energy landscape E(mu_k)
+   -> energy posterior w_k
+   -> posterior-mean physics candidate mu_P
+   -> entropy identifiability + energy improvement + curvature
 
-inference-available evidence
-   -> learned correction-utility gate g_t
+inference-available evidence + h_t
+   -> benefit probability p_help
+   -> correction fraction alpha
 
-mu_corr = mu_base + g_t * clipped(dmu_ID)
-   -> conditional physical projection
+g = p_help * alpha
+mu_raw = mu_B + g * scale * (mu_P - mu_B)
+   -> optional conditional physical projection
    -> residual-scale model + block-max split-conformal calibration
 ```
 
-The full proposal is trained with direct point/base regression, explicit friction-change loss, asymmetric unsafe-overestimation loss, correction-utility supervision, regime-change supervision, conditional smoothness, heteroscedastic residual training, and separate dynamics/counterfactual objectives.
-
-The controlled primary ablations are `safegrip_base_temporal`, `safegrip_no_dynamic_loss`, `safegrip_no_safety_loss`, `safegrip_no_physics_residual`, `safegrip_no_utility_gate`, `safegrip_no_identifiability`, `safegrip_no_bound`, `safegrip_no_regime_head`, `safegrip_no_heteroscedastic`, `safegrip_no_uq`, and the full `safegrip`. See `SAFEGRIP_CI_V12_METHOD.md` and `ABLATION_AND_TUNING.md`.
+The controlled primary ablations are `safegrip_base_temporal`, `safegrip_no_safety_loss`, `safegrip_no_physics_residual`, `safegrip_no_utility_gate`, `safegrip_no_identifiability`, `safegrip_no_magnitude_head`, `safegrip_no_energy_improvement`, `safegrip_no_contrastive_dynamics`, `safegrip_no_do_no_harm`, `safegrip_no_bound`, `safegrip_no_heteroscedastic`, `safegrip_no_uq`, and the full `safegrip`. See `SAFEGRIP_CI_V13_METHOD.md` and `ABLATION_AND_TUNING.md`.
 
 ## Fair validation tuning
 
@@ -160,7 +163,7 @@ safegrip tune --dataset lira --trials 80 --no-test
 
 Literature comparators use their own source-compatible spaces under the same validation endpoint contract. The primary selection metric for both proposal and comparators is **validation RMSE**; the test partition is locked during search.
 
-The v1.2 proposal search covers temporal representation/optimizer settings, counterfactual displacement, observability regularization, inverse-dynamics damping/trust-region size, physics-correction scale, base/dynamic/safety/utility-gate/regime/smoothness/heteroscedastic loss weights, and dynamics pretraining/ranking settings. Physical support constants and UQ-only calibration settings are not optimized against final test RMSE.
+The v1.3 proposal search covers temporal capacity/optimizer settings, sequence length and scaler, counterfactual grid size/radius/temperature, physics-correction scale, staged-pretraining duration, safety/help/fraction/do-no-harm loss weights, contrastive dynamics settings, and heteroscedastic representation training. Physical support constants and UQ-only calibration settings are not optimized against final test RMSE.
 
 After choosing `best_hparams.yaml`, run a separate validation-only stability study:
 

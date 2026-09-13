@@ -1,65 +1,19 @@
 # Implemented improvements
 
-## v1.2.0 — risk-aware selective physics correction
+## v1.3.0 — Counterfactual Energy-Guided Selective Physics Correction
 
-- made a Conv1D + multi-layer GRU raw-sensor temporal estimator the primary friction predictor;
-- removed recursive friction state, adaptive persistence, split direction/magnitude innovation and three-way arbitration from the full proposal;
-- kept inverse dynamics only as a bounded residual correction, not an equal full estimator;
-- added a learned correction-utility gate supervised by the training-time useful fraction of the physics correction;
-- redefined counterfactual identifiability strictly as local observability evidence;
-- detached physics evidence before the point/gate path so the point loss cannot improve by warping the dynamics model;
-- added explicit friction-change loss, regime-change supervision and conditional stable-regime smoothing;
-- added asymmetric unsafe-overestimation loss;
-- added a heteroscedastic aleatoric head while retaining disjoint block-max split-conformal calibration;
-- replaced the primary ablation set with 10 direct mechanism controls plus the full proposal;
-- updated proposal tuning/sensitivity to v1.2 point-relevant parameters;
-- added v1.2 regression tests and end-to-end synthetic execution validation.
-
-## v1.1.0 — dual-expert adaptive-state revision
-
-- added learned prior/neural/inverse arbitration;
-- promoted inverse dynamics from veto-only evidence to a correction expert;
-- added adaptive state persistence;
-- factorized neural innovation into direction and magnitude;
-- added scheduled teacher forcing for previous-state training;
-- removed multi-scale linearity discount and agreement veto from the full proposal path;
-- added disagreement-aware UQ inflation;
-- added v1.1 component ablations and regression tests.
-
-
-## v1.0.0 — multi-scale counterfactual-observability revision
-
-- replaced single-displacement friction sensitivity with three-scale counterfactual sensitivity;
-- added robust median information aggregation and cross-scale sensitivity-consistency discounting;
-- corrected the inverse-dynamics agreement normalization to use the full 0–1 range;
-- added an identifiability-weighted inverse-dynamics disagreement veto at inference;
-- added mechanism diagnostics for scale CV, local linearity and agreement-veto probability;
-- added primary ablations for single-scale counterfactuals, linearity consistency, agreement veto and counterfactual ranking;
-- added supplementary ablations for state-update loss, direction loss and dynamics pretraining;
-- expanded proposal tuning to state persistence, trust-region, agreement and optimization parameters that materially affect point estimates;
-- removed UQ-only `information_beta` from point-RMSE search;
-- added one-factor-at-a-time proposal sensitivity analysis on locked validation endpoints;
-- corrected previous-sample excitation alignment during proposal training;
-- synchronized package/readiness documentation with v1.0.0.
-
-# Implemented improvements
-
-## v0.9.0 — SafeGrip-CI trust-region revision
-
-- retained persistent friction-state carry with segment reset;
-- retained friction-conditioned counterfactual identifiability;
-- separated raw candidate-innovation supervision from accepted state-update authority;
-- replaced the nearly symmetric candidate acceptance gate with normalized counterfactual evidence and an asymmetric harmful-update veto;
-- added a detached local inverse-dynamics agreement target;
-- added `safegrip_no_cf_agreement` as a primary ablation;
-- kept handcrafted excitation only as an explicit comparator ablation;
-- retained bounded identified-set parameterization and disjoint lower-bound/UQ calibration roles;
-- exported `predictions_by_seed.csv` so per-seed performance and ensemble performance are not conflated;
-- replaced endpoint-only paired bootstrap assumptions with matched seed/trajectory-aware resampling;
-- restricted statistical comparisons to actual registered model predictions;
-- strengthened paper readiness checks for fairness outputs, tuning-endpoint parity, statistics outputs and the complete v0.9 ablation set;
-- synchronized package version and Kaggle trust entry points with v0.9.0.
-
-## v0.8.0 — historical baseline
-
-v0.8 introduced the persistent-state + counterfactual-identifiability redesign. Its real LiRA trust diagnostics motivated the v0.9 correction of innovation supervision, update authority, and statistical inference.
+- Added `SafeGripCI13Net` / `SafeGripV5Net` while retaining v1.2 for reproducibility.
+- Replaced the one-step finite-difference/Gauss--Newton correction with a local K-hypothesis friction-energy landscape.
+- Added energy-posterior physics candidate, normalized posterior entropy, entropy-derived identifiability, energy improvement and local curvature diagnostics.
+- Split the previous scalar utility gate into `benefit_probability` and `correction_fraction`; their product controls correction strength.
+- Added training-only useful-candidate classification and oracle correction-fraction supervision without leaking oracle signals to inference.
+- Added multi-negative contrastive friction discrimination to dynamics pretraining.
+- Added staged base pretraining, dynamics pretraining and selective-correction optimization; dynamics is frozen after pretraining by default.
+- Aligned unsafe-overestimation training to the reported +0.05 evaluation threshold.
+- Added explicit do-no-harm regularization against degradation from the direct base estimate.
+- Simplified the active v1.3 default by disabling legacy dynamic/regime/smoothness losses whose v1.2 ablations did not justify them.
+- Changed the proposal default scaler to MinMax while retaining validation-only scaler tuning against Standard scaling.
+- Added v1.3 ablations for magnitude head, energy-improvement evidence, contrastive dynamics, and do-no-harm training.
+- Extended prediction/benchmark exports with benefit probability, correction fraction, posterior entropy and energy curvature.
+- Updated tuning/sensitivity, Kaggle TRUST/PAPER drivers, paper-readiness checks and current method documentation for v1.3.
+- Added v1.3 model/registry/tuning tests and end-to-end synthetic training validation.

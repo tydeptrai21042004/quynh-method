@@ -1,29 +1,20 @@
-# SafeGrip-Open v1.2.0 — risk-aware selective physics-correction release
+# SafeGrip-Open v1.3.0 — counterfactual-energy selective-physics release
 
-v1.2.0 is a proposal redesign driven by the real v1.1 trust evidence. The previous full estimator was safer than the strongest GRU comparator but did not win on RMSE and its arbitration was dominated by the persistent prior. v1.2 therefore simplifies the point path instead of adding more gates.
+v1.3.0 redesigns the active proposal around a local counterfactual friction-energy landscape. It is motivated by the v1.2 real-LiRA evidence showing that the previous single Gauss--Newton correction and nearly constant utility gate did not yet justify their complexity.
 
-## Active proposal
+The active method now contains:
 
-- strong raw-sensor Conv1D + GRU temporal base estimator;
-- no recursive friction-state dependence in the full path;
-- separate friction-conditioned causal dynamics model;
-- counterfactual sensitivity used strictly as observability evidence;
-- bounded damped inverse-dynamics residual correction;
-- one learned correction-utility gate rather than prior/neural/inverse arbitration;
-- explicit friction-change and regime-change learning;
-- asymmetric unsafe-overestimation objective;
-- conditional physics projection;
-- heteroscedastic evidence and block-max split-conformal UQ.
+- a strong causal raw-sensor Conv1D+GRU base estimator;
+- a separately pretrained friction-conditioned dynamics model;
+- a K-hypothesis local friction-energy landscape;
+- posterior-mean physics candidate and entropy-derived identifiability;
+- separate help-probability and correction-magnitude heads;
+- multi-negative contrastive dynamics pretraining;
+- metric-aligned unsafe-overestimation and explicit do-no-harm objectives;
+- optional physical projection and disjoint block-max conformal UQ;
+- a 13-variant primary ablation family designed around the v1.3 claims;
+- validation-only tuning/sensitivity with test labels locked.
 
-## Experimental hardening
+Historical v1.1/v1.2 implementations and method documents remain for reproducibility.
 
-- 11-variant primary v1.2 ablation with one mechanism question per control;
-- v1.2 validation-only tuning/sensitivity space;
-- same validation-endpoint hash parity checks for proposal and tuned baselines;
-- same matched-seed/trajectory hierarchical bootstrap protocol;
-- same feature, label-budget, common-conformal and projection fairness controls;
-- release hash audit and paper-readiness gate updated to the v1.2 mechanism set.
-
-## Validation status
-
-The local repository unit/regression suite passes. A synthetic end-to-end execution smoke test is used only to check interfaces/training stability. It is **not** evidence that v1.2 beats any real-data baseline. Run TRUST on real LiRA before PAPER mode and report REVIEW if any scientific-health/fairness/statistics/ablation gate fails.
+Local tests/smoke runs validate implementation behavior only. A new real-LiRA TRUST/PAPER run is required before claiming v1.3 improves accuracy, safety, or the accuracy-safety trade-off over published baselines.

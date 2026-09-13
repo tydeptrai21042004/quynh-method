@@ -70,19 +70,19 @@ proposal:
   inverse_dynamics_ridge: 0.001
   inverse_dynamics_max_step: 0.1
   physics_correction_scale: 0.5
-  base_loss_weight: 0.75
-  dynamic_loss_weight: 0.25
+  base_loss_weight: 1.0
+  dynamic_loss_weight: 0.0
   safety_loss_weight: 0.2
-  unsafe_margin: 0.02
-  utility_gate_loss_weight: 0.3
+  unsafe_margin: 0.05
+  utility_gate_loss_weight: 0.35
   utility_gate_beta: 0.02
-  change_loss_weight: 0.1
+  change_loss_weight: 0.0
   change_threshold: 0.02
-  smooth_loss_weight: 0.05
+  smooth_loss_weight: 0.0
   heteroscedastic_loss_weight: 0.05
   aleatoric_floor: 0.005
   dynamics_loss_weight: 0.1
-  counterfactual_loss_weight: 0.05
+  counterfactual_loss_weight: 0.2
   counterfactual_margin: 0.02
   dynamics_pretrain_epochs: 8
   uq_epochs: 100
@@ -90,6 +90,21 @@ proposal:
   uq_scale_floor: 0.005
   information_beta: 0.5
   disagreement_beta: 0.25
+  scaler: minmax
+  energy_grid_points: 7
+  energy_grid_radius: 0.1
+  energy_temperature: 0.35
+  base_pretrain_epochs: 8
+  unsafe_temperature: 0.02
+  benefit_gate_loss_weight: 0.35
+  benefit_margin: 0.002
+  correction_fraction_loss_weight: 0.25
+  correction_fraction_beta: 0.05
+  do_no_harm_weight: 0.2
+  do_no_harm_margin: 0.002
+  contrastive_temperature: 0.25
+  contrastive_negatives: 6
+  freeze_dynamics_after_pretrain: true
 baseline:
   todorovic2022_cnn:
     sequence_length: 100
@@ -305,35 +320,26 @@ tuning:
     - 0.75
     - 1.0
     dynamic_loss_weight:
-    - 0.1
-    - 0.25
-    - 0.5
+    - 0.0
     safety_loss_weight:
     - 0.05
     - 0.1
     - 0.2
     - 0.35
     unsafe_margin:
-    - 0.0
-    - 0.02
     - 0.05
     utility_gate_loss_weight:
     - 0.1
     - 0.3
     - 0.5
     change_loss_weight:
-    - 0.05
-    - 0.1
-    - 0.2
+    - 0.0
     change_threshold:
     - 0.01
     - 0.02
     - 0.04
     smooth_loss_weight:
     - 0.0
-    - 0.03
-    - 0.05
-    - 0.1
     heteroscedastic_loss_weight:
     - 0.0
     - 0.03
@@ -344,9 +350,9 @@ tuning:
     - 0.1
     - 0.2
     counterfactual_loss_weight:
-    - 0.02
-    - 0.05
     - 0.1
+    - 0.2
+    - 0.35
     counterfactual_margin:
     - 0.0
     - 0.01
@@ -357,6 +363,45 @@ tuning:
     - 5
     - 8
     - 12
+    scaler:
+    - minmax
+    - standard
+    energy_grid_points:
+    - 5
+    - 7
+    - 9
+    energy_grid_radius:
+    - 0.06
+    - 0.1
+    - 0.14
+    energy_temperature:
+    - 0.2
+    - 0.35
+    - 0.5
+    base_pretrain_epochs:
+    - 5
+    - 8
+    - 12
+    benefit_gate_loss_weight:
+    - 0.2
+    - 0.35
+    - 0.5
+    correction_fraction_loss_weight:
+    - 0.1
+    - 0.25
+    - 0.4
+    do_no_harm_weight:
+    - 0.1
+    - 0.2
+    - 0.35
+    contrastive_temperature:
+    - 0.15
+    - 0.25
+    - 0.4
+    contrastive_negatives:
+    - 4
+    - 6
+    - 8
 physics_audit:
   max_bound_above_upper_rate: 0.01
 health:

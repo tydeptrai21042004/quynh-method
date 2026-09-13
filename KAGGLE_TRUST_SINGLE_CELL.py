@@ -1,5 +1,5 @@
 # ============================================================
-# SafeGrip-CI v1.2.0 — FULL CORRECTED KAGGLE SINGLE-CELL DRIVER
+# SafeGrip-CI v1.3.0 — FULL CORRECTED KAGGLE SINGLE-CELL DRIVER
 # Repository:
 #   https://github.com/tydeptrai21042004/quynh-method
 #
@@ -7,7 +7,7 @@
 #   MODE = "trust"
 #
 # TRUST MODE:
-#   - clone the corrected v1.2.0 repository and record exact git commit
+#   - clone the corrected v1.3.0 repository and record exact git commit
 #   - install paper/dev dependencies and run the full pytest suite
 #   - verify the release audit (core repo files/configs/tests/docs)
 #   - download + prepare the real LiRA friction subset
@@ -18,9 +18,9 @@
 #     projection parity)
 #   - export per-seed predictions
 #   - run hierarchical seed/trajectory bootstrap statistics
-#   - run the 15 primary SafeGrip-CI v1.2 ablations
+#   - run the 13 primary SafeGrip-CI v1.3 ablations
 #   - verify ablation semantic distinctness and prediction distinctness
-#   - create proposal-specific diagnostics for candidate/update authority
+#   - create proposal-specific diagnostics for energy candidate and two-stage selection
 #   - export a result ZIP even if the scientific gate says REVIEW
 #
 # PAPER MODE:
@@ -31,7 +31,7 @@
 #   - full 5-seed paper benchmark
 #   - fairness controls and per-seed prediction export
 #   - hierarchical seed/trajectory bootstrap statistics
-#   - 5-seed controlled v1.2 ablation of the temporal, dynamic, safety, physics, utility-gating, regime and UQ mechanisms
+#   - 5-seed controlled v1.3 ablation of temporal, safety, counterfactual-energy, two-stage selection, contrastive-dynamics, do-no-harm, bound and UQ mechanisms
 #   - excitation-proxy stratification (reviewer control)
 #   - physics robustness analysis
 #   - optional retuned-ablation / cross-route / scarcity analyses
@@ -46,10 +46,11 @@
 #   1) The full SafeGrip-CI proposal uses RAW sensor features for its point
 #      estimator. Handcrafted excitation is NOT a proposal input.
 #   2) `safegrip_excitation_proxy` is a controlled legacy comparison only.
-#   3) v1.2 separates raw candidate-innovation learning from update authority.
-#   4) v1.2 uses MULTI-SCALE counterfactual observability, cross-scale local-
-#      linearity consistency, residual veto, and an identifiability-aware
-#      inverse-dynamics disagreement veto.
+#   3) v1.3 evaluates a local friction-hypothesis energy landscape instead of
+#      trusting one finite-difference/Gauss--Newton correction.
+#   4) Entropy-derived identifiability, counterfactual energy improvement and
+#      uncertainty feed two separate selector heads: help probability and
+#      correction magnitude; dynamics is pretrained contrastively.
 #   5) Statistical inference uses matched seeds and trajectory segments, not
 #      highly overlapping endpoints as independent bootstrap units.
 #   6) Hyperparameter sensitivity is validation-only and never touches test labels.
@@ -73,15 +74,15 @@ from typing import Iterable
 # ------------------------------------------------------------
 # Run TRUST first. When it passes, change to PAPER and rerun the cell.
 MODE = "trust"  # "trust" or "paper"
-EXPECTED_VERSION = "1.2.0"
+EXPECTED_VERSION = "1.3.0"
 
-# Source selection. GitHub is the normal path. If the corrected v1.2 repository
-# has not been pushed yet, upload quynh-method-safegrip-v1.2-full.zip as a
+# Source selection. GitHub is the normal path. If the corrected v1.3 repository
+# has not been pushed yet, upload quynh-method-safegrip-v1.3-full.zip as a
 # Kaggle Dataset and set SOURCE_MODE = "kaggle_zip".
 SOURCE_MODE = "github"  # "github" or "kaggle_zip"
 GITHUB_REPO = "https://github.com/tydeptrai21042004/quynh-method.git"
 GITHUB_BRANCH = "main"
-KAGGLE_ZIP_PATH = ""  # optional exact path; blank => auto-discover v1.2 full ZIP under /kaggle/input
+KAGGLE_ZIP_PATH = ""  # optional exact path; blank => auto-discover v1.3 full ZIP under /kaggle/input
 
 # Paper tuning budget. Keep proposal and literature comparators equal for the
 # strongest tuning-budget fairness claim. Reduce both together only if needed.
@@ -90,19 +91,20 @@ BASELINE_TRIALS = 60
 TRUST_BOOTSTRAP_REPLICATES = 2000
 PAPER_BOOTSTRAP_REPLICATES = 5000
 
-# v1.2 validation-only one-factor hyperparameter stability study.
+# v1.3 validation-only one-factor hyperparameter stability study.
 RUN_SENSITIVITY = True
 SENSITIVITY_PARAMETERS = [
     "physics_correction_scale",
-    "inverse_dynamics_max_step",
-    "identifiability_lambda",
+    "energy_grid_points",
+    "energy_grid_radius",
+    "energy_temperature",
     "base_loss_weight",
-    "dynamic_loss_weight",
     "safety_loss_weight",
-    "utility_gate_loss_weight",
-    "change_loss_weight",
-    "smooth_loss_weight",
-    "heteroscedastic_loss_weight",
+    "benefit_gate_loss_weight",
+    "correction_fraction_loss_weight",
+    "do_no_harm_weight",
+    "counterfactual_loss_weight",
+    "contrastive_temperature",
     "dynamics_pretrain_epochs",
 ]
 SENSITIVITY_EPOCHS = None  # None => use tuning.epochs from config
@@ -115,16 +117,18 @@ RUN_SCARCITY = False
 RUN_EXTENDED_SCRIPT = False
 DOWNLOAD_AUX = False
 
-# 11 controlled mechanism/component variants for SafeGrip-CI v1.2.
+# 13 controlled mechanism/component variants for SafeGrip-CI v1.3.
 PRIMARY_ABLATIONS = [
     "safegrip_base_temporal",
-    "safegrip_no_dynamic_loss",
     "safegrip_no_safety_loss",
     "safegrip_no_physics_residual",
     "safegrip_no_utility_gate",
     "safegrip_no_identifiability",
+    "safegrip_no_magnitude_head",
+    "safegrip_no_energy_improvement",
+    "safegrip_no_contrastive_dynamics",
+    "safegrip_no_do_no_harm",
     "safegrip_no_bound",
-    "safegrip_no_regime_head",
     "safegrip_no_heteroscedastic",
     "safegrip_no_uq",
     "safegrip",
@@ -132,7 +136,7 @@ PRIMARY_ABLATIONS = [
 
 PRIMARY_ABLATIONS_CSV = ",".join(PRIMARY_ABLATIONS)
 
-# No extra primary optimization variants are required in v1.2; historical controls remain in the repository.
+# No extra primary optimization variants are required in v1.3; historical controls remain in the repository.
 SUPPLEMENTARY_ABLATIONS = []
 
 PAPER_ABLATIONS = PRIMARY_ABLATIONS[:-1] + SUPPLEMENTARY_ABLATIONS + ["safegrip"]
@@ -162,9 +166,9 @@ RELEASE_AUDIT_DRIVER_EXCLUSIONS = {
 WORK = Path("/kaggle/working")
 REPO = WORK / "quynh-method"
 
-TRUST_ZIP = WORK / "safegrip_ci_lira_trust_results_v120.zip"
-PAPER_ZIP = WORK / "safegrip_ci_paper_release_v120.zip"
-PAPER_REVIEW_ZIP = WORK / "safegrip_ci_paper_review_results_v120.zip"
+TRUST_ZIP = WORK / "safegrip_ci_lira_trust_results_v130.zip"
+PAPER_ZIP = WORK / "safegrip_ci_paper_release_v130.zip"
+PAPER_REVIEW_ZIP = WORK / "safegrip_ci_paper_review_results_v130.zip"
 
 
 # ------------------------------------------------------------
@@ -259,7 +263,7 @@ def verify_release_audit(repo: Path) -> dict:
     """Verify audited repository bytes, excluding only notebook-driver wrappers."""
     audit_path = repo / "RELEASE_AUDIT.json"
     if not audit_path.exists():
-        raise RuntimeError("RELEASE_AUDIT.json is missing from the corrected v1.2.0 repository.")
+        raise RuntimeError("RELEASE_AUDIT.json is missing from the corrected v1.3.0 repository.")
 
     audit = load_json(audit_path)
     release_name = str(audit.get("release", ""))
@@ -369,7 +373,7 @@ def verify_fairness_outputs(result_dir: Path, expect_feature_parity: bool = True
     ]
     if expect_feature_parity:
         required.append(result_dir / "feature_parity_metrics.csv")
-    require_files(required, "v1.2 fairness outputs")
+    require_files(required, "v1.3 fairness outputs")
 
     audit = load_json(result_dir / "fairness_audit.json")
     print("\nFAIRNESS AUDIT:\n", json.dumps(audit, indent=2))
@@ -379,14 +383,14 @@ def verify_fairness_outputs(result_dir: Path, expect_feature_parity: bool = True
 
 
 def verify_statistics_outputs(result_dir: Path) -> dict:
-    """Require v1.2 per-seed predictions and hierarchical statistical inference."""
+    """Require v1.3 per-seed predictions and hierarchical statistical inference."""
     required = [
         result_dir / "predictions_by_seed.csv",
         result_dir / "prediction_manifest.json",
         result_dir / "statistics" / "paired_bootstrap_rmse.csv",
         result_dir / "statistics" / "statistical_protocol.json",
     ]
-    require_files(required, "v1.2 statistical outputs")
+    require_files(required, "v1.3 statistical outputs")
 
     protocol = load_json(result_dir / "statistics" / "statistical_protocol.json")
     method = str(protocol.get("method", "")).lower()
@@ -408,7 +412,7 @@ def verify_statistics_outputs(result_dir: Path) -> dict:
     print("\nSTATISTICAL PROTOCOL AUDIT:\n", json.dumps(report, indent=2))
     if report["status"] != "PASS":
         raise RuntimeError(
-            "Statistical protocol does not match the v1.2 matched-seed/trajectory inference contract."
+            "Statistical protocol does not match the v1.3 matched-seed/trajectory inference contract."
         )
     return report
 
@@ -418,7 +422,7 @@ def verify_primary_ablation(
     expected_seed_count: int | None = None,
     expected_variants: list[str] | None = None,
 ) -> tuple[list[str], dict]:
-    """Require requested v1.2 ablations and validate semantic/runtime distinctness."""
+    """Require requested v1.3 ablations and validate semantic/runtime distinctness."""
     import numpy as np
     import pandas as pd
 
@@ -426,7 +430,7 @@ def verify_primary_ablation(
     seed_path = ablation_dir / "ablation_metrics_by_seed.csv"
     design_path = ablation_dir / "ablation_design.json"
     pred_path = ablation_dir / "ablation_predictions.csv"
-    require_files([metrics_path, seed_path, design_path, pred_path], "SafeGrip-CI v1.2 ablation")
+    require_files([metrics_path, seed_path, design_path, pred_path], "SafeGrip-CI v1.3 ablation")
 
     expected_variants = list(expected_variants or PRIMARY_ABLATIONS)
     point_distinct = [v for v in POINT_DISTINCT_ABLATIONS if v in expected_variants]
@@ -435,7 +439,7 @@ def verify_primary_ablation(
     models = set(df["model"].astype(str))
     missing = [v for v in expected_variants if v not in models]
     if missing:
-        raise RuntimeError("Primary v1.2 ablation is incomplete. Missing: " + ", ".join(missing))
+        raise RuntimeError("Primary v1.3 ablation is incomplete. Missing: " + ", ".join(missing))
 
     design = load_json(design_path)
     specs = design.get("semantic_specs", {})
@@ -508,24 +512,26 @@ def verify_primary_ablation(
         "expected_seed_count": expected_seed_count,
         "key_scientific_comparisons": [
             "safegrip_base_temporal vs safegrip",
-            "safegrip_no_dynamic_loss vs safegrip",
             "safegrip_no_safety_loss vs safegrip",
             "safegrip_no_physics_residual vs safegrip",
             "safegrip_no_utility_gate vs safegrip",
             "safegrip_no_identifiability vs safegrip",
+            "safegrip_no_magnitude_head vs safegrip",
+            "safegrip_no_energy_improvement vs safegrip",
+            "safegrip_no_contrastive_dynamics vs safegrip",
+            "safegrip_no_do_no_harm vs safegrip",
             "safegrip_no_bound vs safegrip",
-            "safegrip_no_regime_head vs safegrip",
             "safegrip_no_heteroscedastic vs safegrip",
             "safegrip_no_uq vs safegrip",
         ],
     }
-    out_path = ablation_dir / "ablation_semantic_audit_v120.json"
+    out_path = ablation_dir / "ablation_semantic_audit_v130.json"
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print("\nABLATION SEMANTIC AUDIT:\n", json.dumps(report, indent=2))
 
     if report["status"] != "PASS":
         raise RuntimeError(
-            "SafeGrip-CI v1.2 ablation semantic audit FAILED. "
+            "SafeGrip-CI v1.3 ablation semantic audit FAILED. "
             "Do not interpret the ablation table until duplicate/no-op paths are fixed."
         )
     return sorted(models), report
@@ -535,13 +541,13 @@ def verify_primary_ablation(
 # 4. PROPOSAL-SPECIFIC DIAGNOSTICS
 # ------------------------------------------------------------
 def write_ci_diagnostics(result_dir: Path, ablation_dir: Path | None = None) -> dict:
-    """Write v1.2 diagnostics for the base estimate, physics correction and utility gate."""
+    """Write v1.3 diagnostics for the base, energy candidate and two-stage selector."""
     import numpy as np
     import pandas as pd
 
     pred_path = result_dir / "predictions.csv"
     metrics_path = result_dir / "metrics.csv"
-    require_files([pred_path, metrics_path], "SafeGrip-CI v1.2 diagnostics")
+    require_files([pred_path, metrics_path], "SafeGrip-CI v1.3 diagnostics")
 
     p = pd.read_csv(pred_path)
     y = p["y_true"].to_numpy(float)
@@ -553,11 +559,15 @@ def write_ci_diagnostics(result_dir: Path, ablation_dir: Path | None = None) -> 
                 return p[name].to_numpy(float)
         return np.full_like(y, default, dtype=float)
 
-    # v1.2 names first; v1.1-compatible aliases are fallbacks so historical
+    # v1.3 names first; v1.1-compatible aliases are fallbacks so historical
     # result archives remain diagnosable by the same notebook.
     base = get_col("safegrip_base", "safegrip_base_prediction", "safegrip_prior", default=float("nan"))
-    physics_candidate = get_col("safegrip_inverse_candidate", "safegrip_candidate", default=float("nan"))
+    physics_candidate = get_col("safegrip_inverse_candidate_raw", "safegrip_inverse_candidate", "safegrip_candidate", default=float("nan"))
     gate = get_col("safegrip_physics_gate", "safegrip_reliability", default=float("nan"))
+    benefit = get_col("safegrip_benefit_probability", default=float("nan"))
+    fraction = get_col("safegrip_correction_fraction", default=float("nan"))
+    entropy = get_col("safegrip_posterior_entropy", default=float("nan"))
+    curvature = get_col("safegrip_energy_curvature", default=float("nan"))
     gate_conf = get_col("safegrip_gate_confidence", default=float("nan"))
     ident = get_col("safegrip_identifiability", default=float("nan"))
     correction = get_col("safegrip_physics_correction", "safegrip_counterfactual_delta_mu", default=0.0)
@@ -619,6 +629,13 @@ def write_ci_diagnostics(result_dir: Path, ablation_dir: Path | None = None) -> 
         "mean_abs_applied_physics_correction": float(np.nanmean(np.abs(applied))),
         "physics_gate_mean": float(np.nanmean(gate)),
         "physics_gate_std": float(np.nanstd(gate)),
+        "benefit_probability_mean": float(np.nanmean(benefit)),
+        "benefit_probability_std": float(np.nanstd(benefit)),
+        "correction_fraction_mean": float(np.nanmean(fraction)),
+        "correction_fraction_std": float(np.nanstd(fraction)),
+        "posterior_entropy_mean": float(np.nanmean(entropy)),
+        "posterior_entropy_std": float(np.nanstd(entropy)),
+        "energy_curvature_mean": float(np.nanmean(curvature)),
         "gate_confidence_mean": float(np.nanmean(gate_conf)),
         "counterfactual_identifiability_mean": float(np.nanmean(ident)),
         "counterfactual_identifiability_std": float(np.nanstd(ident)),
@@ -628,10 +645,12 @@ def write_ci_diagnostics(result_dir: Path, ablation_dir: Path | None = None) -> 
         "aleatoric_scale_std": float(np.nanstd(aleatoric)),
         "interpretation": {
             "base_estimator_rmse": "accuracy of the direct temporal estimator before physics correction",
-            "full_physics_candidate_rmse": "diagnostic only: accuracy if the bounded inverse-dynamics correction were applied without utility gating",
-            "physics_gate_vs_candidate_utility_correlation": "diagnostic association between the inference-time gate and whether the full physics candidate reduces absolute error; not a training or test-tuning target",
-            "applied_correction_vs_needed_correlation": "whether the selectively applied physics residual points toward the correction required by the target",
-            "counterfactual_identifiability": "local observability evidence for friction, not a claim that a correction is correct",
+            "full_physics_candidate_rmse": "diagnostic only: accuracy if the full counterfactual-energy candidate were applied without selective gating",
+            "physics_gate_vs_candidate_utility_correlation": "diagnostic association between the inference-time selector and whether the full energy candidate reduces absolute error; not a training or test-tuning target",
+            "applied_correction_vs_needed_correlation": "whether the selectively applied energy-guided correction points toward the correction required by the target",
+            "benefit_probability": "inference-time estimate that the physics candidate is useful; trained with training-only help labels",
+            "correction_fraction": "inference-time magnitude factor, separated from benefit probability",
+            "counterfactual_identifiability": "one minus normalized energy-posterior entropy; local identifiability evidence, not a correctness claim",
         },
     }
 
@@ -643,13 +662,15 @@ def write_ci_diagnostics(result_dir: Path, ablation_dir: Path | None = None) -> 
             comparisons = {}
             for name in [
                 "safegrip_base_temporal",
-                "safegrip_no_dynamic_loss",
                 "safegrip_no_safety_loss",
                 "safegrip_no_physics_residual",
                 "safegrip_no_utility_gate",
                 "safegrip_no_identifiability",
+                "safegrip_no_magnitude_head",
+                "safegrip_no_energy_improvement",
+                "safegrip_no_contrastive_dynamics",
+                "safegrip_no_do_no_harm",
                 "safegrip_no_bound",
-                "safegrip_no_regime_head",
                 "safegrip_no_heteroscedastic",
                 "safegrip_no_uq",
             ]:
@@ -666,9 +687,9 @@ def write_ci_diagnostics(result_dir: Path, ablation_dir: Path | None = None) -> 
                     }
             report["primary_ablation_comparisons"] = comparisons
 
-    out = result_dir / "ci_diagnostics_v120.json"
+    out = result_dir / "ci_diagnostics_v130.json"
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print("\nSAFEGRIP-CI v1.2 DIAGNOSTICS:\n", json.dumps(report, indent=2))
+    print("\nSAFEGRIP-CI v1.3 DIAGNOSTICS:\n", json.dumps(report, indent=2))
     return report
 
 
@@ -690,7 +711,7 @@ def stage_common_metadata(
         "SAFEGRIP_CI_METHOD.md",
         "SAFEGRIP_CI_V11_METHOD.md",
         "SAFEGRIP_CI_V12_METHOD.md",
-        "RELATED_WORK_V120.md",
+        "SAFEGRIP_CI_V13_METHOD.md",
         "PROPOSAL_IMPROVEMENT_REPORT.md",
         "RELATED_WORK_V090.md",
         "SAFEGRIP_V3_METHOD.md",
@@ -735,8 +756,8 @@ def stage_common_metadata(
         "run_scarcity": RUN_SCARCITY,
         "release_hash_audit": release_hash_audit,
         "proposal": (
-            "SafeGrip-CI v1.2: strong raw-sensor temporal estimator + counterfactual observability + "
-            "bounded inverse-dynamics residual correction + learned correction-utility gate + "
+            "SafeGrip-CI v1.3: strong raw-sensor temporal estimator + counterfactual energy landscape + "
+            "posterior-mean physics candidate + benefit gate x correction-fraction head + "
             "risk-aware training + physics projection + conformal UQ"
         ),
         "statistics": "paired hierarchical bootstrap over matched seeds and trajectory segments",
@@ -799,7 +820,7 @@ def make_review_or_release_zip(
 
 
 # ------------------------------------------------------------
-# 6. CLEAN + LOAD EXACT UPDATED v1.2 REPOSITORY
+# 6. CLEAN + LOAD EXACT UPDATED v1.3 REPOSITORY
 # ------------------------------------------------------------
 if MODE not in {"trust", "paper"}:
     raise ValueError('MODE must be "trust" or "paper".')
@@ -823,16 +844,16 @@ else:
         archive = Path(KAGGLE_ZIP_PATH)
         candidates = [archive]
     else:
-        candidates = sorted(Path("/kaggle/input").rglob("quynh-method-safegrip-v1.2-full.zip"))
+        candidates = sorted(Path("/kaggle/input").rglob("quynh-method-safegrip-v1.3-full.zip"))
         if not candidates:
-            candidates = sorted(Path("/kaggle/input").rglob("*safegrip*v1.2*.zip"))
+            candidates = sorted(Path("/kaggle/input").rglob("*safegrip*v1.3*.zip"))
     if not candidates or not candidates[0].exists():
         raise FileNotFoundError(
-            "SOURCE_MODE='kaggle_zip' but no SafeGrip-CI v1.2 ZIP was found under /kaggle/input. "
-            "Upload quynh-method-safegrip-v1.2-full.zip as a Kaggle Dataset or set KAGGLE_ZIP_PATH."
+            "SOURCE_MODE='kaggle_zip' but no SafeGrip-CI v1.3 ZIP was found under /kaggle/input. "
+            "Upload quynh-method-safegrip-v1.3-full.zip as a Kaggle Dataset or set KAGGLE_ZIP_PATH."
         )
     archive = candidates[0]
-    extract_dir = WORK / "_safegrip_v120_extract"
+    extract_dir = WORK / "_safegrip_v130_extract"
     shutil.rmtree(extract_dir, ignore_errors=True)
     extract_dir.mkdir(parents=True, exist_ok=True)
     shutil.unpack_archive(str(archive), str(extract_dir))
@@ -891,8 +912,8 @@ if safegrip.__version__ != EXPECTED_VERSION:
         f"Found SafeGrip {safegrip.__version__}, but this workflow requires "
         f"SafeGrip {EXPECTED_VERSION}.\n"
         f"Repository commit: {GIT_COMMIT}\n\n"
-        "Push/merge the corrected SafeGrip-CI v1.2.0 files to the configured GitHub branch, "
-        "or set SOURCE_MODE='kaggle_zip' and upload the corrected full v1.2 ZIP."
+        "Push/merge the corrected SafeGrip-CI v1.3.0 files to the configured GitHub branch, "
+        "or set SOURCE_MODE='kaggle_zip' and upload the corrected full v1.3 ZIP."
     )
 
 print_file(REPO / "RELEASE_AUDIT.json", max_chars=18000)
@@ -904,7 +925,7 @@ run(f"{sys.executable} -m pytest -q", REPO)
 cli_help = capture(f"{sys.executable} -m safegrip.cli --help", REPO)
 for required_cmd in ["benchmark", "ablation", "tune", "tune-baselines", "sensitivity", "statistics", "experiment"]:
     if required_cmd not in cli_help:
-        raise RuntimeError(f"Required SafeGrip-CI v1.2 CLI command is missing: {required_cmd}")
+        raise RuntimeError(f"Required SafeGrip-CI v1.3 CLI command is missing: {required_cmd}")
 
 # ============================================================
 # 9. TRUST MODE
@@ -921,7 +942,7 @@ if MODE == "trust":
     trust_eval["label_budget_parity_controls"] = True
     trust_eval["common_conformal_controls"] = True
 
-    runtime_cfg = REPO / "configs/kaggle_trust_runtime_v120.yaml"
+    runtime_cfg = REPO / "configs/kaggle_trust_runtime_v130.yaml"
     runtime_cfg.write_text(
         yaml.safe_dump(trust_cfg, sort_keys=False),
         encoding="utf-8",
@@ -931,7 +952,7 @@ if MODE == "trust":
     SG = f"{sys.executable} -m safegrip.cli --config {CONFIG}"
 
     print("\n" + "#" * 112)
-    print("RUNNING SAFEGRIP-CI v1.2.0 TRUST EXPERIMENT")
+    print("RUNNING SAFEGRIP-CI v1.3.0 TRUST EXPERIMENT")
     print("#" * 112)
 
     run(f"{SG} download --datasets lira", REPO)
@@ -958,7 +979,7 @@ if MODE == "trust":
 
     trust_dir = REPO / "results" / "lira_trust"
 
-    # v1.2 statistical inference: matched seeds + trajectory/segment blocks.
+    # v1.3 statistical inference: matched seeds + trajectory/segment blocks.
     run(
         f"{SG} statistics --results results/lira_trust "
         f"--bootstrap {TRUST_BOOTSTRAP_REPLICATES}",
@@ -1018,7 +1039,7 @@ if MODE == "trust":
             "HIERARCHICAL PAIRED BOOTSTRAP",
             trust_dir / "statistics" / "paired_bootstrap_rmse.csv",
         ),
-        ("PRIMARY 15-VARIANT SafeGrip-CI v1.2 ABLATION", ablation_dir / "ablation_metrics.csv"),
+        ("PRIMARY 13-VARIANT SafeGrip-CI v1.3 ABLATION", ablation_dir / "ablation_metrics.csv"),
         ("ABLATION BY SEED", ablation_dir / "ablation_metrics_by_seed.csv"),
     ]:
         print("\n" + "=" * 112)
@@ -1046,15 +1067,15 @@ if MODE == "trust":
         "release_hash_audit": release_hash_audit.get("status"),
         "git_commit": GIT_COMMIT,
         "version": safegrip.__version__,
-        "ci_diagnostics_file": "ci_diagnostics_v120.json",
+        "ci_diagnostics_file": "ci_diagnostics_v130.json",
         "note": (
             "PASS clears automatic trust/fairness/statistics/ablation gates. "
             "It is not itself a novelty claim or external-validation result."
         ),
     }
-    trust_gate_path = trust_dir / "trust_gate_v120.json"
+    trust_gate_path = trust_dir / "trust_gate_v130.json"
     trust_gate_path.write_text(json.dumps(review_gate, indent=2), encoding="utf-8")
-    print("\nTRUST v1.2 GATE:\n", json.dumps(review_gate, indent=2))
+    print("\nTRUST v1.3 GATE:\n", json.dumps(review_gate, indent=2))
 
     # Always export diagnostics/results, even when status is REVIEW.
     make_review_or_release_zip(
@@ -1082,11 +1103,11 @@ if MODE == "trust":
     if not trust_pass:
         raise RuntimeError(
             "\nTRUST RUN = REVIEW\n\n"
-            "The run completed and the ZIP was exported, but at least one v1.2 "
+            "The run completed and the ZIP was exported, but at least one v1.3 "
             "scientific/fairness/statistics/ablation gate failed. Do not report "
             "these values as final paper results. Inspect result_health.json, "
-            "ci_diagnostics_v120.json, statistical_protocol.json, and "
-            "ablation_semantic_audit_v120.json first."
+            "ci_diagnostics_v130.json, statistical_protocol.json, and "
+            "ablation_semantic_audit_v130.json first."
         )
 
     print("\n" + "#" * 112)
@@ -1102,7 +1123,7 @@ elif MODE == "paper":
     SG = f"{sys.executable} -m safegrip.cli --config {CONFIG}"
 
     print("\n" + "#" * 112)
-    print("RUNNING SAFEGRIP-CI v1.2.0 FULL PAPER WORKFLOW")
+    print("RUNNING SAFEGRIP-CI v1.3.0 FULL PAPER WORKFLOW")
     print("#" * 112)
 
     # 10A. Download + prepare real LiRA.
@@ -1138,13 +1159,13 @@ elif MODE == "paper":
     tuning_parity = verify_tuning_endpoint_parity(
         proposal_tune_dir,
         baseline_tune_dir,
-        REPO / "results" / "tuning_endpoint_parity_v120.json",
+        REPO / "results" / "tuning_endpoint_parity_v130.json",
     )
 
     proposal_hp = "results/lira_tuning/best_hparams.yaml"
     baseline_hp = "results/lira_baseline_tuning/best_hparams.yaml"
 
-    # v1.2 reviewer-facing stability analysis. This stays on locked validation
+    # v1.3 reviewer-facing stability analysis. This stays on locked validation
     # endpoints and does not touch test labels.
     sensitivity_dir = REPO / "results" / "lira_hyperparameter_sensitivity"
     if RUN_SENSITIVITY:
@@ -1162,7 +1183,7 @@ elif MODE == "paper":
                 sensitivity_dir / "hyperparameter_sensitivity.csv",
                 sensitivity_dir / "hyperparameter_sensitivity.json",
             ],
-            "v1.2 hyperparameter sensitivity",
+            "v1.3 hyperparameter sensitivity",
         )
         sensitivity_protocol = load_json(sensitivity_dir / "hyperparameter_sensitivity.json")
         if bool(sensitivity_protocol.get("test_labels_used", True)):
@@ -1248,7 +1269,7 @@ elif MODE == "paper":
         run("bash scripts/download_all_datasets.sh", REPO)
 
     # --------------------------------------------------------
-    # 10I. Strong v1.2 paper-readiness gate
+    # 10I. Strong v1.3 paper-readiness gate
     # --------------------------------------------------------
     required_main = [
         paper_dir / "metrics.csv",
@@ -1272,7 +1293,7 @@ elif MODE == "paper":
         paper_dir / "projection_control_metrics.csv",
         paper_dir / "statistics" / "paired_bootstrap_rmse.csv",
         paper_dir / "statistics" / "statistical_protocol.json",
-        paper_dir / "ci_diagnostics_v120.json",
+        paper_dir / "ci_diagnostics_v130.json",
     ]
 
     required_processed = [
@@ -1289,7 +1310,7 @@ elif MODE == "paper":
         ablation_dir / "ablation_metrics_by_seed.csv",
         ablation_dir / "ablation_predictions.csv",
         ablation_dir / "ablation_design.json",
-        ablation_dir / "ablation_semantic_audit_v120.json",
+        ablation_dir / "ablation_semantic_audit_v130.json",
     ]
 
     required_analysis = [
@@ -1303,7 +1324,7 @@ elif MODE == "paper":
         proposal_tune_dir / "tuning_endpoint_manifest.json",
         baseline_tune_dir / "best_hparams.yaml",
         baseline_tune_dir / "tuning_summary.json",
-        REPO / "results" / "tuning_endpoint_parity_v120.json",
+        REPO / "results" / "tuning_endpoint_parity_v130.json",
     ]
 
     require_files(required_main, "paper main outputs")
@@ -1358,7 +1379,7 @@ elif MODE == "paper":
         ]
     )
 
-    v120_checks = {
+    v130_checks = {
         "scientific_health_pass": paper_health.get("status") == "PASS",
         "fairness_audit_pass": fairness.get("status") == "PASS",
         "statistical_protocol_pass": statistics_audit.get("status") == "PASS",
@@ -1384,7 +1405,7 @@ elif MODE == "paper":
         "five_seeds_each_main_model": all(
             int(main_seed_counts.get(name, 0)) >= 5 for name in PAPER_MODELS
         ),
-        "all_paper_v120_ablations_present": set(PAPER_ABLATIONS).issubset(
+        "all_paper_v130_ablations_present": set(PAPER_ABLATIONS).issubset(
             observed_ablations
         ),
         "five_seeds_each_paper_ablation": all(
@@ -1405,10 +1426,10 @@ elif MODE == "paper":
         ),
     }
 
-    v120_status = "PAPER_READY" if all(v120_checks.values()) else "REVIEW"
-    v120_gate = {
-        "status": v120_status,
-        "checks": v120_checks,
+    v130_status = "PAPER_READY" if all(v130_checks.values()) else "REVIEW"
+    v130_gate = {
+        "status": v130_status,
+        "checks": v130_checks,
         "scientific_health": paper_health,
         "safegrip_version": safegrip.__version__,
         "git_commit": GIT_COMMIT,
@@ -1416,32 +1437,34 @@ elif MODE == "paper":
         "supplementary_ablations": SUPPLEMENTARY_ABLATIONS,
         "paper_ablations": PAPER_ABLATIONS,
         "proposal": (
-            "SafeGrip-CI v1.2: strong raw-sensor temporal estimator + counterfactual "
-            "observability + bounded inverse-dynamics residual correction + learned "
-            "correction-utility gate + risk-aware training + physics projection + conformal UQ"
+            "SafeGrip-CI v1.3: strong raw-sensor temporal estimator + local counterfactual "
+            "friction-energy landscape + entropy identifiability + separate help-probability "
+            "and correction-magnitude heads + do-no-harm/risk training + projection + conformal UQ"
         ),
         "key_novelty_controls": [
             "safegrip_base_temporal vs safegrip",
-            "safegrip_no_dynamic_loss vs safegrip",
             "safegrip_no_safety_loss vs safegrip",
             "safegrip_no_physics_residual vs safegrip",
             "safegrip_no_utility_gate vs safegrip",
             "safegrip_no_identifiability vs safegrip",
+            "safegrip_no_magnitude_head vs safegrip",
+            "safegrip_no_energy_improvement vs safegrip",
+            "safegrip_no_contrastive_dynamics vs safegrip",
+            "safegrip_no_do_no_harm vs safegrip",
             "safegrip_no_bound vs safegrip",
-            "safegrip_no_regime_head vs safegrip",
             "safegrip_no_heteroscedastic vs safegrip",
             "safegrip_no_uq vs safegrip",
         ],
         "statistics": "paired hierarchical bootstrap over matched seeds and trajectory segments",
         "note": (
-            "PAPER_READY means automatic v1.2 scientific-health, fairness, "
+            "PAPER_READY means automatic v1.3 scientific-health, fairness, "
             "endpoint-parity, multi-seed, ablation, preprocessing, statistics, "
             "and reproducibility gates passed. It does not prove novelty, "
             "external validity, or guarantee acceptance."
         ),
     }
-    paper_gate_path = paper_dir / "paper_readiness_v120.json"
-    paper_gate_path.write_text(json.dumps(v120_gate, indent=2), encoding="utf-8")
+    paper_gate_path = paper_dir / "paper_readiness_v130.json"
+    paper_gate_path.write_text(json.dumps(v130_gate, indent=2), encoding="utf-8")
 
     # Also execute the repository-maintained readiness checker. It writes
     # results/lira_paper/paper_readiness.json even when it exits REVIEW.
@@ -1455,15 +1478,15 @@ elif MODE == "paper":
         load_json(repo_readiness_path) if repo_readiness_path.exists() else {"status": "MISSING"}
     )
     if repo_readiness.get("status") != "PAPER_READY":
-        v120_status = "REVIEW"
-        v120_gate["status"] = "REVIEW"
-        v120_gate["repository_readiness_status"] = repo_readiness.get("status")
-        paper_gate_path.write_text(json.dumps(v120_gate, indent=2), encoding="utf-8")
+        v130_status = "REVIEW"
+        v130_gate["status"] = "REVIEW"
+        v130_gate["repository_readiness_status"] = repo_readiness.get("status")
+        paper_gate_path.write_text(json.dumps(v130_gate, indent=2), encoding="utf-8")
 
     print("\n" + "=" * 112)
-    print("v1.2 PAPER READINESS / FAIRNESS / STATISTICS / ABLATION GATE")
+    print("v1.3 PAPER READINESS / FAIRNESS / STATISTICS / ABLATION GATE")
     print("=" * 112)
-    print(json.dumps(v120_gate, indent=2))
+    print(json.dumps(v130_gate, indent=2))
     print("\nREPOSITORY READINESS CHECK:\n", json.dumps(repo_readiness, indent=2))
 
     # --------------------------------------------------------
@@ -1517,7 +1540,7 @@ elif MODE == "paper":
     if RUN_SCARCITY:
         package_folders.append(Path("results/lira_scarcity"))
 
-    if v120_status == "PAPER_READY":
+    if v130_status == "PAPER_READY":
         target_zip = PAPER_ZIP
         print("\n" + "#" * 112)
         print("PAPER_READY")
@@ -1537,7 +1560,7 @@ elif MODE == "paper":
         safegrip_module=safegrip,
         git_commit=GIT_COMMIT,
         release_hash_audit=release_hash_audit,
-        extra_files=[REPO / "results/tuning_endpoint_parity_v120.json"],
+        extra_files=[REPO / "results/tuning_endpoint_parity_v130.json"],
     )
 
     print("\nExported result ZIP:", target_zip)
@@ -1548,14 +1571,14 @@ elif MODE == "paper":
     except Exception:
         pass
 
-    if v120_status != "PAPER_READY":
+    if v130_status != "PAPER_READY":
         raise RuntimeError(
             "\nPAPER RESULT = REVIEW\n\n"
             "The complete experiment finished and a review ZIP was exported, "
-            "but at least one v1.2 scientific/fairness/statistics/semantic/"
+            "but at least one v1.3 scientific/fairness/statistics/semantic/"
             "reproducibility gate did not pass. Do not use these numbers as "
             "final manuscript claims until the failed checks are resolved."
         )
 
-print("\nSafeGrip-CI v1.2.0 Kaggle workflow finished.")
+print("\nSafeGrip-CI v1.3.0 Kaggle workflow finished.")
 
