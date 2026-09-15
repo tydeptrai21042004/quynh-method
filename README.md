@@ -1,16 +1,16 @@
-# SafeGrip-Open v1.3.0
+# SafeGrip-Open v1.4.0
 
-## SafeGrip-CI v1.3
+## SafeGrip-CI v1.4
 
-The active proposal is **Counterfactual Energy-Guided Selective Physics Correction**. A causal raw-sensor Conv1D+GRU owns the primary friction estimate. A separately pretrained friction-conditioned dynamics model scores a local grid of nearby friction hypotheses; the resulting energy posterior produces a physics candidate, normalized posterior entropy gives local identifiability, and two learned heads separately predict whether physics should help and how much of its correction should be applied.
+The active proposal is **Strong-Base Innovation-Energy Residual Correction**. A causal two-layer raw-sensor GRU owns the primary friction estimate and is trained first with standardized-target MSE. A separately pretrained friction-conditioned dynamics model predicts endpoint innovations and scores a boundary-aware local grid of friction hypotheses. Posterior concentration is combined with absolute energy-margin strength, and one learned continuous correction coefficient controls how much of the counterfactual residual is applied. The separate benefit probability is retained only as an interpretable auxiliary diagnostic.
 
-Training is staged: temporal-base pretraining, friction-discriminative dynamics pretraining, then selective-correction training with dynamics frozen by default. The point objective includes direct base supervision, metric-aligned unsafe-overestimation loss at the reported +0.05 threshold, selector supervision and an explicit do-no-harm penalty. Physical projection and block-max split-conformal UQ remain separate safety/calibration layers.
+Training is staged: accuracy-only base pretraining, friction-discriminative innovation-dynamics pretraining, correction-controller warm-up with the base frozen, then low-LR joint refinement. Safety and UQ are deliberately separated from base accuracy learning; physical projection and block-max split-conformal UQ remain post-estimation safety/calibration layers.
 
-See `SAFEGRIP_CI_V13_METHOD.md`, `SAFEGRIP_CI_METHOD.md`, and `ABLATION_AND_TUNING.md`. Historical v1.1/v1.2 implementations remain available for reproducibility.
+See `SAFEGRIP_CI_V14_METHOD.md`, `SAFEGRIP_CI_V13_METHOD.md`, and `ABLATION_AND_TUNING.md`. Historical v1.1/v1.2/v1.3 implementations remain available for reproducibility.
 
 ### Current evidence status
 
-The v1.3 implementation passes local unit/regression validation and an end-to-end synthetic training smoke test. **No v1.3 real-LiRA superiority claim is made until TRUST is rerun.** Existing v1.2 measurements are motivation for the redesign, not v1.3 results.
+The v1.4 implementation is an accuracy-first redesign motivated by earlier LiRA underperformance. **No v1.4 real-LiRA superiority claim is made until TRUST/PAPER is rerun with frozen validation-selected hyperparameters.**
 
 ## Historical SafeGrip-CI v1.1
 
@@ -128,30 +128,30 @@ Paper-reported scores from non-matching protocols are stored as literature conte
 
 ## Proposal and ablations
 
-Full SafeGrip-CI v1.3:
+Full SafeGrip-CI v1.4:
 
 ```text
-raw causal sensor window
-   -> Conv1D + GRU temporal state h_t
+raw causal sensor window (default L=100)
+   -> 2-layer GRU temporal state h_t
+   -> standardized-target linear regression head
    -> direct base friction estimate mu_B
 
-separately pretrained friction-conditioned dynamics model G(context, mu)
-   -> local K-hypothesis friction energy landscape E(mu_k)
+separately pretrained friction-conditioned innovation model G(context, mu)
+   -> boundary-aware K-hypothesis energy landscape E(mu_k)
    -> energy posterior w_k
-   -> posterior-mean physics candidate mu_P
-   -> entropy identifiability + energy improvement + curvature
+   -> centered counterfactual residual Delta_mu_CF
+   -> calibrated identifiability (entropy x absolute energy strength)
 
 inference-available evidence + h_t
-   -> benefit probability p_help
-   -> correction fraction alpha
+   -> auxiliary benefit probability p_help (diagnostic only)
+   -> continuous correction controller alpha
 
-g = p_help * alpha
-mu_raw = mu_B + g * scale * (mu_P - mu_B)
+mu_raw = mu_B + alpha * scale * Delta_mu_CF
    -> optional conditional physical projection
    -> residual-scale model + block-max split-conformal calibration
 ```
 
-The controlled primary ablations are `safegrip_base_temporal`, `safegrip_no_safety_loss`, `safegrip_no_physics_residual`, `safegrip_no_utility_gate`, `safegrip_no_identifiability`, `safegrip_no_magnitude_head`, `safegrip_no_energy_improvement`, `safegrip_no_contrastive_dynamics`, `safegrip_no_do_no_harm`, `safegrip_no_bound`, `safegrip_no_heteroscedastic`, `safegrip_no_uq`, and the full `safegrip`. See `SAFEGRIP_CI_V13_METHOD.md` and `ABLATION_AND_TUNING.md`.
+The controlled primary ablations are `safegrip_base_temporal`, `safegrip_no_target_standardization`, `safegrip_no_physics_residual`, `safegrip_no_utility_gate`, `safegrip_no_identifiability`, `safegrip_no_magnitude_head`, `safegrip_no_energy_improvement`, `safegrip_no_contrastive_dynamics`, `safegrip_no_do_no_harm`, `safegrip_no_bound`, `safegrip_no_selector_warmup`, `safegrip_no_uq`, and the full `safegrip`. See `SAFEGRIP_CI_V14_METHOD.md` and `ABLATION_AND_TUNING.md`.
 
 ## Fair validation tuning
 
@@ -163,7 +163,7 @@ safegrip tune --dataset lira --trials 80 --no-test
 
 Literature comparators use their own source-compatible spaces under the same validation endpoint contract. The primary selection metric for both proposal and comparators is **validation RMSE**; the test partition is locked during search.
 
-The v1.3 proposal search covers temporal capacity/optimizer settings, sequence length and scaler, counterfactual grid size/radius/temperature, physics-correction scale, staged-pretraining duration, safety/help/fraction/do-no-harm loss weights, contrastive dynamics settings, and heteroscedastic representation training. Physical support constants and UQ-only calibration settings are not optimized against final test RMSE.
+The v1.4 proposal search covers temporal capacity/optimizer settings, sequence length and scaler, counterfactual grid size/radius/temperature, calibrated energy-margin strength, physics-correction scale, staged-pretraining/controller-warm-up duration, soft benefit/fraction supervision, low-weight do-no-harm regularization, and contrastive dynamics settings. Physical support constants and UQ-only calibration settings are not optimized against final test RMSE.
 
 After choosing `best_hparams.yaml`, run a separate validation-only stability study:
 

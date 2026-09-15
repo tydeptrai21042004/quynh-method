@@ -1,4 +1,4 @@
-# SafeGrip-CI v1.3 ablation and hyperparameter protocol
+# SafeGrip-CI v1.4 ablation and hyperparameter protocol
 
 ## Primary question
 
@@ -7,7 +7,7 @@ The ablation table must test whether the **counterfactual-energy selective corre
 ## Primary controlled variants
 
 1. `safegrip_base_temporal` — matched direct temporal estimator, no physics correction.
-2. `safegrip_no_safety_loss` — removes metric-aligned overestimation objective.
+2. `safegrip_no_target_standardization` — removes training-only friction-target standardization.
 3. `safegrip_no_physics_residual` — removes counterfactual physics correction.
 4. `safegrip_no_utility_gate` — applies the physics correction unconditionally.
 5. `safegrip_no_identifiability` — removes entropy-identifiability selector evidence.
@@ -16,15 +16,15 @@ The ablation table must test whether the **counterfactual-energy selective corre
 8. `safegrip_no_contrastive_dynamics` — removes friction-discriminative counterfactual dynamics loss.
 9. `safegrip_no_do_no_harm` — removes correction-harm regularization.
 10. `safegrip_no_bound` — removes the conditional physics projection.
-11. `safegrip_no_heteroscedastic` — removes heteroscedastic training/evidence.
+11. `safegrip_no_selector_warmup` — removes the frozen-base controller warm-up stage.
 12. `safegrip_no_uq` — identical point path, no predictive UQ layer.
-13. `safegrip` — full v1.3 proposal.
+13. `safegrip` — full v1.4 proposal.
 
 All variants use the same selected point-model hyperparameters unless a separately labelled retuned-ablation study is run.
 
 ## Validation-only point-model tuning
 
-The main v1.3 search includes temporal capacity/optimizer settings plus:
+The main v1.4 search includes temporal capacity/optimizer settings plus:
 
 - sequence length and scaler (`minmax` / `standard`);
 - counterfactual grid points, radius and energy temperature;

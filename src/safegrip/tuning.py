@@ -22,15 +22,15 @@ def require_optuna():
 
 
 def suggest_safegrip(trial, cfg):
-    """Validation-only search space for the SafeGrip-CI v1.3 point path."""
+    """Validation-only search space for the SafeGrip-CI v1.4 point path."""
     space=cfg.get("tuning",{}).get("space",{})
     p=cfg.get("proposal",{})
     return {
-        "sequence_length":trial.suggest_categorical("sequence_length",space.get("sequence_length",[32,48,64,100])),
+        "sequence_length":trial.suggest_categorical("sequence_length",space.get("sequence_length",[64,100,128])),
         "scaler":trial.suggest_categorical("scaler",space.get("scaler",["minmax","standard"])),
-        "hidden":trial.suggest_categorical("hidden",space.get("hidden",[64,96,128])),
-        "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[64,96,128])),
-        "conv_channels":trial.suggest_categorical("conv_channels",space.get("conv_channels",[32,48,64])),
+        "hidden":trial.suggest_categorical("hidden",space.get("hidden",[96,128,160])),
+        "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[128,192,256])),
+        "conv_channels":trial.suggest_categorical("conv_channels",space.get("conv_channels",[48,64,96])),
         "gru_layers":trial.suggest_categorical("gru_layers",space.get("gru_layers",[1,2])),
         "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
         "lr":trial.suggest_float("lr",*space.get("lr",[1e-4,3e-3]),log=True),
@@ -49,21 +49,26 @@ def suggest_safegrip(trial, cfg):
         "energy_grid_points":trial.suggest_categorical("energy_grid_points",space.get("energy_grid_points",[5,7,9])),
         "energy_grid_radius":trial.suggest_categorical("energy_grid_radius",space.get("energy_grid_radius",[0.06,0.10,0.14])),
         "energy_temperature":trial.suggest_categorical("energy_temperature",space.get("energy_temperature",[0.20,0.35,0.50])),
-        "base_pretrain_epochs":trial.suggest_categorical("base_pretrain_epochs",space.get("base_pretrain_epochs",[5,8,12])),
-        "base_loss_weight":trial.suggest_categorical("base_loss_weight",space.get("base_loss_weight",[0.5,0.75,1.0])),
+        "energy_noise_floor":float(p.get("energy_noise_floor",1e-4)),
+        "energy_margin_threshold":trial.suggest_categorical("energy_margin_threshold",space.get("energy_margin_threshold",[0.10,0.25,0.50])),
+        "energy_margin_temperature":float(p.get("energy_margin_temperature",0.15)),
+        "base_pretrain_epochs":trial.suggest_categorical("base_pretrain_epochs",space.get("base_pretrain_epochs",[10,15,20])),
+        "selector_warmup_epochs":trial.suggest_categorical("selector_warmup_epochs",space.get("selector_warmup_epochs",[2,4,6])),
+        "base_joint_lr_scale":trial.suggest_categorical("base_joint_lr_scale",space.get("base_joint_lr_scale",[0.05,0.10,0.20])),
+        "base_loss_weight":trial.suggest_categorical("base_loss_weight",space.get("base_loss_weight",[0.10,0.25,0.50])),
         "dynamic_loss_weight":0.0,
-        "safety_loss_weight":trial.suggest_categorical("safety_loss_weight",space.get("safety_loss_weight",[0.1,0.2,0.35])),
+        "safety_loss_weight":trial.suggest_categorical("safety_loss_weight",space.get("safety_loss_weight",[0.0])),
         "unsafe_margin":trial.suggest_categorical("unsafe_margin",space.get("unsafe_margin",[0.05])),
-        "benefit_gate_loss_weight":trial.suggest_categorical("benefit_gate_loss_weight",space.get("benefit_gate_loss_weight",[0.2,0.35,0.5])),
-        "correction_fraction_loss_weight":trial.suggest_categorical("correction_fraction_loss_weight",space.get("correction_fraction_loss_weight",[0.1,0.25,0.4])),
-        "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.1,0.2,0.35])),
+        "benefit_gate_loss_weight":trial.suggest_categorical("benefit_gate_loss_weight",space.get("benefit_gate_loss_weight",[0.10,0.20,0.35])),
+        "correction_fraction_loss_weight":trial.suggest_categorical("correction_fraction_loss_weight",space.get("correction_fraction_loss_weight",[0.25,0.35,0.50])),
+        "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.0,0.05,0.10])),
         "utility_gate_loss_weight":float(p.get("utility_gate_loss_weight",0.35)),
         # Regime/change/smoothness heads are disabled in the active v1.3 path;
         # keep their config values fixed instead of wasting tuning budget.
         "change_loss_weight":0.0,
         "change_threshold":float(p.get("change_threshold",0.02)),
         "smooth_loss_weight":0.0,
-        "heteroscedastic_loss_weight":trial.suggest_categorical("heteroscedastic_loss_weight",space.get("heteroscedastic_loss_weight",[0.0,0.03,0.05,0.1])),
+        "heteroscedastic_loss_weight":trial.suggest_categorical("heteroscedastic_loss_weight",space.get("heteroscedastic_loss_weight",[0.0])),
         "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
         "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.1,0.2,0.35])),
         "counterfactual_margin":float(p.get("counterfactual_margin",0.02)),
@@ -79,7 +84,8 @@ def suggest_safegrip(trial, cfg):
         "aleatoric_floor":float(p.get("aleatoric_floor",0.005)),
         "utility_gate_beta":float(p.get("utility_gate_beta",0.02)),
         "unsafe_temperature":float(p.get("unsafe_temperature",0.02)),
-        "benefit_margin":float(p.get("benefit_margin",0.002)),
+        "benefit_margin":float(p.get("benefit_margin",0.0)),
+        "benefit_temperature":float(p.get("benefit_temperature",0.01)),
         "do_no_harm_margin":float(p.get("do_no_harm_margin",0.002)),
         "correction_fraction_beta":float(p.get("correction_fraction_beta",0.05)),
         "freeze_dynamics_after_pretrain":bool(p.get("freeze_dynamics_after_pretrain",True)),
@@ -116,7 +122,7 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
         return rmse
 
     db=out/"optuna.sqlite3"
-    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v130_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
+    study=optuna.create_study(direction="minimize",study_name="safegrip_ci_v140_rmse",storage=f"sqlite:///{db}",load_if_exists=True,
                               sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
     remaining=max(0,trials-len(study.trials))
     if remaining: study.optimize(objective,n_trials=remaining)
@@ -138,8 +144,8 @@ def tune_safegrip(csv_path, out_dir, cfg, trials=None, epochs=None, evaluate_tes
              "fixed_not_tuned":{"mu_upper":cfg["mu_upper"],"alpha":cfg["alpha"],
                                 "information_beta":cfg.get("proposal",{}).get("information_beta",1.0),
                                 "identifiability_lambda":"historical v1.2 compatibility only; entropy identifiability has no lambda",
-                                "inverse_dynamics_ridge":"historical v1.2 compatibility only; v1.3 has no Gauss--Newton solve",
-                                "dynamic_change_regime_losses":"disabled in active v1.3 point path",
+                                "inverse_dynamics_ridge":"historical v1.2 compatibility only; v1.4 has no Gauss--Newton solve",
+                                "dynamic_change_regime_losses":"disabled in active v1.4 point path",
                                 "uq_reason":"point-model search uses validation RMSE; UQ-only parameters are not searched against a point metric"}}
     if evaluate_test:
         b=bundle(int(best["sequence_length"]),best.get("scaler",cfg.get("proposal",{}).get("scaler","minmax"))); seed_everything(cfg["seed"]); model,_=fit_proposal("safegrip",b,cfg,epochs,best)
@@ -162,8 +168,10 @@ SENSITIVITY_DEFAULT_PARAMETERS = (
     "energy_grid_points",
     "energy_grid_radius",
     "energy_temperature",
+    "energy_margin_threshold",
     "base_loss_weight",
-    "safety_loss_weight",
+    "selector_warmup_epochs",
+    "base_joint_lr_scale",
     "benefit_gate_loss_weight",
     "correction_fraction_loss_weight",
     "do_no_harm_weight",

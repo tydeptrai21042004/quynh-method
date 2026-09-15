@@ -31,12 +31,12 @@ required_abl = [
     "ablation_design.json",
 ]
 PRIMARY_ABLATIONS = {
-    "safegrip_base_temporal", "safegrip_no_safety_loss",
-    "safegrip_no_physics_residual", "safegrip_no_utility_gate",
-    "safegrip_no_identifiability", "safegrip_no_magnitude_head",
-    "safegrip_no_energy_improvement", "safegrip_no_contrastive_dynamics",
-    "safegrip_no_do_no_harm", "safegrip_no_bound",
-    "safegrip_no_heteroscedastic", "safegrip_no_uq", "safegrip",
+    "safegrip_base_temporal", "safegrip_no_target_standardization",
+    "safegrip_no_selector_warmup", "safegrip_no_physics_residual",
+    "safegrip_no_utility_gate", "safegrip_no_identifiability",
+    "safegrip_no_magnitude_head", "safegrip_no_energy_improvement",
+    "safegrip_no_contrastive_dynamics", "safegrip_no_do_no_harm",
+    "safegrip_no_bound", "safegrip_no_uq", "safegrip",
 }
 PAPER_MODELS = {
     "todorovic2022_cnn", "lampe2023_lstm", "lampe2023_gru",
@@ -129,7 +129,7 @@ report = {
     "status": status,
     "checks": checks,
     "health": health,
-    "proposal": "SafeGrip-CI v1.3 counterfactual-energy guided selective physics correction",
+    "proposal": "SafeGrip-CI v1.4 strong-base innovation-energy residual correction",
     "note": (
         "PAPER_READY means the automatic scientific-health, fairness, endpoint-parity, "
         "multi-seed, ablation, preprocessing and statistics gates passed. It does not prove "

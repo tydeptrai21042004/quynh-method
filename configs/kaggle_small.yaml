@@ -56,14 +56,14 @@ proposal:
   physics_correction_scale: 0.5
   base_loss_weight: 1.0
   dynamic_loss_weight: 0.0
-  safety_loss_weight: 0.2
+  safety_loss_weight: 0.0
   unsafe_margin: 0.05
   utility_gate_loss_weight: 0.35
   utility_gate_beta: 0.02
   change_loss_weight: 0.0
   change_threshold: 0.02
   smooth_loss_weight: 0.0
-  heteroscedastic_loss_weight: 0.05
+  heteroscedastic_loss_weight: 0.0
   aleatoric_floor: 0.005
   dynamics_loss_weight: 0.1
   counterfactual_loss_weight: 0.2
@@ -78,13 +78,19 @@ proposal:
   energy_grid_points: 7
   energy_grid_radius: 0.1
   energy_temperature: 0.35
-  base_pretrain_epochs: 8
+  energy_noise_floor: 0.0001
+  energy_margin_threshold: 0.25
+  energy_margin_temperature: 0.15
+  base_pretrain_epochs: 5
+  selector_warmup_epochs: 2
+  base_joint_lr_scale: 0.1
   unsafe_temperature: 0.02
-  benefit_gate_loss_weight: 0.35
-  benefit_margin: 0.002
-  correction_fraction_loss_weight: 0.25
+  benefit_gate_loss_weight: 0.2
+  benefit_margin: 0.0
+  benefit_temperature: 0.01
+  correction_fraction_loss_weight: 0.35
   correction_fraction_beta: 0.05
-  do_no_harm_weight: 0.2
+  do_no_harm_weight: 0.05
   do_no_harm_margin: 0.002
   contrastive_temperature: 0.25
   contrastive_negatives: 6

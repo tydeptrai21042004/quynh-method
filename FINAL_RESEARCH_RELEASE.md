@@ -1,6 +1,6 @@
-# SafeGrip-Open v1.3.0 — counterfactual-energy selective-physics release
+# SafeGrip-Open v1.4.0 — strong-base innovation-energy residual release
 
-v1.3.0 redesigns the active proposal around a local counterfactual friction-energy landscape. It is motivated by the v1.2 real-LiRA evidence showing that the previous single Gauss--Newton correction and nearly constant utility gate did not yet justify their complexity.
+v1.4.0 redesigns the active point path around a strong matched-scale GRU base, friction-conditioned innovation energy, and a single continuous residual controller. It is motivated by prior LiRA evidence that the correction branch was being asked to compensate for a weaker primary regressor.
 
 The active method now contains:
 
@@ -12,9 +12,9 @@ The active method now contains:
 - multi-negative contrastive dynamics pretraining;
 - metric-aligned unsafe-overestimation and explicit do-no-harm objectives;
 - optional physical projection and disjoint block-max conformal UQ;
-- a 13-variant primary ablation family designed around the v1.3 claims;
+- a 13-variant primary ablation family designed around the v1.4 claims;
 - validation-only tuning/sensitivity with test labels locked.
 
 Historical v1.1/v1.2 implementations and method documents remain for reproducibility.
 
-Local tests/smoke runs validate implementation behavior only. A new real-LiRA TRUST/PAPER run is required before claiming v1.3 improves accuracy, safety, or the accuracy-safety trade-off over published baselines.
+Local tests/smoke runs validate implementation behavior only. A new real-LiRA TRUST/PAPER run is required before claiming v1.4 improves accuracy, safety, or the accuracy-safety trade-off over published baselines.

@@ -1,4 +1,4 @@
-# SafeGrip research protocol — v1.3.0
+# SafeGrip research protocol — v1.4.0
 
 ## Primary research question
 
@@ -6,11 +6,11 @@ Can a strong raw-sensor temporal friction estimator obtain a better **accuracy-s
 
 ## Claim discipline
 
-SafeGrip-CI v1.3 is a hybrid estimator, not a complete tire model. Low counterfactual energy is evidence of compatibility with the learned dynamics model, not proof of physical truth. Entropy-derived identifiability measures concentration of the local energy landscape, not correctness. Physical projection is a safety constraint. No superiority claim is valid until the locked real-LiRA TRUST/PAPER protocol is rerun.
+SafeGrip-CI v1.4 is a hybrid estimator, not a complete tire model. Low counterfactual energy is evidence of compatibility with the learned dynamics model, not proof of physical truth. Entropy-derived identifiability measures concentration of the local energy landscape, not correctness. Physical projection is a safety constraint. No superiority claim is valid until the locked real-LiRA TRUST/PAPER protocol is rerun.
 
 ## Locked point path
 
-1. causal raw-sensor Conv1D+GRU base estimate;
+1. causal raw-sensor two-layer GRU base estimate trained first with standardized-target MSE;
 2. separately pretrained friction-conditioned dynamics model;
 3. odd local grid of counterfactual friction hypotheses around the detached base estimate;
 4. dynamics-energy posterior and posterior-mean physics candidate;
@@ -37,6 +37,6 @@ SafeGrip-CI v1.3 is a hybrid estimator, not a complete tire model. Low counterfa
 - matched temporal-base control;
 - projection-parity and label/feature-budget fairness controls;
 - hierarchical seed/trajectory statistics;
-- all 13 primary v1.3 ablations;
+- all 13 primary v1.4 ablations;
 - selector diagnostics: help probability, correction fraction, identifiability/entropy, correction coverage and harm rate;
 - real-data scientific-health gates before any paper-ready claim.

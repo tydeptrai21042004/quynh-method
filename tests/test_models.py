@@ -473,3 +473,54 @@ def test_safegrip_v13_no_identifiability_does_not_leak_entropy_into_selector():
     with torch.no_grad():
         changed=model.forward_details(x,lo,1.3)["benefit_probability"]
     assert torch.allclose(ref,changed,atol=1e-7)
+
+
+def test_safegrip_v14_uses_single_continuous_controller():
+    from safegrip.models import SafeGripV6Net
+    torch.manual_seed(21)
+    model=SafeGripV6Net(6,hidden=24,gru_hidden=16,dropout=0.0,dynamics_indices=[0,1])
+    model.set_target_stats(0.7,0.1)
+    d=model.forward_details(torch.randn(5,12,6),torch.zeros(5),1.3)
+    assert torch.allclose(d["physics_gate"],d["correction_fraction"],atol=1e-7)
+    # The diagnostic benefit probability must not silently re-enter the gate.
+    product=d["benefit_probability"]*d["correction_fraction"]
+    assert not torch.allclose(d["physics_gate"],product,atol=1e-5)
+
+
+def test_safegrip_v14_dynamics_target_is_endpoint_innovation():
+    from safegrip.models import SafeGripV6Net
+    torch.manual_seed(22)
+    model=SafeGripV6Net(4,hidden=16,gru_hidden=8,dropout=0.0,dynamics_indices=[0,2])
+    x=torch.randn(3,7,4); mu=torch.full((3,),0.7)
+    _,target=model.dynamics_prediction(x,mu,1.3)
+    expected=x[:,-1,[0,2]]-x[:,-2,[0,2]]
+    assert torch.allclose(target,expected,atol=1e-7)
+
+
+def test_safegrip_v14_flat_energy_is_boundary_neutral():
+    from safegrip.models import SafeGripV6Net
+    torch.manual_seed(23)
+    model=SafeGripV6Net(5,hidden=20,gru_hidden=12,dropout=0.0,dynamics_indices=[0,1])
+    model.set_target_stats(1.299,0.001)
+    for p in model.dynamics_head.parameters():
+        torch.nn.init.zeros_(p)
+    x=torch.randn(4,10,5)
+    with torch.no_grad():
+        h=model.encode(x); base,_=model._base_prediction(h,1.3)
+        e=model._energy_landscape(x,base,1.3)
+    assert torch.allclose(e["correction"],torch.zeros_like(e["correction"]),atol=1e-7)
+    assert torch.allclose(e["identifiability"],torch.zeros_like(e["identifiability"]),atol=1e-7)
+
+
+def test_safegrip_v14_target_standardization_maps_back_to_physical_units():
+    from safegrip.models import SafeGripV6Net
+    torch.manual_seed(24)
+    model=SafeGripV6Net(3,hidden=12,gru_hidden=8,dropout=0.0,dynamics_indices=[0])
+    model.set_target_stats(0.72,0.08)
+    for p in model.base_head.parameters():
+        torch.nn.init.zeros_(p)
+    x=torch.randn(2,6,3)
+    with torch.no_grad():
+        base,z=model._base_prediction(model.encode(x),1.3)
+    assert torch.allclose(z,torch.zeros_like(z),atol=1e-7)
+    assert torch.allclose(base,torch.full_like(base,0.72),atol=1e-6)

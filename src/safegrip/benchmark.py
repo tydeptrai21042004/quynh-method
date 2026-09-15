@@ -12,7 +12,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, r
 from joblib import dump
 
 from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, PAPER_BASELINES, QUICK_BASELINES, validate_paper_baselines
-from .models import make_literature_baseline, SafeGripV3Net, SafeGripV4Net, SafeGripV5Net, SafeGripBackboneNet, ResidualScaleHead
+from .models import make_literature_baseline, SafeGripV3Net, SafeGripV4Net, SafeGripV5Net, SafeGripV6Net, SafeGripBackboneNet, ResidualScaleHead
 from .physics import (
     project_torch, project_numpy, project_interval_numpy, gaussian_interval,
     conformal_lower_correction, apply_lower_correction,
@@ -26,8 +26,10 @@ META={
     "route_id","direction","trip_id","trajectory_id","segment_id","sample_uid","resampled",
 }
 PROPOSAL_VARIANTS=(
-    # SafeGrip-CI v1.3 primary proposal and decisive ablations.
+    # SafeGrip-CI v1.4 primary proposal and decisive ablations.
     "safegrip_base_temporal",
+    "safegrip_no_target_standardization",
+    "safegrip_no_selector_warmup",
     "safegrip_no_dynamic_loss",
     "safegrip_no_safety_loss",
     "safegrip_no_physics_residual",
@@ -72,7 +74,8 @@ PROPOSAL_VARIANTS=(
 )
 PRIMARY_ABLATION_VARIANTS=(
     "safegrip_base_temporal",
-    "safegrip_no_safety_loss",
+    "safegrip_no_target_standardization",
+    "safegrip_no_selector_warmup",
     "safegrip_no_physics_residual",
     "safegrip_no_utility_gate",
     "safegrip_no_identifiability",
@@ -81,7 +84,6 @@ PRIMARY_ABLATION_VARIANTS=(
     "safegrip_no_contrastive_dynamics",
     "safegrip_no_do_no_harm",
     "safegrip_no_bound",
-    "safegrip_no_heteroscedastic",
     "safegrip_no_uq",
     "safegrip",
 )
@@ -434,7 +436,7 @@ def regression_metrics(y,p,lo=None,mu_upper=1.3,sigma=None,raw_mean=None,project
 
 def selector_metrics(y, base, candidate, final, benefit_probability, correction_fraction,
                      margin: float = 0.002, threshold: float = 0.5, bins: int = 10):
-    """Diagnostics for the v1.3 selective-physics decision itself.
+    """Diagnostics for the v1.4 selective-physics decision itself.
 
     The labels here are evaluation-only: a candidate is "helpful" when its
     absolute error beats the base by more than ``margin``.  They are never fed
@@ -460,6 +462,16 @@ def selector_metrics(y, base, candidate, final, benefit_probability, correction_
         if np.any(m):
             ece+=float(np.mean(m))*abs(float(np.mean(prob[m]))-float(np.mean(helpful[m])))
     helpful_n=int(np.sum(helpful)); accepted_n=int(np.sum(accepted))
+    # Oracle ceilings are evaluation-only diagnostics. They answer whether the
+    # candidate itself has enough information to beat the base if selection
+    # were perfect; they are never used for training or test-time prediction.
+    oracle_switch=np.where(cand_err<base_err,candidate,base)
+    delta=candidate-base
+    alpha_oracle=np.clip(((y-base)*delta)/(delta*delta+1e-12),0.0,1.0)
+    oracle_continuous=base+alpha_oracle*delta
+    needed=y-base
+    active=np.abs(delta)>1e-8
+    direction_ok=(delta*needed)>0
     return {
         "candidate_help_rate":float(np.mean(helpful)),
         "benefit_auc":auc,
@@ -471,6 +483,10 @@ def selector_metrics(y, base, candidate, final, benefit_probability, correction_
         "final_improves_base_rate":float(np.mean(final_err<base_err)),
         "final_harm_rate_margin":float(np.mean(final_err>base_err+float(margin))),
         "mean_correction_fraction":float(np.mean(fraction)),
+        "candidate_direction_accuracy":float(np.mean(direction_ok[active])) if np.any(active) else float('nan'),
+        "oracle_switch_rmse":float(np.sqrt(np.mean((oracle_switch-y)**2))),
+        "oracle_continuous_rmse":float(np.sqrt(np.mean((oracle_continuous-y)**2))),
+        "oracle_continuous_mean_fraction":float(np.mean(alpha_oracle)),
     }
 
 
@@ -714,8 +730,8 @@ def _proposal_flags(variant: str) -> dict:
             use_dual_expert=True, use_learned_arbitration=True, use_inverse_expert=True,
             use_adaptive_persistence=True, use_split_innovation=True),
     }
-    # SafeGrip-CI v1.3 uses counterfactual energy landscapes and a two-stage
-    # selector (benefit probability x correction fraction). Legacy v1.0/v1.1
+    # SafeGrip-CI v1.4 uses a strong standardized-target GRU base, innovation
+    # energy landscapes, and one continuous correction controller. Legacy v1.0/v1.1
     # entries above remain untouched for reproducibility.
     v13_base=dict(
         model_kind="ci13", feature_mode="raw", use_temporal=True,
@@ -725,7 +741,8 @@ def _proposal_flags(variant: str) -> dict:
         use_magnitude_head=True, use_dynamic_loss=False, use_safety_loss=True,
         use_do_no_harm=True, use_regime_head=False, use_heteroscedastic_loss=True,
         use_aleatoric_feature=True, use_dynamics_loss=True, use_counterfactual_loss=True,
-        use_dynamics_pretrain=True, use_excitation_proxy=False, use_persistent_state=False,
+        use_dynamics_pretrain=True, use_target_standardization=True, use_selector_warmup=True,
+        use_excitation_proxy=False, use_persistent_state=False,
         use_innovation=False, use_identifiability=True, use_acceptance=False,
         use_innovation_supervision=False, use_cf_agreement_loss=False,
     )
@@ -735,6 +752,8 @@ def _proposal_flags(variant: str) -> dict:
             use_magnitude_head=False, use_safety_loss=False, use_heteroscedastic_loss=False,
             use_aleatoric_feature=False, use_dynamics_loss=False, use_counterfactual_loss=False,
             use_dynamics_pretrain=False, use_do_no_harm=False),
+        "safegrip_no_target_standardization": dict(v13_base, use_target_standardization=False),
+        "safegrip_no_selector_warmup": dict(v13_base, use_selector_warmup=False),
         "safegrip_no_dynamic_loss": dict(v13_base, use_dynamic_loss=False),
         "safegrip_no_safety_loss": dict(v13_base, use_safety_loss=False),
         "safegrip_no_physics_residual": dict(v13_base, use_physics_correction=False, use_utility_gate=False),
@@ -777,6 +796,8 @@ def _proposal_flags(variant: str) -> dict:
     out.setdefault("use_energy_improvement_feature", False)
     out.setdefault("use_magnitude_head", False)
     out.setdefault("use_do_no_harm", False)
+    out.setdefault("use_target_standardization", True)
+    out.setdefault("use_selector_warmup", True)
     # Removing all counterfactual agreement must remove both its training loss
     # and its inference-time disagreement veto.
     if canonical == "safegrip_no_cf_agreement":
@@ -808,7 +829,7 @@ def _proposal_model(variant: str, b: Bundle, hp: dict):
         model.variant_spec=flags
         return model
     if flags["model_kind"]=="ci13":
-        model=SafeGripV5Net(
+        model=SafeGripV6Net(
             len(b.features), dynamics_indices=_dynamics_indices(b.features),
             hidden=int(hp["hidden"]), gru_hidden=int(hp["gru_hidden"]), dropout=float(hp["dropout"]),
             conv_channels=int(hp.get("conv_channels", max(32, int(hp["hidden"])//2))),
@@ -830,6 +851,9 @@ def _proposal_model(variant: str, b: Bundle, hp: dict):
             energy_temperature=float(hp.get("energy_temperature",0.35)),
             use_magnitude_head=flags.get("use_magnitude_head",True),
             use_energy_improvement_feature=flags.get("use_energy_improvement_feature",True),
+            energy_noise_floor=float(hp.get("energy_noise_floor",1e-4)),
+            energy_margin_threshold=float(hp.get("energy_margin_threshold",0.25)),
+            energy_margin_temperature=float(hp.get("energy_margin_temperature",0.15)),
         )
         model.information_beta=max(0.0,float(hp.get("information_beta",0.5)))
         model.disagreement_beta=max(0.0,float(hp.get("disagreement_beta",0.25)))
@@ -900,14 +924,16 @@ def proposal_hparams(cfg, overrides=None):
         "arbitration_loss_weight":0.30, "prior_loss_weight":0.05,
         "teacher_forcing_start":0.80, "teacher_forcing_end":0.0,
         "persistence_min":0.05, "persistence_max":0.98, "inverse_expert_scale":1.0,
-        # v1.3 counterfactual-energy selective-physics proposal.
-        "conv_channels":48, "gru_layers":2, "physics_correction_scale":1.0,
+        # v1.4 strong-base + innovation-energy residual proposal.
+        "conv_channels":64, "gru_layers":2, "physics_correction_scale":1.0,
         "energy_grid_points":7, "energy_grid_radius":0.10, "energy_temperature":0.35,
-        "base_pretrain_epochs":8, "base_loss_weight":1.0, "dynamic_loss_weight":0.0,
-        "safety_loss_weight":0.20, "unsafe_margin":0.05, "unsafe_temperature":0.02,
-        "benefit_gate_loss_weight":0.35, "benefit_margin":0.002,
-        "correction_fraction_loss_weight":0.25, "correction_fraction_beta":0.05,
-        "do_no_harm_weight":0.20, "do_no_harm_margin":0.002,
+        "energy_noise_floor":1e-4, "energy_margin_threshold":0.25, "energy_margin_temperature":0.15,
+        "base_pretrain_epochs":15, "selector_warmup_epochs":4, "base_joint_lr_scale":0.10,
+        "base_loss_weight":0.25, "dynamic_loss_weight":0.0,
+        "safety_loss_weight":0.0, "unsafe_margin":0.05, "unsafe_temperature":0.02,
+        "benefit_gate_loss_weight":0.20, "benefit_margin":0.0, "benefit_temperature":0.01,
+        "correction_fraction_loss_weight":0.35, "correction_fraction_beta":0.05,
+        "do_no_harm_weight":0.05, "do_no_harm_margin":0.002,
         "contrastive_temperature":0.25, "contrastive_negatives":6,
         "freeze_dynamics_after_pretrain":True,
         "utility_gate_loss_weight":0.35, "utility_gate_beta":0.02,
@@ -1114,14 +1140,16 @@ def _masked_mean(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 
 
 def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
-    """Train SafeGrip-CI v1.3 with staged counterfactual-energy correction.
+    """Train the active SafeGrip-CI v1.4 proposal.
 
-    Stage A learns a competitive direct temporal estimator.  Stage B trains the
-    friction-conditioned dynamics model with reconstruction plus multi-negative
-    contrastive discrimination.  Stage C trains the selective correction path,
-    supervising (i) whether the physics candidate helps and (ii) the useful
-    correction fraction as separate targets.  By default the dynamics model is
-    frozen after Stage B so point losses cannot reshape the physical evidence.
+    The historical function name is retained so old notebooks keep importing
+    correctly.  The active training protocol is v1.4:
+
+    A. accuracy-only standardized-target GRU pretraining with MSE;
+    B. friction-conditioned innovation dynamics + contrastive discrimination;
+    C1. correction-controller warm-up with the strong base frozen;
+    C2. low-LR joint refinement of the base and controller;
+    D. post-hoc UQ/calibration (no calibration label enters gradient training).
     """
     flags=_proposal_flags(variant)
     hp=proposal_hparams(cfg,hp_overrides); dev=device(); model=_proposal_model(variant,b,hp).to(dev)
@@ -1134,51 +1162,62 @@ def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
         torch.from_numpy(pair_valid.astype(np.bool_)),
     )
     dl=DataLoader(dataset,batch_size=int(hp["batch_size"]),shuffle=True)
-    mu_u=float(cfg["mu_upper"]); huber_beta=float(hp.get("huber_beta",0.05))
+    mu_u=float(cfg["mu_upper"])
     patience=int(cfg["training"].get("patience",10))
 
-    base_w=max(0.0,float(hp.get("base_loss_weight",1.0)))
+    # v1.4 standardizes the friction target from training labels only.  This is
+    # a parameterization change, not additional information at inference time.
+    if hasattr(model,"set_target_stats") and flags.get("use_target_standardization",True):
+        model.set_target_stats(float(np.mean(b.ytr)),float(np.std(b.ytr)))
+
+    base_w=max(0.0,float(hp.get("base_loss_weight",0.25)))
     dyn_delta_w=max(0.0,float(hp.get("dynamic_loss_weight",0.0))) if flags.get("use_dynamic_loss",False) else 0.0
-    safety_w=max(0.0,float(hp.get("safety_loss_weight",0.20))) if flags.get("use_safety_loss",True) else 0.0
-    benefit_w=max(0.0,float(hp.get("benefit_gate_loss_weight",hp.get("utility_gate_loss_weight",0.35)))) if flags.get("use_utility_gate",True) else 0.0
-    fraction_w=max(0.0,float(hp.get("correction_fraction_loss_weight",0.25))) if flags.get("use_utility_gate",True) and flags.get("use_magnitude_head",True) else 0.0
-    harm_w=max(0.0,float(hp.get("do_no_harm_weight",0.20))) if flags.get("use_do_no_harm",True) else 0.0
+    safety_w=max(0.0,float(hp.get("safety_loss_weight",0.0))) if flags.get("use_safety_loss",True) else 0.0
+    benefit_w=max(0.0,float(hp.get("benefit_gate_loss_weight",0.20))) if flags.get("use_utility_gate",True) else 0.0
+    fraction_w=max(0.0,float(hp.get("correction_fraction_loss_weight",0.35))) if flags.get("use_utility_gate",True) and flags.get("use_magnitude_head",True) else 0.0
+    harm_w=max(0.0,float(hp.get("do_no_harm_weight",0.05))) if flags.get("use_do_no_harm",True) else 0.0
     change_w=max(0.0,float(hp.get("change_loss_weight",0.0))) if flags.get("use_regime_head",False) else 0.0
     smooth_w=max(0.0,float(hp.get("smooth_loss_weight",0.0))) if flags.get("use_regime_head",False) else 0.0
-    hetero_w=max(0.0,float(hp.get("heteroscedastic_loss_weight",0.05))) if flags.get("use_heteroscedastic_loss",True) else 0.0
+    hetero_w=max(0.0,float(hp.get("heteroscedastic_loss_weight",0.0))) if flags.get("use_heteroscedastic_loss",True) else 0.0
     dynamics_w=max(0.0,float(hp.get("dynamics_loss_weight",0.10))) if flags.get("use_dynamics_loss",True) else 0.0
     cf_w=max(0.0,float(hp.get("counterfactual_loss_weight",0.20))) if flags.get("use_counterfactual_loss",True) else 0.0
     unsafe_margin=max(0.0,float(hp.get("unsafe_margin",0.05)))
     unsafe_temperature=max(1e-4,float(hp.get("unsafe_temperature",0.02)))
-    help_margin=max(0.0,float(hp.get("benefit_margin",0.002)))
+    help_margin=max(0.0,float(hp.get("benefit_margin",0.0)))
+    help_temperature=max(1e-4,float(hp.get("benefit_temperature",0.01)))
     harm_margin=max(0.0,float(hp.get("do_no_harm_margin",0.002)))
     change_threshold=max(1e-5,float(hp.get("change_threshold",0.02)))
     contrastive_temperature=max(1e-3,float(hp.get("contrastive_temperature",0.25)))
     contrastive_negatives=max(2,int(hp.get("contrastive_negatives",6)))
 
-    # Stage A: make the direct estimator competitive before any physics path is
-    # allowed to influence it.  Only the temporal/base modules are optimized.
+    # ------------------------------ Stage A ------------------------------
+    # Accuracy-only pretraining.  No safety, UQ, physics or selector objective
+    # is allowed to weaken the main estimator before it has matched the point
+    # estimation task itself.
     base_modules=[model.temporal_conv,model.temporal_gru,model.static_encoder,model.temporal_proj,model.fuse,model.base_head]
-    base_params=[p for m in base_modules for p in m.parameters()]
-    base_pre_epochs=int(hp.get("base_pretrain_epochs",8))
-    if base_pre_epochs>0:
+    base_params=[]; seen=set()
+    for module in base_modules:
+        for p0 in module.parameters():
+            if id(p0) not in seen:
+                seen.add(id(p0)); base_params.append(p0)
+    base_pre_epochs=int(hp.get("base_pretrain_epochs",15))
+    if base_pre_epochs>0 and base_params:
         base_opt=torch.optim.AdamW(base_params,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
         for _pre in range(min(base_pre_epochs,max(1,int(epochs)))):
             model.train()
             for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
                 xb=xb.to(dev); yb=yb.to(dev); base_opt.zero_grad()
-                h=model.encode(xb); base,_=model._base_prediction(h,mu_u)
-                loss=nn.functional.smooth_l1_loss(base,yb,beta=huber_beta)
-                if safety_w>0:
-                    # Smooth surrogate aligned with the reported unsafe event
-                    # prediction - target > unsafe_margin.
-                    risk=nn.functional.softplus((base-yb-unsafe_margin)/unsafe_temperature)*unsafe_temperature
-                    loss=loss+0.5*safety_w*risk.mean()
+                h=model.encode(xb); base,z=model._base_prediction(h,mu_u)
+                if hasattr(model,"standardized_target"):
+                    target_z=model.standardized_target(yb)
+                    loss=nn.functional.mse_loss(z,target_z)
+                else:
+                    loss=nn.functional.mse_loss(base,yb)
                 loss.backward(); torch.nn.utils.clip_grad_norm_(base_params,5.0); base_opt.step()
 
-    # Stage B: force G(context, mu) to be friction-discriminative.  Plain next-
-    # sensor reconstruction alone can ignore mu; the multi-negative objective
-    # makes that shortcut expensive.
+    # ------------------------------ Stage B ------------------------------
+    # Train the friction-conditioned model on innovation, not the absolute
+    # endpoint.  Contrastive hypotheses force the branch to actually use mu.
     dyn_params=list(model.dynamics_gru.parameters())+list(model.dynamics_context.parameters())+list(model.dynamics_head.parameters())
     pre_epochs=int(hp.get("dynamics_pretrain_epochs",8)) if flags.get("use_dynamics_pretrain",True) and flags.get("use_dynamics_loss",True) else 0
     if pre_epochs>0:
@@ -1188,7 +1227,7 @@ def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
             for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
                 xb=xb.to(dev); yb=yb.to(dev); dyn_opt.zero_grad()
                 dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
-                loss=dynamics_w*nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
+                loss=dynamics_w*nn.functional.mse_loss(dyn_true,dyn_target)
                 if cf_w>0:
                     cf_loss,_=model.counterfactual_dynamics_loss(
                         xb,yb,mu_u,temperature=contrastive_temperature,negatives=contrastive_negatives
@@ -1198,15 +1237,33 @@ def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
 
     freeze_dynamics=bool(hp.get("freeze_dynamics_after_pretrain",True)) and pre_epochs>0
     if freeze_dynamics:
-        for p in dyn_params:
-            p.requires_grad_(False)
+        for p0 in dyn_params: p0.requires_grad_(False)
 
-    trainable=[p for p in model.parameters() if p.requires_grad]
-    opt=torch.optim.AdamW(trainable,lr=float(hp["lr"]),weight_decay=float(hp["weight_decay"]))
+    # --------------------------- Stage C1 / C2 ---------------------------
+    # Warm up the correction controller with base LR=0, then allow only a
+    # small base LR so the selector is not chasing a rapidly moving reference.
+    base_ids={id(p0) for p0 in base_params}
+    dynamics_ids={id(p0) for p0 in dyn_params}
+    other_params=[p0 for p0 in model.parameters() if p0.requires_grad and id(p0) not in base_ids and id(p0) not in dynamics_ids]
+    groups=[]
+    if base_params:
+        groups.append({"params":base_params,"lr":0.0,"weight_decay":float(hp["weight_decay"]),"name":"base"})
+    if other_params:
+        groups.append({"params":other_params,"lr":float(hp["lr"]),"weight_decay":float(hp["weight_decay"]),"name":"controller"})
+    if not freeze_dynamics:
+        groups.append({"params":dyn_params,"lr":float(hp["lr"]),"weight_decay":float(hp["weight_decay"]),"name":"dynamics"})
+    opt=torch.optim.AdamW(groups)
+    warmup_epochs=(
+        max(0,int(hp.get("selector_warmup_epochs",4)))
+        if flags.get("use_selector_warmup",True) else 0
+    )
+    base_joint_scale=max(0.0,float(hp.get("base_joint_lr_scale",0.10)))
     best=None; bestloss=float("inf"); bad=0
 
-    # Stage C: train direct estimator + two-stage selective correction.
     for _epoch in range(max(1,int(epochs))):
+        for group in opt.param_groups:
+            if group.get("name")=="base":
+                group["lr"]=0.0 if _epoch<warmup_epochs else float(hp["lr"])*base_joint_scale
         model.train()
         for xb,yb,lb,eb,xp,yp,lp,pair_mask in dl:
             xb=xb.to(dev); yb=yb.to(dev); lb=lb.to(dev)
@@ -1214,19 +1271,18 @@ def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
             opt.zero_grad()
             d=model.forward_details(xb,lb,mu_u)
             pred=d["prediction"]
-            loss=nn.functional.smooth_l1_loss(pred,yb,beta=huber_beta)
+            # Primary metric is RMSE, therefore the point objective is MSE.
+            loss=nn.functional.mse_loss(pred,yb)
 
             if base_w>0:
-                loss=loss+base_w*nn.functional.smooth_l1_loss(d["base_prediction"],yb,beta=huber_beta)
+                loss=loss+base_w*nn.functional.mse_loss(d["base_prediction"],yb)
 
             need_prev=(dyn_delta_w>0 or change_w>0 or smooth_w>0)
             dprev=None; target_delta=None
             if need_prev:
                 dprev=model.forward_details(xp,lp,mu_u); target_delta=yb-yp
             if dyn_delta_w>0 and dprev is not None:
-                delta_err=nn.functional.smooth_l1_loss(
-                    pred-dprev["prediction"],target_delta,beta=max(huber_beta,0.03),reduction="none"
-                )
+                delta_err=(pred-dprev["prediction"]-target_delta).square()
                 loss=loss+dyn_delta_w*_masked_mean(delta_err,pair_mask)
             if change_w>0 and dprev is not None:
                 change_target=(torch.abs(target_delta)>change_threshold).to(pred.dtype)
@@ -1238,7 +1294,9 @@ def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
                 stable=pair_mask & (torch.abs(target_delta)<=change_threshold)
                 loss=loss+smooth_w*_masked_mean(torch.abs(pred-dprev["prediction"]),stable)
 
-            if safety_w>0:
+            # Safety is deliberately a late/optional regularizer in v1.4.  The
+            # default TRUST config sets its weight to zero during point fitting.
+            if safety_w>0 and _epoch>=warmup_epochs:
                 risk=nn.functional.softplus((pred-yb-unsafe_margin)/unsafe_temperature)*unsafe_temperature
                 loss=loss+safety_w*risk.mean()
 
@@ -1246,31 +1304,38 @@ def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
                 base=d["base_prediction"].detach()
                 full=d["inverse_candidate_raw"].detach()
                 delta=full-base
-                active=torch.abs(delta)>1e-5
+                active=torch.abs(delta)>1e-6
                 base_err=torch.abs(base-yb)
                 candidate_err=torch.abs(full-yb)
-                help_target=(candidate_err+help_margin<base_err).to(pred.dtype).detach()
+                gain=(base_err-candidate_err).detach()
+                # Soft utility supervision avoids a discontinuous label at a
+                # few thousandths of friction coefficient.
+                help_target=torch.sigmoid((gain-help_margin)/help_temperature).detach()
                 if benefit_w>0:
                     p_help=torch.clamp(d["benefit_probability"],1e-5,1.0-1e-5)
                     bce=nn.functional.binary_cross_entropy(p_help,help_target,reduction="none")
-                    # Train on all samples: knowing when *not* to use physics is
-                    # as important as recognizing helpful corrections.
-                    loss=loss+benefit_w*bce.mean()
+                    # Mild gain-aware reweighting gives rare clearly helpful
+                    # corrections enough influence without requiring test-time
+                    # class frequencies or a hand-coded positive class weight.
+                    weight=0.5+torch.abs(help_target-0.5)
+                    loss=loss+benefit_w*torch.mean(weight*bce)
                 if fraction_w>0:
                     oracle=torch.clamp(((yb-base)*delta)/(delta.square()+1e-6),0.0,1.0).detach()
-                    useful=active & (help_target>0.5)
                     frac_err=nn.functional.smooth_l1_loss(
-                        d["correction_fraction"],oracle,beta=float(hp.get("correction_fraction_beta",0.05)),reduction="none"
+                        d["correction_fraction"],oracle,
+                        beta=float(hp.get("correction_fraction_beta",0.05)),reduction="none"
                     )
-                    loss=loss+fraction_w*_masked_mean(frac_err,useful)
+                    frac_weight=(0.10+0.90*help_target)*active.to(pred.dtype)
+                    denom=torch.clamp(frac_weight.sum(),min=1.0)
+                    loss=loss+fraction_w*torch.sum(frac_weight*frac_err)/denom
 
-            if harm_w>0:
+            if harm_w>0 and _epoch>=warmup_epochs:
                 base_err=torch.abs(d["base_prediction"].detach()-yb)
                 final_err=torch.abs(pred-yb)
                 harm=torch.relu(final_err-base_err-harm_margin)
                 loss=loss+harm_w*torch.mean(harm.square())
 
-            if hetero_w>0:
+            if hetero_w>0 and _epoch>=warmup_epochs:
                 scale=torch.clamp(d["aleatoric_scale"],min=float(hp.get("aleatoric_floor",0.005)),max=mu_u)
                 err=(pred-yb)/scale
                 nll=0.5*torch.clamp(err.square(),max=100.0)+torch.log(scale)
@@ -1278,26 +1343,26 @@ def _fit_proposal_v13(variant,b:Bundle,cfg,epochs,hp_overrides=None):
 
             if dynamics_w>0 and not freeze_dynamics:
                 dyn_true,dyn_target=model.dynamics_prediction(xb,yb,mu_u)
-                loss=loss+dynamics_w*nn.functional.smooth_l1_loss(dyn_true,dyn_target,beta=0.2)
+                loss=loss+dynamics_w*nn.functional.mse_loss(dyn_true,dyn_target)
                 if cf_w>0:
                     cf_loss,_=model.counterfactual_dynamics_loss(
                         xb,yb,mu_u,temperature=contrastive_temperature,negatives=contrastive_negatives
                     )
                     loss=loss+cf_w*cf_loss
 
-            loss.backward(); torch.nn.utils.clip_grad_norm_(trainable,5.0); opt.step()
+            loss.backward()
+            trainable=[p0 for p0 in model.parameters() if p0.requires_grad]
+            torch.nn.utils.clip_grad_norm_(trainable,5.0); opt.step()
 
         v=_forward_point(model,b.Xv,np.asarray(lo_val,np.float32),mu_u,return_features=False,
                          excitation=b.ev,ids=b.idv,stateful=False)[0]
         vl=float(np.mean((np.asarray(v,float)-np.asarray(b.yv,float))**2))
         if vl<bestloss-1e-7:
-            bestloss=vl; best={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}; bad=0
+            bestloss=vl; best={k:v0.detach().cpu().clone() for k,v0 in model.state_dict().items()}; bad=0
         else:
             bad+=1
-        if bad>=patience:
-            break
-    if best:
-        model.load_state_dict(best)
+        if bad>=patience: break
+    if best: model.load_state_dict(best)
 
     if flags.get("use_uq",True):
         _fit_residual_scale(model,b,cfg,hp,np.asarray(lo_val,np.float32))
@@ -2036,14 +2101,14 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         preds[name+"_pi95_high_raw"]=np.mean(np.stack(seed_pi_high_raw),axis=0)
 
     (out/"proposal_reliability.json").write_text(json.dumps({
-        "method":"SafeGrip-CI v1.3 counterfactual energy-guided selective physics correction",
-        "primary_estimator":"raw-sensor Conv1D + two-layer GRU temporal estimator with direct pretraining",
-        "physics_role":"posterior-mean candidate from a local friction-hypothesis energy landscape; never an equal standalone expert",
-        "utility_gate":"two-stage selector: benefit probability multiplied by learned correction fraction; inference uses only raw-sensor/dynamics evidence",
-        "identifiability":"one minus normalized posterior entropy over local friction hypotheses",
-        "dynamics_training":"friction-conditioned endpoint reconstruction plus multi-negative contrastive friction discrimination",
-        "regime_model":"disabled by default in v1.3; no recursive friction state is used",
-        "risk_training":"metric-aligned smooth unsafe-overestimation surrogate plus explicit do-no-harm loss",
+        "method":"SafeGrip-CI v1.4 strong-base innovation-energy residual correction",
+        "primary_estimator":"raw-sensor two-layer GRU temporal estimator with training-only target standardization and MSE pretraining",
+        "physics_role":"boundary-aware local friction-hypothesis energy candidate used only as a residual refinement of the strong base",
+        "utility_gate":"single learned continuous correction fraction; benefit probability is auxiliary diagnostic only",
+        "identifiability":"posterior concentration multiplied by absolute normalized energy-margin strength",
+        "dynamics_training":"friction-conditioned endpoint-innovation prediction plus multi-negative contrastive friction discrimination",
+        "regime_model":"disabled by default in v1.4; no recursive friction state is used",
+        "risk_training":"accuracy-first MSE pretraining; safety/do-no-harm are optional late regularizers and disabled or low-weight by default",
         "handcrafted_excitation_used_by_full_proposal":False,
         "persistent_state_used_by_full_proposal":False,
         "per_seed_uq_initial_scale":seed_uq_initial_scales,
@@ -2079,9 +2144,9 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
         "physics_window_samples":int(cfg.get("physics",{}).get("window_samples",1)),
         "calibration_labels_used_in_gradient_training":False,
         "proposal_feature_engineering_label_free":True,
-        "proposal_point_loss":"Huber final estimate + direct-base supervision + metric-aligned unsafe-overestimation surrogate + benefit classification + correction-fraction regression + do-no-harm loss + heteroscedastic NLL",
-        "proposal_architecture":"strong raw-sensor Conv1D-GRU estimator + K-hypothesis counterfactual energy landscape + posterior-mean physics candidate + benefit gate x magnitude head",
-        "proposal_reliability":"entropy-based counterfactual identifiability and dynamics-energy improvement inform whether physics should be used and how much",
+        "proposal_point_loss":"MSE final estimate + light base MSE supervision + soft utility auxiliary classification + soft-weighted continuous correction regression; optional late safety/UQ losses",
+        "proposal_architecture":"matched-scale raw-sensor GRU estimator + boundary-aware innovation-energy landscape + residual physics candidate + single continuous correction controller",
+        "proposal_reliability":"calibrated entropy/energy-margin evidence and candidate diagnostics inform the continuous correction controller",
         "proposal_bound_parameterization":"physics feasible-set projection is applied only after the selective residual correction",
         "proposal_uq":"heteroscedastic representation + post-hoc residual scale + observability/gate-uncertainty inflation + block-max split-conformal multiplier",
         "proposal_uq_dependence_note":"block-max calibration is a conservative dependence mitigation, not an arbitrary-dependence finite-sample guarantee",
@@ -2218,21 +2283,21 @@ def run_ablation(csv_path,out_dir,cfg,preset="paper",variants=None,hp_overrides=
     by_seed=pd.DataFrame(results); summary=_aggregate_seed_metrics(results)
     summary.to_csv(out/"ablation_metrics.csv",index=False); by_seed.to_csv(out/"ablation_metrics_by_seed.csv",index=False); preds.to_csv(out/"ablation_predictions.csv",index=False)
     (out/"ablation_design.json").write_text(json.dumps({
-        "proposal":"SafeGrip-CI v1.3 counterfactual-energy guided selective physics correction",
+        "proposal":"SafeGrip-CI v1.4 strong-base innovation-energy residual correction",
         "primary_variants":variants,
         "semantic_specs":semantic,
         "key_comparisons":[
-            "safegrip_base_temporal vs safegrip tests the net gain of the complete selective-physics mechanism over the matched temporal estimator",
-            "safegrip_no_safety_loss vs safegrip tests metric-aligned unsafe-overestimation training",
+            "safegrip_base_temporal vs safegrip tests the net gain of the complete counterfactual-refinement mechanism over the matched temporal estimator",
+            "safegrip_no_target_standardization vs safegrip tests training-only friction-target standardization",
+            "safegrip_no_selector_warmup vs safegrip tests controller warm-up with a frozen strong base",
             "safegrip_no_physics_residual vs safegrip tests whether the counterfactual energy candidate improves the direct estimate",
             "safegrip_no_utility_gate vs safegrip tests selective correction against unconditional physics correction",
-            "safegrip_no_identifiability vs safegrip tests entropy-derived local identifiability as selector evidence",
-            "safegrip_no_magnitude_head vs safegrip tests separating help probability from correction magnitude",
+            "safegrip_no_identifiability vs safegrip tests calibrated entropy/energy-margin identifiability as controller evidence",
+            "safegrip_no_magnitude_head vs safegrip tests the continuous correction controller against benefit-probability-only control",
             "safegrip_no_energy_improvement vs safegrip tests whether counterfactual residual improvement is useful inference-time evidence",
-            "safegrip_no_contrastive_dynamics vs safegrip tests friction-discriminative contrastive dynamics pretraining",
+            "safegrip_no_contrastive_dynamics vs safegrip tests friction-discriminative contrastive innovation-dynamics pretraining",
             "safegrip_no_do_no_harm vs safegrip tests the explicit correction harm penalty",
             "safegrip_no_bound vs safegrip tests the physics feasible-set safety projection",
-            "safegrip_no_heteroscedastic vs safegrip tests uncertainty-aware representation training",
             "safegrip_no_uq vs safegrip is the UQ-only control with identical point path",
         ],
         "same_hyperparameters_across_variants":True,"seeds":seed_list,

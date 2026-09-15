@@ -1,10 +1,10 @@
 # Validation
 
-## SafeGrip-CI v1.3 checks
+## SafeGrip-CI v1.4 checks
 
-The regression suite covers data leakage controls, LiRA preparation, physics support, literature comparator contracts, historical proposal compatibility, and the active v1.3 point path.
+The regression suite covers data leakage controls, LiRA preparation, physics support, literature comparator contracts, historical proposal compatibility, and the active v1.4 point path.
 
-v1.3-specific tests verify:
+v1.4-specific tests verify:
 
 - counterfactual energy posterior outputs are finite and bounded;
 - entropy identifiability is in [0,1];
@@ -13,7 +13,7 @@ v1.3-specific tests verify:
 - unconditional-physics ablation applies the complete candidate correction;
 - multi-negative contrastive dynamics loss is differentiable;
 - all 13 primary ablation semantic specifications are distinct where expected;
-- v1.3 tuning-space parameters are registered.
+- v1.4 tuning-space parameters are registered.
 
 Before packaging, run:
 

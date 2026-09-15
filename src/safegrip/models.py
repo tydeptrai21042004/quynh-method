@@ -1719,13 +1719,427 @@ class SafeGripCI13Net(SafeGripCI12Net):
             "features":uq_h,
         }
 
+
+
+class SafeGripCI14Net(SafeGripCI13Net):
+    """SafeGrip-CI v1.4: strong temporal base + innovation-energy refinement.
+
+    v1.4 keeps the counterfactual-energy idea from v1.3 but changes the parts
+    that most directly limit point RMSE:
+
+    * the primary estimator is a two-layer raw-sensor GRU with the same 256-unit
+      scale used by the strongest literature GRU comparator in the TRUST setup;
+    * the friction target is standardized using *training-only* statistics and
+      the primary head is linear in standardized target space (no sigmoid
+      compression);
+    * the dynamics branch predicts endpoint *innovation* rather than the absolute
+      endpoint, which makes temporal persistence a much less useful shortcut;
+    * the local friction grid is boundary-aware and masked instead of duplicating
+      clipped hypotheses;
+    * identifiability combines posterior concentration with absolute energy
+      margin, so tiny numerical differences do not look highly informative;
+    * one continuous correction controller is the actual prediction gate.
+      ``benefit_probability`` remains an auxiliary, interpretable diagnostic and
+      is deliberately not multiplied into the point correction.
+
+    These changes preserve the paper's central counterfactual-refinement idea
+    while making the base estimator and optimization objective competitive with
+    the RMSE-focused baselines.
+    """
+
+    def __init__(
+        self,
+        d: int,
+        dynamics_indices: list[int] | tuple[int, ...] | None = None,
+        hidden: int = 128,
+        gru_hidden: int = 256,
+        dropout: float = 0.10,
+        conv_channels: int | None = None,
+        gru_layers: int = 2,
+        counterfactual_delta: float = 0.08,
+        identifiability_lambda: float = 1e-3,
+        inverse_dynamics_ridge: float = 1e-3,
+        inverse_dynamics_max_step: float = 0.10,
+        physics_correction_scale: float = 1.0,
+        use_physics_correction: bool = True,
+        use_utility_gate: bool = True,
+        use_identifiability_feature: bool = True,
+        use_bound: bool = True,
+        use_regime_head: bool = False,
+        use_aleatoric_feature: bool = True,
+        aleatoric_floor: float = 0.005,
+        energy_grid_points: int = 7,
+        energy_grid_radius: float | None = None,
+        energy_temperature: float = 0.35,
+        use_magnitude_head: bool = True,
+        use_energy_improvement_feature: bool = True,
+        energy_noise_floor: float = 1e-4,
+        energy_margin_threshold: float = 0.25,
+        energy_margin_temperature: float = 0.15,
+    ):
+        super().__init__(
+            d=d,
+            dynamics_indices=dynamics_indices,
+            hidden=hidden,
+            gru_hidden=gru_hidden,
+            dropout=dropout,
+            conv_channels=conv_channels,
+            gru_layers=gru_layers,
+            counterfactual_delta=counterfactual_delta,
+            identifiability_lambda=identifiability_lambda,
+            inverse_dynamics_ridge=inverse_dynamics_ridge,
+            inverse_dynamics_max_step=inverse_dynamics_max_step,
+            physics_correction_scale=physics_correction_scale,
+            use_physics_correction=use_physics_correction,
+            use_utility_gate=use_utility_gate,
+            use_identifiability_feature=use_identifiability_feature,
+            use_bound=use_bound,
+            use_regime_head=use_regime_head,
+            use_aleatoric_feature=use_aleatoric_feature,
+            aleatoric_floor=aleatoric_floor,
+            energy_grid_points=energy_grid_points,
+            energy_grid_radius=energy_grid_radius,
+            energy_temperature=energy_temperature,
+            use_magnitude_head=use_magnitude_head,
+            use_energy_improvement_feature=use_energy_improvement_feature,
+        )
+        self.energy_noise_floor=max(1e-8,float(energy_noise_floor))
+        self.energy_margin_threshold=float(energy_margin_threshold)
+        self.energy_margin_temperature=max(1e-4,float(energy_margin_temperature))
+
+        # Replace the v1.3 Conv1D/static fusion with a stronger, simpler raw-GRU
+        # base.  Keeping the inherited attribute names means the existing staged
+        # trainer, exporters and checkpoints remain easy to reason about.
+        self.temporal_conv=nn.Identity()
+        self.static_encoder=nn.Identity()
+        self.temporal_gru=nn.GRU(
+            self.d,
+            self.gru_hidden,
+            num_layers=max(1,int(gru_layers)),
+            batch_first=True,
+            dropout=float(dropout) if int(gru_layers)>1 else 0.0,
+        )
+        self.temporal_proj=nn.Sequential(
+            nn.Linear(self.gru_hidden,self.hidden),nn.SiLU(),nn.LayerNorm(self.hidden),
+            nn.Dropout(dropout),
+        )
+        self.fuse=nn.Identity()
+        inner=max(32,self.hidden//2)
+        self.base_head=nn.Sequential(
+            nn.Linear(self.hidden,self.hidden),nn.SiLU(),nn.Dropout(dropout),
+            nn.Linear(self.hidden,inner),nn.SiLU(),nn.Linear(inner,1),
+        )
+        self._init_gru(self.temporal_gru)
+
+        # Training-only target statistics are assigned by the fitter.  Defaults
+        # keep direct unit tests and old checkpoint loading well defined.
+        self.register_buffer("target_mean",torch.tensor(0.0,dtype=torch.float32))
+        self.register_buffer("target_std",torch.tensor(1.0,dtype=torch.float32))
+
+    @staticmethod
+    def _init_gru(gru: nn.GRU) -> None:
+        for name,param in gru.named_parameters():
+            if "weight_ih" in name:
+                nn.init.xavier_uniform_(param)
+            elif "weight_hh" in name:
+                # Each gate block is initialized independently.
+                for block in param.chunk(3,dim=0):
+                    nn.init.orthogonal_(block)
+            elif "bias" in name:
+                nn.init.zeros_(param)
+
+    def set_target_stats(self, mean: float, std: float) -> None:
+        std=max(float(std),1e-4)
+        with torch.no_grad():
+            self.target_mean.fill_(float(mean))
+            self.target_std.fill_(std)
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        y,_=self.temporal_gru(x)
+        return self.temporal_proj(y[:,-1])
+
+    def _base_prediction(
+        self,h: torch.Tensor,upper: float | torch.Tensor
+    ) -> tuple[torch.Tensor,torch.Tensor]:
+        # z lives in standardized target space.  Mapping back with training-only
+        # statistics avoids the strong output compression of mu_upper*sigmoid(z).
+        z=self.base_head(h).squeeze(-1)
+        raw=self.target_mean.to(z.dtype)+self.target_std.to(z.dtype)*z
+        upper_t=torch.as_tensor(upper,dtype=z.dtype,device=z.device)
+        mu=torch.clamp(raw,min=0.0,max=upper_t)
+        return mu,z
+
+    def standardized_target(self, y: torch.Tensor) -> torch.Tensor:
+        return (y-self.target_mean.to(y.dtype))/torch.clamp(self.target_std.to(y.dtype),min=1e-4)
+
+    def _innovation_target(self,x: torch.Tensor) -> torch.Tensor:
+        idx=torch.as_tensor(self.dynamics_indices,dtype=torch.long,device=x.device)
+        if x.shape[1] <= 1:
+            return torch.zeros((x.shape[0],len(self.dynamics_indices)),dtype=x.dtype,device=x.device)
+        endpoint=torch.index_select(x[:,-1,:],1,idx)
+        previous=torch.index_select(x[:,-2,:],1,idx)
+        return endpoint-previous
+
+    def dynamics_prediction(
+        self,x: torch.Tensor,mu: torch.Tensor,upper: float | torch.Tensor=1.3
+    ) -> tuple[torch.Tensor,torch.Tensor]:
+        h=self._encode_dynamics_context(x)
+        pred=self.dynamics_prediction_from_context(h,mu,upper)
+        return pred,self._innovation_target(x)
+
+    def _boundary_grid(
+        self,mu0: torch.Tensor,upper_t: torch.Tensor
+    ) -> tuple[torch.Tensor,torch.Tensor,torch.Tensor]:
+        """Return offsets, candidates and a valid-hypothesis mask.
+
+        Zero is always the center hypothesis.  At an exact physical boundary the
+        impossible side is masked rather than represented by duplicated clipped
+        candidates, which keeps posterior entropy and correction neutral.
+        """
+        half=self.energy_grid_points//2
+        neg_span=torch.minimum(mu0,torch.full_like(mu0,self.energy_grid_radius)).clamp_min(0.0)
+        pos_span=torch.minimum(upper_t-mu0,torch.full_like(mu0,self.energy_grid_radius)).clamp_min(0.0)
+        frac=torch.arange(half,0,-1,dtype=mu0.dtype,device=mu0.device)/float(half)
+        neg=-neg_span[:,None]*frac[None,:]
+        pos=pos_span[:,None]*torch.flip(frac,dims=[0])[None,:]
+        zero=torch.zeros((mu0.shape[0],1),dtype=mu0.dtype,device=mu0.device)
+        offsets=torch.cat([neg,zero,pos],dim=1)
+        valid_neg=(neg_span[:,None]>1e-8).expand(-1,half)
+        valid_pos=(pos_span[:,None]>1e-8).expand(-1,half)
+        valid=torch.cat([valid_neg,torch.ones_like(zero,dtype=torch.bool),valid_pos],dim=1)
+        candidates=mu0[:,None]+offsets
+        return offsets,candidates,valid
+
+    def _energy_landscape(
+        self,x: torch.Tensor,base_mu: torch.Tensor,upper: float | torch.Tensor
+    ) -> dict[str,torch.Tensor]:
+        observed=self._innovation_target(x).detach()
+        dyn_h=self._encode_dynamics_context(x)
+        dyn_detached=dyn_h.detach()
+        upper_t=torch.as_tensor(upper,dtype=base_mu.dtype,device=base_mu.device)
+        mu0=base_mu.detach()
+        offsets,candidates,valid=self._boundary_grid(mu0,upper_t)
+        bsz,k=candidates.shape
+        ctx=dyn_detached[:,None,:].expand(-1,k,-1).reshape(bsz*k,-1)
+        pred=self.dynamics_prediction_from_context(ctx,candidates.reshape(-1),upper)
+        pred=pred.reshape(bsz,k,-1).detach()
+        energies=torch.mean((pred-observed[:,None,:]).square(),dim=-1)
+
+        masked_energy=energies.masked_fill(~valid,float("inf"))
+        emin=masked_energy.min(dim=-1,keepdim=True).values
+        diff=torch.where(valid,energies-emin,torch.zeros_like(energies))
+        valid_count=valid.sum(dim=-1,keepdim=True).clamp_min(1)
+        spread=(diff.abs().sum(dim=-1,keepdim=True)/valid_count.to(diff.dtype)).clamp_min(self.energy_noise_floor)
+        logits=-(energies-emin)/(self.energy_temperature*spread)
+        logits=logits.masked_fill(~valid,-1e9)
+        weights=torch.softmax(logits,dim=-1)
+
+        uniform=valid.to(weights.dtype)/valid_count.to(weights.dtype)
+        posterior_offset=torch.sum((weights-uniform)*offsets,dim=-1)
+        correction=torch.clamp(
+            posterior_offset,min=-self.inverse_dynamics_max_step,max=self.inverse_dynamics_max_step
+        ).detach()
+        candidate_mu=torch.clamp(mu0+correction,min=0.0,max=upper_t)
+
+        entropy=-(weights*torch.log(weights.clamp_min(1e-8))*valid.to(weights.dtype)).sum(dim=-1)
+        vc=valid_count.squeeze(-1).to(weights.dtype)
+        log_vc=torch.log(vc.clamp_min(2.0))
+        entropy_norm=torch.where(vc>1.0,entropy/log_vc,torch.ones_like(entropy))
+        entropy_ident=torch.clamp(1.0-entropy_norm,0.0,1.0)
+
+        center=k//2
+        residual_base=energies[:,center]
+        g_candidate=self.dynamics_prediction_from_context(dyn_detached,candidate_mu.detach(),upper).detach()
+        residual_candidate=torch.mean((g_candidate-observed).square(),dim=-1)
+        normalized_improvement=(residual_base-residual_candidate)/torch.clamp(
+            residual_base+residual_candidate,min=self.energy_noise_floor
+        )
+
+        best_energy=masked_energy.min(dim=-1).values
+        margin=(residual_base-best_energy)/spread.squeeze(-1)
+        absolute_strength=torch.sigmoid(
+            (margin-self.energy_margin_threshold)/self.energy_margin_temperature
+        )
+        identifiability=(entropy_ident*absolute_strength).detach()
+
+        if k>=3:
+            left=energies[:,center-1]; right=energies[:,center+1]
+            both=valid[:,center-1]&valid[:,center+1]
+            local_scale=torch.clamp(torch.mean(torch.where(valid,energies,torch.zeros_like(energies)),dim=-1),min=self.energy_noise_floor)
+            curvature=torch.where(
+                both,torch.relu(left+right-2.0*residual_base)/local_scale,torch.zeros_like(residual_base)
+            )
+        else:
+            curvature=torch.zeros_like(residual_base)
+
+        energy_mean=(torch.where(valid,energies,torch.zeros_like(energies)).sum(dim=-1)/vc)
+        separation=(energy_mean-best_energy)/torch.clamp(energy_mean+best_energy,min=self.energy_noise_floor)
+        separation=torch.clamp(separation,min=0.0,max=1.0)
+        return {
+            "context":dyn_h,
+            "candidate_grid":candidates.detach(),
+            "valid_grid":valid.detach(),
+            "energy_grid":energies.detach(),
+            "energy_weights":weights.detach(),
+            "candidate_mu":candidate_mu.detach(),
+            "correction":correction,
+            "identifiability":identifiability,
+            "posterior_entropy":entropy_norm.detach(),
+            "information_raw":separation.detach(),
+            "residual_base":residual_base.detach(),
+            "residual_candidate":residual_candidate.detach(),
+            "normalized_improvement":normalized_improvement.detach(),
+            "energy_curvature":curvature.detach(),
+            "energy_margin":margin.detach(),
+            "energy_strength":absolute_strength.detach(),
+        }
+
+    def counterfactual_dynamics_loss(
+        self,x: torch.Tensor,true_mu: torch.Tensor,upper: float | torch.Tensor=1.3,
+        temperature: float=0.25,negatives: int=6,
+    ) -> tuple[torch.Tensor,dict[str,torch.Tensor]]:
+        """Contrastive friction discrimination using innovation prediction.
+
+        Wrong hypotheses are generated only on physically feasible sides.  A
+        deterministic fallback mirrors the offset when one side is unavailable,
+        avoiding repeated clipped negatives at 0 or ``mu_upper``.
+        """
+        context=self._encode_dynamics_context(x)
+        target=self._innovation_target(x)
+        upper_t=torch.as_tensor(upper,dtype=true_mu.dtype,device=true_mu.device)
+        n=max(2,int(negatives)); half=max(1,n//2)
+        mags=torch.linspace(
+            self.counterfactual_delta,
+            max(self.counterfactual_delta,self.energy_grid_radius*1.5),
+            half,dtype=true_mu.dtype,device=true_mu.device,
+        )
+        raw_offsets=torch.cat([-torch.flip(mags,dims=[0]),mags],dim=0)
+        if raw_offsets.numel()>n: raw_offsets=raw_offsets[:n]
+        proposed=true_mu[:,None]+raw_offsets[None,:]
+        reflected=true_mu[:,None]-raw_offsets[None,:]
+        feasible=(proposed>=0.0)&(proposed<=upper_t)
+        wrong=torch.where(feasible,proposed,reflected)
+        wrong=torch.clamp(wrong,min=0.0,max=upper_t)
+        # If the sample sits exactly at a boundary, reflection can still create
+        # duplicates. A tiny deterministic rank offset keeps negatives distinct.
+        jitter=torch.linspace(-1e-4,1e-4,wrong.shape[1],dtype=wrong.dtype,device=wrong.device)
+        wrong=torch.clamp(wrong+jitter[None,:],min=0.0,max=upper_t)
+        hypotheses=torch.cat([true_mu[:,None],wrong],dim=-1)
+        bsz,k=hypotheses.shape
+        ctx=context[:,None,:].expand(-1,k,-1).reshape(bsz*k,-1)
+        pred=self.dynamics_prediction_from_context(ctx,hypotheses.reshape(-1),upper).reshape(bsz,k,-1)
+        energy=torch.mean((pred-target[:,None,:]).square(),dim=-1)
+        scale=torch.mean(torch.abs(energy-energy[:,:1]),dim=-1,keepdim=True).detach().clamp_min(self.energy_noise_floor)
+        logits=-(energy-energy.min(dim=-1,keepdim=True).values)/(max(float(temperature),1e-3)*scale)
+        labels=torch.zeros(bsz,dtype=torch.long,device=x.device)
+        loss=nn.functional.cross_entropy(logits,labels)
+        positive=energy[:,0]; best_negative=energy[:,1:].min(dim=-1).values
+        return loss,{
+            "positive_energy":positive.detach(),
+            "best_negative_energy":best_negative.detach(),
+            "ranking_accuracy":(positive<best_negative).to(x.dtype).mean().detach(),
+        }
+
+    def forward_details(
+        self,x: torch.Tensor,lower: torch.Tensor | None=None,
+        upper: float | torch.Tensor=1.3,excitation: torch.Tensor | None=None,
+        prior_mu: torch.Tensor | None=None,prior_mask: torch.Tensor | None=None,
+    ) -> dict[str,torch.Tensor]:
+        # Reuse v1.3 feature construction, then replace its product gate by the
+        # single continuous correction controller.  Recomputing the few final
+        # fields here avoids duplicating the entire exporter-compatible dict.
+        d=super().forward_details(x,lower,upper,excitation,prior_mu,prior_mask)
+        base=d["base_prediction"]
+        corr=d["physics_correction"] if self.use_physics_correction else torch.zeros_like(base)
+        if not self.use_physics_correction:
+            gate=torch.zeros_like(base)
+        elif not self.use_utility_gate:
+            gate=torch.ones_like(base)
+        elif self.use_magnitude_head:
+            gate=d["correction_fraction"]
+        else:
+            gate=d["benefit_probability"]
+        applied=gate*self.physics_correction_scale*corr
+        raw=base+applied
+        prediction=self._project(raw,lower,upper)
+        candidate_raw=base+self.physics_correction_scale*corr
+        candidate=self._project(candidate_raw,lower,upper)
+
+        dyn_h=self._encode_dynamics_context(x).detach()
+        observed=self._innovation_target(x).detach()
+        g_final=self.dynamics_prediction_from_context(dyn_h,prediction.detach(),upper).detach()
+        residual_final=torch.mean((observed-g_final).square(),dim=-1)
+
+        # Rebuild latent/UQ features from the *v1.4* final prediction and the
+        # actual continuous controller.  The inherited v1.3 dictionary was
+        # produced with benefit_probability*correction_fraction, so keeping its
+        # latent/UQ fields would make calibration describe a different point
+        # model than the one returned here.
+        upper_t=torch.as_tensor(upper,dtype=prediction.dtype,device=prediction.device)
+        frac=torch.clamp(prediction/torch.clamp(upper_t,min=1e-6),1e-5,1.0-1e-5)
+        latent=self._logit(frac)
+        h=self.encode(x)
+        upper_scalar=max(float(torch.as_tensor(upper).detach().cpu()),1e-6)
+        scale_feature=(
+            torch.clamp(d["aleatoric_scale"]/upper_scalar,0.0,2.0)
+            if self.use_aleatoric_feature else torch.zeros_like(gate)
+        )
+        controller_confidence=torch.clamp(2.0*torch.abs(gate-0.5),0.0,1.0)
+        uq_scalars=torch.stack([
+            d["identifiability"],d["benefit_probability"],
+            d["correction_fraction"],gate,controller_confidence,
+            torch.clamp(scale_feature,0.0,1.0),
+        ],dim=-1)
+        uq_h=self.uq_fuse(torch.cat([h,uq_scalars],dim=-1))
+        gate_logit=(
+            d["magnitude_logit"] if self.use_magnitude_head and self.use_utility_gate
+            else d["benefit_logit"]
+        )
+
+        d.update({
+            "prediction":prediction,
+            "raw_prediction":raw,
+            "candidate_prediction":candidate,
+            "inverse_candidate_prediction":candidate,
+            "inverse_candidate_raw":candidate_raw,
+            "latent":latent,
+            "features":uq_h,
+            "effective_innovation":applied,
+            "fused_delta_mu":applied,
+            "reliability":gate,
+            "authority":gate,
+            "physics_gate":gate,
+            "gate_logit":gate_logit,
+            "gate_confidence":controller_confidence,
+            "acceptance":d["benefit_probability"],
+            "veto_probability":1.0-d["benefit_probability"],
+            "expert_weights":torch.stack([torch.zeros_like(gate),1.0-gate,gate],dim=-1),
+            "expert_weight_prior":torch.zeros_like(gate),
+            "expert_weight_neural":1.0-gate,
+            "expert_weight_inverse":gate,
+            "direction_agreement":torch.tanh(8.0*corr*applied),
+            "magnitude_agreement":gate,
+            "applied_physics_correction":applied,
+            "dynamics_residual_prior":d["dynamics_residual_prior"],
+            "dynamics_residual_candidate":d["dynamics_residual_candidate"],
+            "dynamics_residual_final":residual_final,
+            "identifiability":d["identifiability"],
+            "posterior_entropy":d["posterior_entropy"],
+            "information_raw":d["information_raw"],
+            "normalized_improvement":d["normalized_improvement"],
+            "energy_curvature":d["energy_curvature"],
+        })
+        return d
+
 # Legacy public names remain pinned to v1.1 so old experiments/tests are reproducible.
 SafeGripV3Net = SafeGripCI11Net
 SafeGripV2Net = SafeGripCI11Net
 # v1.2 public alias retained for reproducibility.
 SafeGripV4Net = SafeGripCI12Net
-# Current v1.3 proposal alias.
+# v1.3 alias retained for reproducibility.
 SafeGripV5Net = SafeGripCI13Net
+# Current v1.4 proposal alias.
+SafeGripV6Net = SafeGripCI14Net
 
 
 class SafeGripBackboneNet(nn.Module):

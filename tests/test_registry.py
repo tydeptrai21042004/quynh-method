@@ -37,7 +37,7 @@ def test_primary_ci_ablations_have_distinct_semantics():
     assert len(set(specs.values()))==len(PRIMARY_ABLATION_VARIANTS)
 
 
-def test_full_ci_v13_uses_counterfactual_energy_selective_physics():
+def test_full_ci_v14_uses_strong_base_innovation_energy_refinement():
     from safegrip.benchmark import _proposal_flags
     f=_proposal_flags("safegrip")
     assert f["feature_mode"]=="raw"
@@ -65,7 +65,7 @@ def test_excitation_proxy_is_explicit_comparator_not_full_method():
     assert full["use_excitation_proxy"] is False
 
 
-def test_v11_legacy_ablation_family_remains_registered_but_full_is_v13():
+def test_v11_legacy_ablation_family_remains_registered_but_full_is_v14():
     from safegrip.benchmark import PROPOSAL_VARIANTS, _proposal_flags
     legacy={
         "safegrip_single_scale_cf", "safegrip_no_linearity_consistency",
@@ -83,15 +83,15 @@ def test_v11_legacy_ablation_family_remains_registered_but_full_is_v13():
     assert _proposal_flags("safegrip_no_agreement_veto")["use_agreement_veto"] is False
 
 
-def test_v13_decisive_ablation_family_is_registered():
+def test_v14_decisive_ablation_family_is_registered():
     from safegrip.benchmark import PRIMARY_ABLATION_VARIANTS, _proposal_flags
     expected={
-        "safegrip_base_temporal", "safegrip_no_safety_loss",
-        "safegrip_no_physics_residual", "safegrip_no_utility_gate", "safegrip_no_identifiability",
+        "safegrip_base_temporal", "safegrip_no_target_standardization",
+        "safegrip_no_selector_warmup", "safegrip_no_physics_residual",
+        "safegrip_no_utility_gate", "safegrip_no_identifiability",
         "safegrip_no_magnitude_head", "safegrip_no_energy_improvement",
         "safegrip_no_contrastive_dynamics", "safegrip_no_do_no_harm",
-        "safegrip_no_bound", "safegrip_no_heteroscedastic",
-        "safegrip_no_uq", "safegrip",
+        "safegrip_no_bound", "safegrip_no_uq", "safegrip",
     }
     assert expected==set(PRIMARY_ABLATION_VARIANTS)
     assert _proposal_flags("safegrip_no_physics_residual")["use_physics_correction"] is False
@@ -101,8 +101,8 @@ def test_v13_decisive_ablation_family_is_registered():
     assert _proposal_flags("safegrip_no_energy_improvement")["use_energy_improvement_feature"] is False
     assert _proposal_flags("safegrip_no_contrastive_dynamics")["use_counterfactual_loss"] is False
     assert _proposal_flags("safegrip_no_do_no_harm")["use_do_no_harm"] is False
-    assert _proposal_flags("safegrip_no_heteroscedastic")["use_heteroscedastic_loss"] is False
-    assert _proposal_flags("safegrip_no_heteroscedastic")["use_aleatoric_feature"] is False
+    assert _proposal_flags("safegrip_no_target_standardization")["use_target_standardization"] is False
+    assert _proposal_flags("safegrip_no_selector_warmup")["use_selector_warmup"] is False
     base=_proposal_flags("safegrip_base_temporal")
     assert base["use_physics_correction"] is False and base["use_uq"] is False
 

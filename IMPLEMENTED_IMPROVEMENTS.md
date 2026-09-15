@@ -1,5 +1,19 @@
 # Implemented improvements
 
+## v1.4.0 — Strong-Base Innovation-Energy Residual Correction
+
+- Replaced the active point backbone with a matched-scale two-layer raw-sensor GRU (TRUST/default: 256 recurrent units, 100-sample context).
+- Added training-only target standardization and removed sigmoid compression from the active base regressor.
+- Changed Stage A to pure MSE accuracy pretraining with no safety/UQ/counterfactual losses.
+- Changed the dynamics target from absolute endpoint reconstruction to endpoint innovation.
+- Added boundary-aware masked counterfactual grids with uniform-centered posterior displacement.
+- Added absolute energy-margin strength to entropy identifiability.
+- Removed the v1.3 product gate from the active prediction path; one continuous correction fraction now controls the residual.
+- Replaced hard helpful/not-helpful selector targets with soft utility supervision.
+- Added controller warm-up with frozen base and low-LR joint refinement.
+- Added candidate-direction, oracle-switch, and oracle-continuous RMSE diagnostics.
+- Kept v1.3/v1.2/v1.1 classes available for reproducibility.
+
 ## v1.3.0 — Counterfactual Energy-Guided Selective Physics Correction
 
 - Added `SafeGripCI13Net` / `SafeGripV5Net` while retaining v1.2 for reproducibility.
