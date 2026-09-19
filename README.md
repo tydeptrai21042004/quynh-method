@@ -1,317 +1,154 @@
-# SafeGrip-Open v1.4.0
+# SafeGrip-Open v2.0 — SafeGrip-FRC
 
-## SafeGrip-CI v1.4
+The active proposal is **SafeGrip-FRC: Finite-Window Friction Resolution Certification**. The repository retains SafeGrip-CI v1.4 only as a legacy reproducibility path.
 
-The active proposal is **Strong-Base Innovation-Energy Residual Correction**. A causal two-layer raw-sensor GRU owns the primary friction estimate and is trained first with standardized-target MSE. A separately pretrained friction-conditioned dynamics model predicts endpoint innovations and scores a boundary-aware local grid of friction hypotheses. Posterior concentration is combined with absolute energy-margin strength, and one learned continuous correction coefficient controls how much of the counterfactual residual is applied. The separate benefit probability is retained only as an interpretable auxiliary diagnostic.
+## Active method
 
-Training is staged: accuracy-only base pretraining, friction-discriminative innovation-dynamics pretraining, correction-controller warm-up with the base frozen, then low-LR joint refinement. Safety and UQ are deliberately separated from base accuracy learning; physical projection and block-max split-conformal UQ remain post-estimation safety/calibration layers.
+SafeGrip-FRC contains only one learned component: a causal GRU response model
 
-See `SAFEGRIP_CI_V14_METHOD.md`, `SAFEGRIP_CI_V13_METHOD.md`, and `ABLATION_AND_TUNING.md`. Historical v1.1/v1.2/v1.3 implementations remain available for reproducibility.
+\[
+(c_k,\mu)\mapsto \widehat{\Delta z}_k.
+\]
 
-### Current evidence status
+Friction is not produced by a direct proposal head. For each finite observation horizon, the code minimizes the response residual over a declared friction grid, computes a finite-resolution separation margin, and reports a theorem-aligned recovery certificate. The adaptive observation horizon is selected by the smallest finite certificate, not by a learned gate.
 
-The v1.4 implementation is an accuracy-first redesign motivated by earlier LiRA underperformance. **No v1.4 real-LiRA superiority claim is made until TRUST/PAPER is rerun with frozen validation-selected hyperparameters.**
+See `SAFEGRIP_FRC_METHOD.md` and `THEOREM_VALIDATION.md` for the exact definitions and theorem.
 
-## Historical SafeGrip-CI v1.1
+### What was removed from the primary proposal
 
-v1.1 used dual neural/inverse correction experts, adaptive persistence, direction/magnitude innovation and learned three-way arbitration. Its trust result motivated the simpler v1.2 design. See `SAFEGRIP_CI_V11_METHOD.md`.
+The active FRC path has no benefit classifier, correction-fraction head, entropy posterior, energy temperature, direct friction base network, learned arbitration, regime head, heteroscedastic head, or primary physical clipping. Those mechanisms remain only in the legacy CI-v1.4 code.
 
-## SafeGrip-CI (v1.0.0)
-
-SafeGrip-CI v1.0 is a **multi-scale counterfactual-observability friction-state estimator**. It keeps the persistent bounded state and independently supervised candidate innovation, but now tests friction sensitivity at multiple perturbation scales, discounts cross-scale inconsistency, and uses a corrected local inverse-dynamics agreement as a mild identifiability-aware inference veto. The full proposal still uses raw vehicle channels; handcrafted excitation remains an explicit ablation rather than a proposal input.
-
-The release also expands the proposal-only ablation family and point-model search space, and adds a validation-only hyperparameter sensitivity command. See `SAFEGRIP_CI_METHOD.md`, `ABLATION_AND_TUNING.md`, and `PROPOSAL_IMPROVEMENT_REPORT.md`.
-
-## Final research-release safeguards (v0.5.0)
-
-v0.5.0 keeps the LiRA Table-2 CAN decoding introduced in v0.4.0 and adds the safeguards required for a defensible paper run:
-
-- mandatory `speed/ax/ay` signals fail loudly instead of being replaced by zeros;
-- reference traces and large temporal gaps are separated into `trajectory_id` / `segment_id`, so splitting, imputation, resampling and temporal windows cannot bridge discontinuous road pieces;
-- the physics lower endpoint is the trailing-window maximum used by the partial-identification theorem (`physics.window_samples`);
-- calibration labels are never used in gradient training; calibration only changes the inference-time admissible lower endpoint;
-- benchmark outputs include a SHA-256 reproducibility manifest and train-only constant sanity baselines;
-- `scripts/check_paper_readiness.py` verifies the scientific health gate, five-seed coverage, tuning records, preprocessing/physics audits and complete ablations;
-- `scripts/package_paper_results.py` refuses to create a paper-release ZIP unless every readiness check passes.
-
-`PASS` / `PAPER_READY` means the automatic implementation and degeneracy checks passed. It does **not** guarantee novelty, statistical significance, or journal acceptance; manuscript claims must match the observed multi-seed results.
-
-
-
-## Scientific-validity safeguard (v0.4.0)
-
-The LiRA platoon TXT files contain several CAN signals that require the LiRA-CD
-Table-2 offset/resolution translation before they are physical units. v0.4.0
-applies those source-documented translations, audits signal plausibility, and
-refuses to let conformal calibration hide an invalid mechanics bound. See
-`SCIENTIFIC_VALIDITY_FIX.md`.
-
-For a meaningful Kaggle validation run (3 seeds, 40-epoch practical cap, full
-literature architectures for the selected baselines):
-
-```bash
-bash scripts/run_kaggle_trust.sh
-```
-
-Inspect `results/lira_trust/result_health.json`. `PASS` means automatic
-degeneracy/sanity gates passed; `REVIEW` means the run completed but should not
-be used as supporting paper evidence yet.
-
-Reproducible research code for **counterfactual-identifiability friction-state estimation with conditional physics constraints**.
-
-The repository follows two strict rules:
-
-1. **Direct baselines must correspond to published tire/friction-estimation papers.** Generic ML models are not inserted into the paper table simply because they are easy to code.
-2. **Each open dataset is used only for a target it actually measures.** LiRA's VIAFRIK value is treated as an external standardized road-friction reference, not silently relabeled as the Renault Zoe tire's exact peak friction.
-
-## One-command paper run
+## Primary paper run
 
 ```bash
 bash scripts/run_paper.sh
 ```
 
-The paper script:
+The controlled protocol is the primary comparison. It gives literature comparators a common training budget while preserving their registered architecture/preprocessing family. A source-setting comparison can be run separately:
 
-1. installs paper dependencies;
-2. auto-downloads LiRA through the public Figshare API;
-3. groups the official asynchronous `task_7505_*` LiRA sensor files by task, synchronizes CAN/GPS streams, then aligns the assembled task to VIAFRIK traces with distance/heading/monotonic constraints before leakage-safe spatial splitting;
-4. tunes **SafeGrip and every literature comparator** on train/calibration/validation with the same trial budget (test is locked);
-5. keeps recoverable source architecture/preprocessing constraints while allowing model-specific temporal context;
-6. runs the final paper table over five independent seeds and reports mean/std;
-7. exports supplementary same-physics-projection parity controls without relabelling them as published methods;
-8. runs the controlled five-seed SafeGrip ablation and exports provenance/tuning records;
-9. exposes excitation, physical-assumption robustness, data-scarcity, cross-route and force-mechanics validation commands.
+```bash
+RUN_SOURCE_FAITHFUL=1 bash scripts/run_paper.sh
+```
 
-Use fewer tuning trials during development:
+Development run:
 
 ```bash
 TRIALS=5 TUNE_EPOCHS=8 bash scripts/run_paper.sh
 ```
 
-For the smallest real-data Kaggle development run (SafeGrip + Todorovic CNN + Lampe GRU + the full SafeGrip ablation), use:
+## Direct commands
+
+Tune only ordinary FRC training parameters; the theorem, candidate grid, certificate deltas, and horizons are not tuned:
 
 ```bash
-bash scripts/run_kaggle_small.sh
+safegrip tune --method frc --dataset lira --trials 30
 ```
 
-This uses `configs/kaggle_small.yaml` (10 Hz, 16-sample proposal context, stride 16, one seed, three quick epochs) only as a plumbing/sanity run; it is not a final paper configuration.
-
-Skip tuning and use `configs/default.yaml`:
+Tune literature comparators on the same validation endpoint contract and fixed tuning seeds:
 
 ```bash
-SKIP_TUNING=1 bash scripts/run_paper.sh
+safegrip tune-baselines --dataset lira --protocol controlled --trials 30
 ```
 
-Download/prepare every supported auxiliary source too:
+Run the primary benchmark:
 
 ```bash
-DOWNLOAD_AUX=1 bash scripts/run_paper.sh
-# or independently
-bash scripts/download_all_datasets.sh
+safegrip benchmark --dataset lira --preset paper \
+  --proposal frc --protocol controlled \
+  --proposal-hparams results/lira_frc_tuning/best_hparams.yaml \
+  --baseline-hparams results/lira_baseline_tuning/best_hparams.yaml
 ```
 
-## Literature-backed direct baselines
-
-The `paper` preset contains only methods tied to actual tire/friction papers:
-
-| ID | Paper method | DOI | Reproduction level |
-|---|---|---|---|
-| `todorovic2022_cnn` | temporal CNN friction-potential estimator | `10.1088/1742-6596/2234/1/012005` | architecture-faithful adaptation (100 samples; Conv 128/128/256; Dense 400) |
-| `lampe2023_lstm` | two-layer LSTM estimator | `10.1016/j.ifacol.2023.12.056` | architecture/preprocessing-faithful adaptation; source training defaults included |
-| `lampe2023_gru` | two-layer GRU estimator | `10.1016/j.ifacol.2023.12.056` | architecture/preprocessing-faithful adaptation; source training defaults included |
-| `schaefke2023_transformer` | onboard-sensor Transformer | `10.1109/CDC49753.2023.10384175` | explicitly methodology-level adapted implementation |
-| `chen2025_svdkl` | spatio-temporal + stochastic variational deep-kernel learning | `10.1109/TIE.2024.3440510` | explicitly adapted SV-DKL; source category-selection stage is not claimed reproduced |
-
-The original papers do not all expose the same sensors or public training data. Therefore the code explicitly exports `fidelity` in `baseline_manifest.csv`; it does **not** claim exact reproduction where that would be false.
-
-Paper-reported scores from non-matching protocols are stored as literature context only and are never merged into our direct numerical table.
-
-## Proposal and ablations
-
-Full SafeGrip-CI v1.4:
-
-```text
-raw causal sensor window (default L=100)
-   -> 2-layer GRU temporal state h_t
-   -> standardized-target linear regression head
-   -> direct base friction estimate mu_B
-
-separately pretrained friction-conditioned innovation model G(context, mu)
-   -> boundary-aware K-hypothesis energy landscape E(mu_k)
-   -> energy posterior w_k
-   -> centered counterfactual residual Delta_mu_CF
-   -> calibrated identifiability (entropy x absolute energy strength)
-
-inference-available evidence + h_t
-   -> auxiliary benefit probability p_help (diagnostic only)
-   -> continuous correction controller alpha
-
-mu_raw = mu_B + alpha * scale * Delta_mu_CF
-   -> optional conditional physical projection
-   -> residual-scale model + block-max split-conformal calibration
-```
-
-The controlled primary ablations are `safegrip_base_temporal`, `safegrip_no_target_standardization`, `safegrip_no_physics_residual`, `safegrip_no_utility_gate`, `safegrip_no_identifiability`, `safegrip_no_magnitude_head`, `safegrip_no_energy_improvement`, `safegrip_no_contrastive_dynamics`, `safegrip_no_do_no_harm`, `safegrip_no_bound`, `safegrip_no_selector_warmup`, `safegrip_no_uq`, and the full `safegrip`. See `SAFEGRIP_CI_V14_METHOD.md` and `ABLATION_AND_TUNING.md`.
-
-## Fair validation tuning
-
-Proposal selection:
+Run the retained old proposal:
 
 ```bash
-safegrip tune --dataset lira --trials 80 --no-test
+safegrip benchmark --dataset lira --preset paper --proposal legacy-ci
 ```
 
-Literature comparators use their own source-compatible spaces under the same validation endpoint contract. The primary selection metric for both proposal and comparators is **validation RMSE**; the test partition is locked during search.
+## Primary comparison design
 
-The v1.4 proposal search covers temporal capacity/optimizer settings, sequence length and scaler, counterfactual grid size/radius/temperature, calibrated energy-margin strength, physics-correction scale, staged-pretraining/controller-warm-up duration, soft benefit/fraction supervision, low-weight do-no-harm regularization, and contrastive dynamics settings. Physical support constants and UQ-only calibration settings are not optimized against final test RMSE.
+The primary table contains:
 
-After choosing `best_hparams.yaml`, run a separate validation-only stability study:
+- `safegrip_frc` — theorem-driven response-inversion proposal;
+- `direct_gru_control` — same GRU encoder width/depth with a closely matched direct-regression head;
+- `todorovic2022_cnn`;
+- `lampe2023_lstm`;
+- `lampe2023_gru`;
+- `schaefke2023_transformer`;
+- `chen2025_svdkl`.
 
-```bash
-safegrip sensitivity --dataset lira \
-  --proposal-hparams results/lira_tuning/best_hparams.yaml
+The literature implementations are adaptations to the common LiRA task. Their fidelity level is explicitly recorded in `src/safegrip/literature.py`; the code does not claim exact reproduction when sensors/data/protocol differ from the source study.
+
+Physical projection is **not** used in the primary metrics. A common projection control is exported separately so any gain from post-processing is visible rather than attributed to the proposed estimator.
+
+## Fairness safeguards
+
+- train-only input scaling;
+- train-only response normalization;
+- strictly causal response contexts;
+- locked validation/test endpoint IDs across methods;
+- fixed common tuning seeds instead of `seed + trial.number`;
+- equal trial budget for controlled comparison;
+- common controlled training budget;
+- test labels never used for tuning or horizon selection;
+- primary prediction contains no physical projection;
+- source-setting literature comparison reported separately.
+
+The legacy v1.4 tuner was also corrected so inactive `conv_channels`, inactive `huber_beta`, and fixed zero-valued losses no longer consume Optuna dimensions.
+
+## Split protocols
+
+Default:
+
+```yaml
+split:
+  mode: spatial_within_trajectory
 ```
 
-It exports `hyperparameter_sensitivity.csv` and a protocol JSON without touching test labels.
+This preserves contiguous per-trajectory train/calibration/validation/test blocks with purge gaps.
 
-## Supported open data
+For the stronger distribution-shift experiment, prepare data with:
 
-Eight sources are registered and auto-discover/download where upstream public access permits it:
-
-1. **LiRA-CD platoon friction test** — primary road-friction-reference benchmark.
-2. **KU Leuven LMSD Concept Car** — real wheel-force validation using Kistler RoaDyn WFTs.
-3. **KIT tire force-transmission dataset** — measured dry-asphalt tire mechanics.
-4. **Deep Dynamics / IAC** — high-dynamics auxiliary/domain-shift vehicle data.
-5. **comma2k19** — unlabeled CAN/IMU temporal/domain data; safe default downloads the repository/example, not the ~100 GB full archive.
-6. **Extreme Road Image Dataset** — six road-condition image classes for optional multimodal work.
-7. **Bicycle Tyre Data, Zenodo** — open lateral-force/self-aligning-torque mechanics data; auxiliary only.
-8. **Mendeley tire-pavement friction data** — friction coefficient across road/speed conditions.
-
-```bash
-safegrip datasets
-safegrip download --datasets all
-safegrip prepare --dataset kit
+```yaml
+split:
+  mode: group_holdout
 ```
 
-See `DATASETS.md` for targets, licenses and scientific roles.
+Whole trajectories are then assigned to one partition only. At least four trajectory/trip groups are required.
 
-### Access-policy behavior
+## Main FRC outputs
 
-The downloader never bypasses repository restrictions. For example, if KU Leuven requires a guestbook/terms acceptance, accept it on the dataset page and, if Dataverse requires it, provide:
-
-```bash
-export KULEUVEN_API_TOKEN="..."
-```
-
-The rest of the datasets continue even if one upstream host changes its API.
-
-## Leakage-safe LiRA protocol
-
-Adjacent GPS samples share road condition and must not be randomly scattered between train/test. The corrected preprocessor performs per-trip alignment and split construction before any feature filling. Default blocks are:
-
-- 60% train;
-- 10% lower-bound calibration;
-- 10% validation;
-- 20% test.
-
-The platoon-test vehicle channels are distributed as separate asynchronous `task_7505_*` TXT streams. SafeGrip now synchronizes these streams first, interpolates the low-rate GPS signal onto the common task timeline with a bounded time gap, and only then performs reference matching. Candidate VIAFRIK traces/directions are aligned independently using a configurable metric tolerance (10 m by default), heading consistency and monotonic reference progress; the nearest valid trace match is retained per vehicle timestamp. Interpolation and resampling after split assignment are restricted to one `(trip_id, split)` block. Temporal windows are also built per trip, so a sequence can never bridge two independent drives. GPS/route/matching metadata are excluded from model features.
-
-The preprocessor writes `lira_stream_assembly_report.json`, `lira_alignment_report.csv` and `lira_preprocessing_report.json` so raw-stream resolution, retained matches and protocol settings are auditable. See `KAGGLE_LIRA_FIX.md` for the regression that fixed the original Kaggle preparation failure.
-
-## Reviewer-oriented experiments
-
-After the main benchmark:
-
-```bash
-safegrip experiment --dataset lira --study excitation --results results/lira_paper
-safegrip experiment --dataset lira --study robustness --results results/lira_paper
-safegrip experiment --dataset lira --study scarcity --preset paper \
-  --proposal-hparams results/lira_tuning/best_hparams.yaml
-safegrip experiment --dataset lira --study cross-route --preset paper \
-  --proposal-hparams results/lira_tuning/best_hparams.yaml
-
-safegrip force-validate --dataset kit
-safegrip force-validate --dataset kuleuven
-```
-
-`excitation` and `robustness` use the frozen paper predictions. `scarcity` retrains SafeGrip and the data-only prior/evidence backbone over 10/25/50/75/100% training fractions. `cross-route` only runs when at least two explicit route IDs are available; it does not infer route names from GPS.
-
-## Quick/offline verification
-
-```bash
-bash scripts/smoke_test.sh
-```
-
-or:
-
-```bash
-DATASET=synthetic bash scripts/run_all.sh
-```
-
-Synthetic data exists only to test software plumbing. It is **never** a paper baseline or evidence for the research claim.
-
-## Key outputs
-
-Main benchmark:
+A paper benchmark writes:
 
 ```text
 results/lira_paper/
-  baseline_manifest.csv
-  literature_only.json
-  metrics.csv                 # mean across final seeds
-  metrics_by_seed.csv         # individual final runs
-  predictions.csv              # includes SafeGrip raw mean, sigma and projected 95% interval
-  features.json
-  calibration.json
-  proposal_hparams.json
-  baseline_selected_hparams.json
-  evaluation_protocol.json
-  projection_control_metrics.csv
-  projection_control_metrics_by_seed.csv
-  *.png
+  metrics.csv
+  metrics_by_seed.csv
+  predictions_by_seed.csv
+  fixed_horizon_ablation.csv
+  frc_resolution_certificates.csv
+  frc_separation_curves.csv
+  frc_certificate_validity.csv
+  theorem_audit.json
+  fairness_audit.json
+  projection_control.csv
+  reproducibility_manifest.json
 ```
 
-Ablation:
+`theorem_audit.json` is an executable consistency gate: if the implemented grid estimator violates the stated finite-grid recovery implication on any endpoint where the full theorem premise holds, the benchmark fails.
 
-```text
-results/lira_ablation_paper/
-  ablation_metrics.csv          # mean/std across final seeds
-  ablation_metrics_by_seed.csv
-  ablation_predictions.csv
-  ablation_design.json
+## Open-data policy
+
+The existing data registry/download/preparation code is retained. The primary friction benchmark uses LiRA's available road-friction reference under the repository's alignment and leakage safeguards. Auxiliary datasets remain auxiliary unless they provide the exact target required by an experiment.
+
+## Tests
+
+```bash
+pytest -q
 ```
 
-Tuning:
+In addition to the existing suite, `tests/test_friction_resolution.py` checks closed-form separation on a linear response map, monotonicity of `S(delta)`, grid-certificate construction, horizon fallback, exact-grid inversion, and the finite-grid theorem.
 
-```text
-results/lira_tuning/
-  best_hparams.yaml
-  trials.csv
-  param_importance.json
-  tuning_summary.json
-  optuna.sqlite3
+## Legacy SafeGrip-CI
 
-results/lira_baseline_tuning/
-  best_hparams.yaml
-  tuning_summary.json
-  <baseline-id>/trials.csv
-  <baseline-id>/best_hparams.yaml
-  <baseline-id>/optuna.sqlite3
-```
-
-## Documentation
-
-- `SAFEGRIP_CI_METHOD.md` — active v1.0 multi-scale counterfactual-observability formulation.
-- `RESEARCH_PROTOCOL.md` — exact claim boundaries and evaluation protocol.
-- `LITERATURE_BASELINES.md` — why every direct baseline is included and what is *not* directly comparable.
-- `DATASETS.md` — open-data inventory and auto-download behavior.
-- `ABLATION_AND_TUNING.md` — controlled ablation and hyperparameter protocol.
-- `references.bib` — citations used by the benchmark registry.
-- `VALIDATION.md` — commands executed on the packaged repository and current test status.
-- `IMPLEMENTED_IMPROVEMENTS.md` — concise map from the review issues to the implemented code changes.
-- `PROPOSAL_IMPROVEMENT_REPORT.md` — v1.0 novelty/performance analysis, new controls, and recommended experiment order.
-- `RELATED_WORK_V100.md` — current 2024–2026 novelty positioning and conservative contribution wording.
-
-## 2026-09 fairness/ablation hardening
-
-The current release adds global tuning-endpoint parity, feature-parity and label-budget controls, common conformal-UQ controls, corrected component-isolating ablations, retuned supplementary ablations, a fail-closed fairness audit, and paired-bootstrap statistics. See `FAIRNESS_AND_ABLATION_V2.md` for the protocol and commands.
+`SAFEGRIP_CI_V14_METHOD.md` and the v1.x files are retained so old experiments remain reproducible. They are not the active proposal and are not run by the new paper script.

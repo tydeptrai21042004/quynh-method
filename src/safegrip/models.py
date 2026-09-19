@@ -2223,3 +2223,67 @@ class ResidualScaleHead(nn.Module):
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         z = nn.functional.silu(self.fc1(h))
         return nn.functional.softplus(self.fc2(z).squeeze(-1)) + self.floor
+
+
+class FrictionResponseNet(nn.Module):
+    """Causal response model used by SafeGrip-FRC.
+
+    The network is intentionally ordinary.  Novelty is not claimed for this
+    architecture: a GRU encodes only samples *before* the response target and a
+    small MLP predicts the standardized response innovation under a hypothetical
+    friction coefficient.
+    """
+
+    def __init__(self, d: int, response_dim: int, hidden: int = 128,
+                 gru_layers: int = 1, dropout: float = 0.1, mu_upper: float = 1.3):
+        super().__init__()
+        self.mu_upper = float(mu_upper)
+        recurrent_dropout = float(dropout) if int(gru_layers) > 1 else 0.0
+        self.encoder = nn.GRU(
+            d, int(hidden), num_layers=int(gru_layers), batch_first=True,
+            dropout=recurrent_dropout,
+        )
+        self.head = nn.Sequential(
+            nn.Linear(int(hidden) + 1, int(hidden)),
+            nn.SiLU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden), int(response_dim)),
+        )
+
+    def forward(self, context: torch.Tensor, mu: torch.Tensor) -> torch.Tensor:
+        if context.ndim != 3:
+            raise ValueError("context must have shape [B,C,D]")
+        mu = mu.reshape(-1, 1).to(dtype=context.dtype, device=context.device)
+        if len(mu) != len(context):
+            raise ValueError("mu batch must match context batch")
+        z, _ = self.encoder(context)
+        mu_scaled = mu / max(self.mu_upper, 1e-6)
+        return self.head(torch.cat([z[:, -1], mu_scaled], dim=-1))
+
+
+class DirectGRUControl(nn.Module):
+    """Same-family direct-regression control for the FRC comparison.
+
+    It uses the same GRU depth/hidden width as ``FrictionResponseNet`` but maps
+    the encoded observation window directly to friction.  This isolates the
+    contribution of response inversion/certification from recurrent capacity.
+    """
+
+    def __init__(self, d: int, hidden: int = 128, gru_layers: int = 1,
+                 dropout: float = 0.1):
+        super().__init__()
+        recurrent_dropout = float(dropout) if int(gru_layers) > 1 else 0.0
+        self.encoder = nn.GRU(
+            d, int(hidden), num_layers=int(gru_layers), batch_first=True,
+            dropout=recurrent_dropout,
+        )
+        self.head = nn.Sequential(
+            nn.Linear(int(hidden), int(hidden)),
+            nn.SiLU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden), 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z, _ = self.encoder(x)
+        return self.head(z[:, -1]).squeeze(-1)

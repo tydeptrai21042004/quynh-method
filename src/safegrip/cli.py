@@ -8,7 +8,8 @@ from .datasets import DATASET_REGISTRY
 from .download import download_dataset
 from .data import prepare_dataset, make_synthetic
 from .benchmark import run_benchmark, run_ablation, PROPOSAL_VARIANTS
-from .tuning import tune_safegrip, tune_literature_baselines, tune_ablation_variants, run_hyperparameter_sensitivity
+from .frc_benchmark import run_frc_benchmark
+from .tuning import tune_safegrip, tune_frc, tune_literature_baselines, tune_ablation_variants, run_hyperparameter_sensitivity
 from .plots import make_plots, make_ablation_plots
 from .experiments import (
     run_excitation_analysis, run_robustness_analysis, run_scarcity_analysis,
@@ -45,13 +46,13 @@ def main():
     sub.add_parser("datasets",help="list supported open datasets and scientific roles")
     d=sub.add_parser("download"); d.add_argument("--datasets",nargs="+",default=["lira"]); d.add_argument("--force",action="store_true"); d.add_argument("--full",action="store_true",help="download full optional archives where the safe default is a subset")
     p=sub.add_parser("prepare"); p.add_argument("--dataset",choices=list(DATASET_REGISTRY)+["synthetic"],required=True)
-    b=sub.add_parser("benchmark"); b.add_argument("--dataset",choices=["lira","synthetic"],required=True); b.add_argument("--preset",choices=["quick","trust","paper"],default="quick"); b.add_argument("--models",default=None,help="comma-separated cited baselines; uncited names are rejected"); b.add_argument("--proposal-hparams",default=None,help="YAML from safegrip tune; applied only to SafeGrip"); b.add_argument("--baseline-hparams",default=None,help="aggregate YAML from safegrip tune-baselines; each comparator uses its own selected settings")
+    b=sub.add_parser("benchmark"); b.add_argument("--dataset",choices=["lira","synthetic"],required=True); b.add_argument("--preset",choices=["quick","trust","paper"],default="quick"); b.add_argument("--models",default=None,help="comma-separated cited baselines; uncited names are rejected"); b.add_argument("--proposal",choices=["frc","legacy-ci"],default="frc",help="primary theorem-driven FRC proposal or retained legacy CI-v1.4 path"); b.add_argument("--protocol",choices=["controlled","source-faithful"],default="controlled",help="controlled compute budget or source-setting literature comparison"); b.add_argument("--proposal-hparams",default=None,help="YAML from safegrip tune; applied only to the selected proposal"); b.add_argument("--baseline-hparams",default=None,help="aggregate YAML from safegrip tune-baselines; each comparator uses its own selected settings")
     a=sub.add_parser("ablation"); a.add_argument("--dataset",choices=["lira","synthetic"],required=True); a.add_argument("--preset",choices=["quick","trust","paper"],default="paper"); a.add_argument("--variants",default=None,help="comma-separated proposal ablations"); a.add_argument("--proposal-hparams",default=None,help="YAML from safegrip tune; same hyperparameters are reused across ablations")
-    t=sub.add_parser("tune"); t.add_argument("--dataset",choices=["lira","synthetic"],required=True); t.add_argument("--trials",type=int,default=None); t.add_argument("--epochs",type=int,default=None); t.add_argument("--no-test",action="store_true")
-    tb=sub.add_parser("tune-baselines"); tb.add_argument("--dataset",choices=["lira","synthetic"],required=True); tb.add_argument("--models",default=None,help="comma-separated literature baselines; default is the full paper set"); tb.add_argument("--trials",type=int,default=None); tb.add_argument("--epochs",type=int,default=None,help="optional development cap; omit for each method's paper-mode epoch budget")
+    t=sub.add_parser("tune"); t.add_argument("--dataset",choices=["lira","synthetic"],required=True); t.add_argument("--method",choices=["frc","legacy-ci"],default="frc"); t.add_argument("--trials",type=int,default=None); t.add_argument("--epochs",type=int,default=None); t.add_argument("--no-test",action="store_true")
+    tb=sub.add_parser("tune-baselines"); tb.add_argument("--dataset",choices=["lira","synthetic"],required=True); tb.add_argument("--models",default=None,help="comma-separated literature baselines; default is the full paper set"); tb.add_argument("--protocol",choices=["controlled","source-faithful"],default="controlled"); tb.add_argument("--trials",type=int,default=None); tb.add_argument("--epochs",type=int,default=None,help="optional development cap")
     ta=sub.add_parser("tune-ablation"); ta.add_argument("--dataset",choices=["lira","synthetic"],required=True); ta.add_argument("--variants",default=None); ta.add_argument("--trials",type=int,default=15); ta.add_argument("--epochs",type=int,default=None)
     hs=sub.add_parser("sensitivity",help="one-factor proposal hyperparameter sensitivity on locked validation endpoints"); hs.add_argument("--dataset",choices=["lira","synthetic"],required=True); hs.add_argument("--proposal-hparams",required=True,help="selected best_hparams.yaml from safegrip tune"); hs.add_argument("--parameters",default=None,help="optional comma-separated proposal parameters"); hs.add_argument("--epochs",type=int,default=None)
-    st=sub.add_parser("statistics"); st.add_argument("--results",required=True); st.add_argument("--proposal",default="safegrip"); st.add_argument("--bootstrap",type=int,default=2000)
+    st=sub.add_parser("statistics"); st.add_argument("--results",required=True); st.add_argument("--proposal",default="safegrip_frc"); st.add_argument("--bootstrap",type=int,default=2000)
     e=sub.add_parser("experiment",help="run reviewer-oriented SafeGrip analyses")
     e.add_argument("--dataset",choices=["lira","synthetic"],required=True)
     e.add_argument("--study",choices=["excitation","robustness","scarcity","cross-route"],required=True)
@@ -77,11 +78,19 @@ def main():
         else: prepare_dataset(args.dataset,Path("data/raw")/args.dataset,Path("data/processed")/args.dataset,cfg)
         return
     if args.cmd=="benchmark":
-        csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_{args.preset}"
+        csv=_ensure_primary(args.dataset,cfg)
         models=args.models.split(",") if args.models else None
-        run_benchmark(csv,out,cfg,args.preset,models,
-                      _load_mapping(args.proposal_hparams,"proposal hyperparameter"),
-                      _load_mapping(args.baseline_hparams,"baseline hyperparameter")); make_plots(out); return
+        proposal_hp=_load_mapping(args.proposal_hparams,"proposal hyperparameter")
+        baseline_hp=_load_mapping(args.baseline_hparams,"baseline hyperparameter")
+        if args.proposal=="frc":
+            suffix="" if args.protocol=="controlled" else "_source_faithful"
+            out=Path("results")/f"{args.dataset}_{args.preset}{suffix}"
+            run_frc_benchmark(csv,out,cfg,args.preset,models,proposal_hp,baseline_hp,args.protocol)
+        else:
+            out=Path("results")/f"{args.dataset}_{args.preset}_legacy_ci"
+            run_benchmark(csv,out,cfg,args.preset,models,proposal_hp,baseline_hp)
+            make_plots(out)
+        return
     if args.cmd=="ablation":
         csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_ablation_{args.preset}"
         variants=args.variants.split(",") if args.variants else None
@@ -90,12 +99,16 @@ def main():
             if bad: raise ValueError("Unknown ablations: "+", ".join(bad))
         run_ablation(csv,out,cfg,args.preset,variants,_load_mapping(args.proposal_hparams,"proposal hyperparameter")); make_ablation_plots(out); return
     if args.cmd=="tune":
-        csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_tuning"
+        csv=_ensure_primary(args.dataset,cfg)
+        if args.method=="frc":
+            out=Path("results")/f"{args.dataset}_frc_tuning"
+            print(json.dumps(tune_frc(csv,out,cfg,args.trials,args.epochs),indent=2)); return
+        out=Path("results")/f"{args.dataset}_legacy_ci_tuning"
         print(json.dumps(tune_safegrip(csv,out,cfg,args.trials,args.epochs,not args.no_test),indent=2)); return
     if args.cmd=="tune-baselines":
         csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_baseline_tuning"
         models=args.models.split(",") if args.models else None
-        print(json.dumps(tune_literature_baselines(csv,out,cfg,models,args.trials,args.epochs),indent=2)); return
+        print(json.dumps(tune_literature_baselines(csv,out,cfg,models,args.trials,args.epochs,args.protocol),indent=2)); return
     if args.cmd=="tune-ablation":
         csv=_ensure_primary(args.dataset,cfg); out=Path("results")/f"{args.dataset}_ablation_retuned"
         variants=args.variants.split(",") if args.variants else None

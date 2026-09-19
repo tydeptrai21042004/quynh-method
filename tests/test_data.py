@@ -156,3 +156,17 @@ def test_lira_mandatory_signals_are_never_zero_filled():
     df=pd.DataFrame({"speed":[10.0]*20,"ax":[0.1]*20})
     with pytest.raises(RuntimeError):
         _screen_lira_model_features(df,["speed","ax"])
+
+
+def test_group_holdout_assigns_each_trajectory_to_one_split():
+    import pandas as pd
+    from safegrip.data import assign_spatial_splits
+    rows=[]
+    for g in range(8):
+        for i in range(10): rows.append({"trajectory_id":f"t{g}","time":i,"route_s_m":i})
+    df=pd.DataFrame(rows)
+    cfg={"seed":7,"split":{"mode":"group_holdout","train":.5,"calibration":.125,"validation":.125,"test":.25},"lira":{"split_guard_samples":0}}
+    out=assign_spatial_splits(df,cfg)
+    counts=out.groupby("trajectory_id")["split"].nunique()
+    assert (counts==1).all()
+    assert set(out["split"].unique())=={"train","calibration","validation","test"}

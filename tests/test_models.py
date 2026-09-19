@@ -524,3 +524,19 @@ def test_safegrip_v14_target_standardization_maps_back_to_physical_units():
         base,z=model._base_prediction(model.encode(x),1.3)
     assert torch.allclose(z,torch.zeros_like(z),atol=1e-7)
     assert torch.allclose(base,torch.full_like(base,0.72),atol=1e-6)
+
+
+def test_frc_models_shapes_and_mu_conditioning():
+    from safegrip.models import FrictionResponseNet, DirectGRUControl
+    import torch
+    response = FrictionResponseNet(6, 3, hidden=16, gru_layers=1, dropout=0.0, mu_upper=1.3)
+    x = torch.randn(5, 8, 6)
+    mu1 = torch.full((5,), 0.3)
+    mu2 = torch.full((5,), 0.9)
+    y1 = response(x, mu1); y2 = response(x, mu2)
+    assert y1.shape == (5,3)
+    assert y2.shape == (5,3)
+    # The friction hypothesis is a real model input, not an unused config knob.
+    assert not torch.allclose(y1, y2)
+    direct = DirectGRUControl(6, hidden=16, gru_layers=1, dropout=0.0)
+    assert direct(x).shape == (5,)

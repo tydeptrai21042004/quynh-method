@@ -30,7 +30,7 @@ LITERATURE_BASELINES = {
         "family": "lstm",
         # The paper's selected LSTM uses two recurrent layers and a dense layer,
         # each with 256 neurons. We reproduce that architecture in paper mode.
-        "fidelity": "architecture/training-faithful adaptation; common available sensor subset",
+        "fidelity": "architecture- and reported-training-setting adaptation; common LiRA sensor subset and benchmark protocol differ from the source study",
         "source_constraints": "2xLSTM(256)+Dense(256,tanh); Adam lr=1e-3; batch=64; 500 epochs; L2=1e-4; train-only MinMax; orthogonal recurrent/Glorot input-dense init",
         "runnable": True,
     },
@@ -42,7 +42,7 @@ LITERATURE_BASELINES = {
         "doi": "10.1016/j.ifacol.2023.12.056",
         "family": "gru",
         # The paper's selected GRU uses two recurrent layers with 256 units.
-        "fidelity": "architecture/training-faithful adaptation; common available sensor subset",
+        "fidelity": "architecture- and reported-training-setting adaptation; common LiRA sensor subset and benchmark protocol differ from the source study",
         "source_constraints": "2xGRU(256); Adam lr=1e-3; batch=64; 500 epochs; L2=1e-4; train-only MinMax; orthogonal recurrent/Glorot input-dense init",
         "runnable": True,
     },

@@ -8,7 +8,6 @@ TRIALS="${TRIALS:-30}"
 BASELINE_TRIALS="${BASELINE_TRIALS:-$TRIALS}"
 TUNE_EPOCHS="${TUNE_EPOCHS:-}"
 
-# Primary reproducible benchmark.
 $SG download --datasets lira
 $SG prepare --dataset lira
 
@@ -18,43 +17,31 @@ if [[ "${SKIP_TUNING:-0}" != "1" ]]; then
   TUNE_EPOCH_ARGS=()
   if [[ -n "$TUNE_EPOCHS" ]]; then TUNE_EPOCH_ARGS=(--epochs "$TUNE_EPOCHS"); fi
 
-  # Proposal and every literature comparator receive validation-only tuning.
-  # Test remains untouched until the final benchmark.
-  $SG tune --dataset lira --trials "$TRIALS" "${TUNE_EPOCH_ARGS[@]}" --no-test
-  $SG tune-baselines --dataset lira --trials "$BASELINE_TRIALS" "${TUNE_EPOCH_ARGS[@]}"
-  HP_ARGS=(--proposal-hparams results/lira_tuning/best_hparams.yaml)
+  # FRC tunes only approximation/optimization parameters. Mathematical
+  # certificate quantities remain fixed by configs/default.yaml.
+  $SG tune --method frc --dataset lira --trials "$TRIALS" "${TUNE_EPOCH_ARGS[@]}"
+  $SG tune-baselines --dataset lira --protocol controlled --trials "$BASELINE_TRIALS" "${TUNE_EPOCH_ARGS[@]}"
+  HP_ARGS=(--proposal-hparams results/lira_frc_tuning/best_hparams.yaml)
   BASELINE_HP_ARGS=(--baseline-hparams results/lira_baseline_tuning/best_hparams.yaml)
 fi
 
-# Paper preset uses five independent seeds by default and evaluates every method
-# on the same validation/test endpoints even when temporal context differs.
-$SG benchmark --dataset lira --preset paper "${HP_ARGS[@]}" "${BASELINE_HP_ARGS[@]}"
-$SG statistics --results results/lira_paper --bootstrap 5000
-# Reuse exactly the selected proposal hyperparameters for every ablation.
-$SG ablation --dataset lira --preset paper "${HP_ARGS[@]}"
+$SG benchmark --dataset lira --preset paper --proposal frc --protocol controlled \
+  "${HP_ARGS[@]}" "${BASELINE_HP_ARGS[@]}"
+$SG statistics --results results/lira_paper --proposal safegrip_frc --bootstrap 5000
 
-# Low-cost reviewer analyses reuse the frozen final predictions.
-$SG experiment --dataset lira --study excitation --results results/lira_paper
-$SG experiment --dataset lira --study robustness --results results/lira_paper
-
-# Training-heavy scarcity/cross-route experiments are kept opt-in.
-if [[ "${RUN_EXTENDED:-0}" == "1" ]]; then
-  bash scripts/run_extended_experiments.sh
-fi
-
-if [[ "${DOWNLOAD_AUX:-0}" == "1" ]]; then
-  bash scripts/download_all_datasets.sh
+if [[ "${RUN_SOURCE_FAITHFUL:-0}" == "1" ]]; then
+  # Separate table: preserves configured source-style training budgets and is
+  # deliberately not described as compute-matched.
+  $SG benchmark --dataset lira --preset paper --proposal frc --protocol source-faithful \
+    "${HP_ARGS[@]}" "${BASELINE_HP_ARGS[@]}"
 fi
 
 ${PYTHON_BIN} scripts/check_paper_readiness.py
 ${PYTHON_BIN} scripts/package_paper_results.py
-printf '\nPaper run complete and readiness gate passed.\n'
+printf '\nSafeGrip-FRC paper run complete.\n'
 printf '  main table:       results/lira_paper/metrics.csv\n'
-printf '  per-seed table:   results/lira_paper/metrics_by_seed.csv\n'
-printf '  parity controls:  results/lira_paper/projection_control_metrics.csv\n'
+printf '  theorem audit:    results/lira_paper/theorem_audit.json\n'
+printf '  certificates:     results/lira_paper/frc_resolution_certificates.csv\n'
+printf '  fixed-H ablation: results/lira_paper/fixed_horizon_ablation.csv\n'
+printf '  FRC tuning:       results/lira_frc_tuning/\n'
 printf '  baseline tuning:  results/lira_baseline_tuning/\n'
-printf '  proposal tuning:  results/lira_tuning/\n'
-printf '  ablation:         results/lira_ablation_paper/ablation_metrics.csv\n'
-printf '  excitation:       results/lira_excitation/excitation_metrics.csv\n'
-printf '  robustness:       results/lira_robustness/physics_robustness_metrics.csv\n'
-printf '  extended:         RUN_EXTENDED=1 bash scripts/run_paper.sh\n' 

@@ -30,13 +30,16 @@ def suggest_safegrip(trial, cfg):
         "scaler":trial.suggest_categorical("scaler",space.get("scaler",["minmax","standard"])),
         "hidden":trial.suggest_categorical("hidden",space.get("hidden",[96,128,160])),
         "gru_hidden":trial.suggest_categorical("gru_hidden",space.get("gru_hidden",[128,192,256])),
-        "conv_channels":trial.suggest_categorical("conv_channels",space.get("conv_channels",[48,64,96])),
+        # v1.4 replaces the legacy convolutional stem with Identity(), so this
+        # must stay fixed rather than acting as a hidden RNG selector.
+        "conv_channels":int(p.get("conv_channels",64)),
         "gru_layers":trial.suggest_categorical("gru_layers",space.get("gru_layers",[1,2])),
         "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
         "lr":trial.suggest_float("lr",*space.get("lr",[1e-4,3e-3]),log=True),
         "weight_decay":trial.suggest_float("weight_decay",*space.get("weight_decay",[1e-6,1e-3]),log=True),
         "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[64,128,256])),
-        "huber_beta":trial.suggest_categorical("huber_beta",space.get("huber_beta",[0.03,0.05,0.10])),
+        # Active v1.4 point training uses MSE, not Huber.
+        "huber_beta":float(p.get("huber_beta",0.05)),
         "counterfactual_delta":trial.suggest_categorical("counterfactual_delta",space.get("counterfactual_delta",[0.04,0.08,0.12])),
         # Historical v1.2 parameters are kept in the returned dictionary for
         # checkpoint/config compatibility but are not Optuna dimensions in
@@ -57,8 +60,8 @@ def suggest_safegrip(trial, cfg):
         "base_joint_lr_scale":trial.suggest_categorical("base_joint_lr_scale",space.get("base_joint_lr_scale",[0.05,0.10,0.20])),
         "base_loss_weight":trial.suggest_categorical("base_loss_weight",space.get("base_loss_weight",[0.10,0.25,0.50])),
         "dynamic_loss_weight":0.0,
-        "safety_loss_weight":trial.suggest_categorical("safety_loss_weight",space.get("safety_loss_weight",[0.0])),
-        "unsafe_margin":trial.suggest_categorical("unsafe_margin",space.get("unsafe_margin",[0.05])),
+        "safety_loss_weight":float(p.get("safety_loss_weight",0.0)),
+        "unsafe_margin":float(p.get("unsafe_margin",0.05)),
         "benefit_gate_loss_weight":trial.suggest_categorical("benefit_gate_loss_weight",space.get("benefit_gate_loss_weight",[0.10,0.20,0.35])),
         "correction_fraction_loss_weight":trial.suggest_categorical("correction_fraction_loss_weight",space.get("correction_fraction_loss_weight",[0.25,0.35,0.50])),
         "do_no_harm_weight":trial.suggest_categorical("do_no_harm_weight",space.get("do_no_harm_weight",[0.0,0.05,0.10])),
@@ -68,7 +71,7 @@ def suggest_safegrip(trial, cfg):
         "change_loss_weight":0.0,
         "change_threshold":float(p.get("change_threshold",0.02)),
         "smooth_loss_weight":0.0,
-        "heteroscedastic_loss_weight":trial.suggest_categorical("heteroscedastic_loss_weight",space.get("heteroscedastic_loss_weight",[0.0])),
+        "heteroscedastic_loss_weight":float(p.get("heteroscedastic_loss_weight",0.0)),
         "dynamics_loss_weight":trial.suggest_categorical("dynamics_loss_weight",space.get("dynamics_loss_weight",[0.05,0.10,0.20])),
         "counterfactual_loss_weight":trial.suggest_categorical("counterfactual_loss_weight",space.get("counterfactual_loss_weight",[0.1,0.2,0.35])),
         "counterfactual_margin":float(p.get("counterfactual_margin",0.02)),
@@ -293,7 +296,7 @@ def suggest_literature(trial,cfg,name):
     return hp
 
 
-def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs=None):
+def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs=None,protocol="controlled"):
     """Give every literature comparator the same validation-trial budget.
 
     Core architecture/preprocessing constraints from the papers remain fixed.
@@ -302,7 +305,11 @@ def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs
     """
     optuna=require_optuna(); out=ensure_dir(out_dir)
     names=list(names or PAPER_BASELINES); validate_paper_baselines(names)
-    trials=int(trials or cfg.get("baseline_tuning",{}).get("trials",cfg.get("tuning",{}).get("trials",30)))
+    protocol=str(protocol).replace("-","_")
+    if protocol not in {"controlled","source_faithful"}: raise ValueError("protocol must be controlled or source_faithful")
+    controlled=cfg.get("comparison",{}).get("controlled",{})
+    trials=int(trials or (controlled.get("tuning_trials",30) if protocol=="controlled" else cfg.get("baseline_tuning",{}).get("trials",30)))
+    tuning_seeds=[int(x) for x in controlled.get("tuning_seeds",[1101,2202])] if protocol=="controlled" else [int(cfg.get("seed",0))]
     start=tuning_eval_start(cfg,include_baselines=True); all_best={}; summaries={}
 
     for model_index,name in enumerate(names):
@@ -317,12 +324,23 @@ def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs
         def objective(trial):
             hp=suggest_literature(trial,cfg,name); full=literature_hparams(name,cfg,hp,"paper")
             b=bundle(full["sequence_length"])
-            seed_everything(int(cfg["seed"])+10000*model_index+trial.number)
-            run_epochs=int(epochs or cfg.get("baseline_tuning",{}).get("epochs",full["epochs"]))
-            model=fit_literature(name,b,cfg,run_epochs,"paper",full)
-            p,_=predict_literature(model,name,b.Xv)
-            rmse=float(np.sqrt(np.mean((b.yv-p)**2)))
-            trial.set_user_attr("val_rmse",rmse); return rmse
+            if protocol=="controlled":
+                full.update({
+                    "epochs":int(epochs or controlled.get("epochs",cfg["training"]["epochs_paper"])),
+                    "patience":int(controlled.get("patience",cfg["training"].get("patience",10))),
+                    "batch_size":int(controlled.get("batch_size",128)),
+                })
+                if bool(controlled.get("common_optimizer_hparams",True)):
+                    full["lr"]=float(controlled.get("lr",1e-3)); full["weight_decay"]=float(controlled.get("weight_decay",1e-4))
+            run_epochs=int(epochs or full["epochs"])
+            rmses=[]
+            for tuning_seed in tuning_seeds:
+                seed_everything(int(tuning_seed))
+                model=fit_literature(name,b,cfg,run_epochs,"paper",full)
+                p,_=predict_literature(model,name,b.Xv)
+                rmses.append(float(np.sqrt(np.mean((b.yv-p)**2))))
+            rmse=float(np.mean(rmses))
+            trial.set_user_attr("seed_rmse",rmses); return rmse
 
         db=model_out/"optuna.sqlite3"
         study=optuna.create_study(direction="minimize",study_name=name,storage=f"sqlite:///{db}",load_if_exists=True,
@@ -338,15 +356,17 @@ def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs
         rb=bundle(best["sequence_length"]); ids=rb.idv.astype(str).tolist()
         eh=__import__("hashlib").sha256("\n".join(ids).encode()).hexdigest()
         (model_out/"tuning_endpoint_manifest.json").write_text(json.dumps({"eval_start":start,"n":len(ids),"sha256":eh,"endpoint_ids":ids},indent=2),encoding="utf-8")
-        summaries[name]={"objective":"validation RMSE","best_value":study.best_value,"best_trial":study.best_trial.number,
+        summaries[name]={"objective":"mean validation RMSE across fixed tuning seeds","best_value":study.best_value,"best_trial":study.best_trial.number,
                          "best_params":best,"n_trials_total":len(study.trials),"test_used_during_search":False,
+                         "protocol":protocol,"tuning_seeds":tuning_seeds,
                          "common_eval_start":start,"validation_endpoint_sha256":eh}
         (model_out/"tuning_summary.json").write_text(json.dumps(summaries[name],indent=2),encoding="utf-8")
 
     (out/"best_hparams.yaml").write_text(yaml.safe_dump(all_best,sort_keys=False),encoding="utf-8")
     (out/"tuning_summary.json").write_text(json.dumps({"same_trial_budget":trials,"common_eval_start":start,
-                                                         "primary_selection_metric":"validation RMSE","models":summaries},indent=2),encoding="utf-8")
-    return {"same_trial_budget":trials,"common_eval_start":start,"models":summaries,"best_params":all_best}
+                                                         "primary_selection_metric":"validation RMSE","protocol":protocol,
+                                                         "tuning_seeds":tuning_seeds,"models":summaries},indent=2),encoding="utf-8")
+    return {"same_trial_budget":trials,"common_eval_start":start,"protocol":protocol,"tuning_seeds":tuning_seeds,"models":summaries,"best_params":all_best}
 
 
 def tune_ablation_variants(csv_path, out_dir, cfg, variants=None, trials=15, epochs=None):
@@ -395,3 +415,64 @@ def tune_ablation_variants(csv_path, out_dir, cfg, variants=None, trials=15, epo
     (out/"best_hparams.yaml").write_text(yaml.safe_dump(best_all,sort_keys=False),encoding="utf-8")
     (out/"retuned_ablation_summary.json").write_text(json.dumps({"protocol":"retuned supplementary ablation","same_validation_endpoints":True,"common_eval_start":start,"models":summaries},indent=2),encoding="utf-8")
     return summaries
+
+
+def tune_frc(csv_path, out_dir, cfg, trials=None, epochs=None):
+    """Tune only ordinary FRC network-training hyperparameters.
+
+    Mathematical quantities (candidate grid, certificate deltas, horizons and
+    theorem definition) are intentionally fixed and are not optimized against
+    validation RMSE. Every candidate is evaluated with the same tuning seeds.
+    """
+    from .frc_benchmark import (
+        make_frc_bundle, fit_frc_response_model, calibrate_residual_radii,
+        evaluate_frc_split, _common_eval_start_frc,
+    )
+    optuna=require_optuna(); out=ensure_dir(out_dir)
+    tc=cfg.get("frc_tuning",{}); space=tc.get("space",{})
+    trials=int(trials or tc.get("trials",30)); run_epochs=int(epochs or tc.get("epochs",40))
+    seeds=[int(x) for x in tc.get("seeds",[1101,2202])]
+    start=tuning_eval_start(cfg,include_baselines=True)
+    b=make_frc_bundle(csv_path,cfg,eval_start=start)
+    from .friction_resolution import make_mu_grid
+    grid=make_mu_grid(float(cfg.get("frc",{}).get("mu_min",0.0)),
+                      float(cfg.get("frc",{}).get("mu_max",cfg.get("mu_upper",1.3))),
+                      float(cfg.get("frc",{}).get("mu_grid_step",0.02)))
+
+    def objective(trial):
+        hp={
+            "hidden":trial.suggest_categorical("hidden",space.get("hidden",[96,128,160])),
+            "gru_layers":trial.suggest_categorical("gru_layers",space.get("gru_layers",[1,2])),
+            "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
+            "lr":trial.suggest_float("lr",*space.get("lr",[1e-4,3e-3]),log=True),
+            "weight_decay":trial.suggest_float("weight_decay",*space.get("weight_decay",[1e-6,1e-3]),log=True),
+            "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",[64,128,256])),
+            "epochs":run_epochs,
+        }
+        vals=[]
+        for seed in seeds:
+            seed_everything(seed)
+            model,_,_=fit_frc_response_model(b,cfg,hp)
+            radii=calibrate_residual_radii(model,b,cfg,grid)
+            pred,*_=evaluate_frc_split(model,b.Xv,b.Rv,b.yv,b,cfg,grid,radii)
+            vals.append(float(np.sqrt(np.mean((b.yv-pred)**2))))
+        score=float(np.mean(vals)); trial.set_user_attr("seed_rmse",vals); return score
+
+    db=Path(out)/"optuna.sqlite3"
+    study=optuna.create_study(direction="minimize",study_name="safegrip_frc",storage=f"sqlite:///{db}",load_if_exists=True,
+                              sampler=optuna.samplers.TPESampler(seed=int(cfg.get("seed",0))))
+    remaining=max(0,trials-len(study.trials))
+    if remaining: study.optimize(objective,n_trials=remaining)
+    best=dict(study.best_trial.params); best["epochs"]=run_epochs
+    (Path(out)/"best_hparams.yaml").write_text(yaml.safe_dump(best,sort_keys=False),encoding="utf-8")
+    pd.DataFrame(study.trials_dataframe()).to_csv(Path(out)/"trials.csv",index=False)
+    ids=b.idv.astype(str).tolist(); eh=__import__("hashlib").sha256("\n".join(ids).encode()).hexdigest()
+    (Path(out)/"tuning_endpoint_manifest.json").write_text(json.dumps({"eval_start":start,"n":len(ids),"sha256":eh,"endpoint_ids":ids},indent=2),encoding="utf-8")
+    summary={
+        "method":"safegrip_frc","objective":"mean validation RMSE across fixed tuning seeds",
+        "best_value":float(study.best_value),"best_trial":int(study.best_trial.number),"best_params":best,
+        "n_trials_total":len(study.trials),"tuning_seeds":seeds,"test_used_during_search":False,
+        "mathematical_parameters_tuned":False,"common_eval_start":start,
+    }
+    (Path(out)/"tuning_summary.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
+    return summary

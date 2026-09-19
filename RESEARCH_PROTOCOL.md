@@ -1,42 +1,49 @@
-# SafeGrip research protocol — v1.4.0
+# Research protocol — SafeGrip-FRC
 
-## Primary research question
+## Primary question
 
-Can a strong raw-sensor temporal friction estimator obtain a better **accuracy-safety trade-off** when a separately trained dynamics model is used only to construct an inference-time counterfactual friction-energy landscape and the resulting physics correction is selectively applied?
+Does finite-window response inversion with a friction-resolution certificate provide useful friction estimates beyond a closely matched direct recurrent regressor and published-method adaptations?
+
+## P1 — controlled comparison
+
+Primary paper metrics use `--protocol controlled`:
+
+- identical locked validation/test endpoint IDs;
+- identical test seeds;
+- equal validation trial count;
+- fixed common tuning seeds;
+- common maximum epoch/batch budget for literature comparators;
+- no primary physical projection;
+- validation RMSE only for hyperparameter selection;
+- test remains locked until final evaluation.
+
+Architecture/preprocessing families remain model-specific so a baseline is not deliberately weakened.
+
+## P2 — source-setting comparison
+
+`--protocol source-faithful` preserves each registered literature-style epoch/batch/optimizer settings where recoverable. It is reported separately and is not described as compute-matched.
+
+## Proposal tuning
+
+FRC tuning is restricted to ordinary approximation/optimization variables:
+
+- GRU hidden width;
+- GRU layer count;
+- dropout;
+- learning rate;
+- weight decay;
+- batch size.
+
+The friction grid, candidate horizons, certificate deltas, and theorem definition are fixed before final testing.
+
+## Required scientific controls
+
+1. `direct_gru_control`: same encoder depth/width and closely matched head, trained directly on friction.
+2. fixed-horizon FRC variants for every declared horizon.
+3. common physical-projection control reported separately.
+4. conditional theorem audit.
+5. unseen-trajectory split as a secondary distribution-shift experiment when the dataset contains enough independent trajectories.
 
 ## Claim discipline
 
-SafeGrip-CI v1.4 is a hybrid estimator, not a complete tire model. Low counterfactual energy is evidence of compatibility with the learned dynamics model, not proof of physical truth. Entropy-derived identifiability measures concentration of the local energy landscape, not correctness. Physical projection is a safety constraint. No superiority claim is valid until the locked real-LiRA TRUST/PAPER protocol is rerun.
-
-## Locked point path
-
-1. causal raw-sensor two-layer GRU base estimate trained first with standardized-target MSE;
-2. separately pretrained friction-conditioned dynamics model;
-3. odd local grid of counterfactual friction hypotheses around the detached base estimate;
-4. dynamics-energy posterior and posterior-mean physics candidate;
-5. entropy identifiability, energy-improvement and curvature evidence;
-6. help-probability head and correction-fraction head;
-7. selective correction with explicit do-no-harm and metric-aligned overestimation training;
-8. optional conditional physical projection;
-9. disjoint block-max split-conformal UQ calibration.
-
-## Leakage controls
-
-- Dataset split precedes partition-local imputation/scaling.
-- Temporal windows cannot cross trajectory/segment/split boundaries.
-- Test labels are locked during tuning.
-- Oracle help/fraction targets are training-only and are never inference inputs.
-- Physics evidence is detached before selector/point use.
-- Dynamics is pretrained separately and frozen by default during selector training.
-- Lower-bound calibration and predictive-UQ calibration use disjoint roles.
-
-## Required evaluation
-
-- matched seeds and test endpoints;
-- strong published literature baselines;
-- matched temporal-base control;
-- projection-parity and label/feature-budget fairness controls;
-- hierarchical seed/trajectory statistics;
-- all 13 primary v1.4 ablations;
-- selector diagnostics: help probability, correction fraction, identifiability/entropy, correction coverage and harm rate;
-- real-data scientific-health gates before any paper-ready claim.
+The calibration radius is empirical. The deterministic recovery theorem is claimed only conditional on its residual premise. Test-set premise frequency is an evaluation statistic, not an input to prediction.

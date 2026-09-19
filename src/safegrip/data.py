@@ -1102,13 +1102,51 @@ def add_lira_trajectory_segments(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 
 def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """Assign contiguous train/calibration/validation/test blocks per trip.
+    """Assign leakage-safe data partitions.
 
-    Optional purge rows are marked ``purged`` and are never used by the model.
-    Splitting happens before feature interpolation/resampling.
+    ``split.mode=spatial_within_trajectory`` (default) keeps the established
+    contiguous-with-purge protocol. ``split.mode=group_holdout`` assigns whole
+    trajectory IDs to a single partition and is intended for the stronger
+    unseen-trajectory generalization experiment. Splitting happens before
+    feature interpolation/resampling in either mode.
     """
     z = df.copy()
     split_cfg = cfg.get("split", {})
+    mode = str(split_cfg.get("mode", "spatial_within_trajectory"))
+    if mode == "group_holdout":
+        group_col = "trajectory_id" if "trajectory_id" in z else ("trip_id" if "trip_id" in z else None)
+        if group_col is None:
+            raise ValueError("group_holdout requires trajectory_id or trip_id")
+        groups = sorted(z[group_col].dropna().astype(str).unique().tolist())
+        if len(groups) < 4:
+            raise ValueError("group_holdout requires at least four trajectory/trip groups")
+        train_f = float(split_cfg.get("train", 0.60))
+        cal_f = float(split_cfg.get("calibration", 0.10))
+        val_f = float(split_cfg.get("validation", 0.10))
+        # Deterministic group ordering independent of row order. A seed changes
+        # the assignment only when explicitly changed in the config.
+        import hashlib
+        seed = int(cfg.get("seed", 0))
+        ordered = sorted(groups, key=lambda g: hashlib.sha256(f"{seed}:{g}".encode()).hexdigest())
+        n = len(ordered)
+        n_train = max(1, int(round(train_f*n)))
+        n_cal = max(1, int(round(cal_f*n)))
+        n_val = max(1, int(round(val_f*n)))
+        while n_train+n_cal+n_val >= n:
+            if n_train > 1: n_train -= 1
+            elif n_val > 1: n_val -= 1
+            elif n_cal > 1: n_cal -= 1
+            else: break
+        mapping = {}
+        for g in ordered[:n_train]: mapping[g] = "train"
+        for g in ordered[n_train:n_train+n_cal]: mapping[g] = "calibration"
+        for g in ordered[n_train+n_cal:n_train+n_cal+n_val]: mapping[g] = "validation"
+        for g in ordered[n_train+n_cal+n_val:]: mapping[g] = "test"
+        z["split"] = z[group_col].astype(str).map(mapping)
+        z["split_position"] = np.nan
+        return z
+    if mode != "spatial_within_trajectory":
+        raise ValueError(f"Unknown split.mode: {mode}")
     lira_cfg = cfg.get("lira", {})
     train = float(split_cfg.get("train", 0.60))
     cal = train + float(split_cfg.get("calibration", 0.10))
