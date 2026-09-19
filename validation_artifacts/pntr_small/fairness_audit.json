@@ -1,0 +1,23 @@
+{
+  "status": "PASS",
+  "protocol": "controlled",
+  "seeds": [
+    0
+  ],
+  "common_eval_start": 99,
+  "validation_endpoint_hash": "657c774246903b16fd70a04c141dabf9ee7e1e1f92a9af8d1c6119e540ba53eb",
+  "test_endpoint_hash": "7921c94e9f7c0f6055b5e8a862f1bb3fb631fe82998886c69dba73af6987ad49",
+  "same_locked_endpoints": true,
+  "test_labels_used_for_tuning": false,
+  "input_scaler_fit_on_train_only": true,
+  "target_standardization_fit_on_train_only": true,
+  "response_normalization_fit_on_train_only": true,
+  "causal_response_context": true,
+  "mechanics_lower_bound_uses_test_features_not_test_friction_labels": true,
+  "physics_refinement_is_trust_region_bounded": true,
+  "baseline_fidelity": {
+    "lampe2023_lstm": "architecture- and reported-training-setting adaptation; common LiRA sensor subset and benchmark protocol differ from the source study"
+  },
+  "effective_preset": "quick",
+  "effective_epochs": 5
+}

@@ -1,22 +1,25 @@
-# SafeGrip-Open v2.0 — SafeGrip-FRC
+# SafeGrip-Open v2.1 — SafeGrip-PNTR
 
-The active proposal is **SafeGrip-FRC: Finite-Window Friction Resolution Certification**. The repository retains SafeGrip-CI v1.4 only as a legacy reproducibility path.
+The active proposal is **SafeGrip-PNTR: Physics-Neural Trust-Region Friction Estimation**. The previous theorem-driven SafeGrip-FRC and SafeGrip-CI v1.4 paths are retained for reproducibility.
 
 ## Active method
 
-SafeGrip-FRC contains only one learned component: a causal GRU response model
+SafeGrip-PNTR is built around a physics-residual neural estimate plus explicit physical evidence rather than global response inversion. A target-standardized GRU predicts the non-negative friction slack above the vehicle-mechanics lower bound, so the neural anchor is physically admissible by construction; a friction-conditioned causal response model may then make only a bounded local correction. The response model is trained with both response MSE and a friction-discriminative ranking loss so it cannot obtain a low training loss simply by ignoring the hypothetical friction input.
+
+For horizon $H$, PNTR minimizes locally
 
 \[
-(c_k,\mu)\mapsto \widehat{\Delta z}_k.
+F_{t,H}(\mu)=E_{t,H}(\mu)+\lambda_A\left(\frac{\mu-\mu_t^0}{\tau}\right)^2,
 \]
 
-Friction is not produced by a direct proposal head. For each finite observation horizon, the code minimizes the response residual over a declared friction grid, computes a finite-resolution separation margin, and reports a theorem-aligned recovery certificate. The adaptive observation horizon is selected by the smallest finite certificate, not by a learned gate.
+inside the intersection of the mechanics interval and the neural trust region. The exact neural anchor is always the fallback. Hence an accepted physics correction is bounded by $\tau$ and cannot have a larger regularized objective than the anchor.
 
-See `SAFEGRIP_FRC_METHOD.md` and `THEOREM_VALIDATION.md` for the exact definitions and theorem.
+See `SAFEGRIP_PNTR_METHOD.md` for the exact estimator, safeguards, conditional local-recovery result, and ablations.
 
-### What was removed from the primary proposal
+### Retained methods
 
-The active FRC path has no benefit classifier, correction-fraction head, entropy posterior, energy temperature, direct friction base network, learned arbitration, regime head, heteroscedastic head, or primary physical clipping. Those mechanisms remain only in the legacy CI-v1.4 code.
+- `--proposal frc`: previous global finite-window response-inversion/certification method.
+- `--proposal legacy-ci`: previous SafeGrip-CI v1.4 method.
 
 ## Primary paper run
 
@@ -41,6 +44,8 @@ TRIALS=5 TUNE_EPOCHS=8 bash scripts/run_paper.sh
 Tune only ordinary FRC training parameters; the theorem, candidate grid, certificate deltas, and horizons are not tuned:
 
 ```bash
+# PNTR currently uses the fixed declared method hyperparameters in configs/default.yaml.
+# The retained FRC path can still be tuned with:
 safegrip tune --method frc --dataset lira --trials 30
 ```
 
@@ -54,12 +59,17 @@ Run the primary benchmark:
 
 ```bash
 safegrip benchmark --dataset lira --preset paper \
-  --proposal frc --protocol controlled \
-  --proposal-hparams results/lira_frc_tuning/best_hparams.yaml \
+  --proposal pntr --protocol controlled \
   --baseline-hparams results/lira_baseline_tuning/best_hparams.yaml
 ```
 
-Run the retained old proposal:
+Run the retained FRC proposal:
+
+```bash
+safegrip benchmark --dataset lira --preset paper --proposal frc
+```
+
+Run the retained old CI proposal:
 
 ```bash
 safegrip benchmark --dataset lira --preset paper --proposal legacy-ci
@@ -69,8 +79,8 @@ safegrip benchmark --dataset lira --preset paper --proposal legacy-ci
 
 The primary table contains:
 
-- `safegrip_frc` — theorem-driven response-inversion proposal;
-- `direct_gru_control` — same GRU encoder width/depth with a closely matched direct-regression head;
+- `safegrip_pntr` — active physics-neural trust-region proposal;
+- `direct_gru_control` and `pntr_physics_residual_anchor` are exported as same-encoder/component controls rather than literature comparators;
 - `todorovic2022_cnn`;
 - `lampe2023_lstm`;
 - `lampe2023_gru`;
@@ -79,7 +89,7 @@ The primary table contains:
 
 The literature implementations are adaptations to the common LiRA task. Their fidelity level is explicitly recorded in `src/safegrip/literature.py`; the code does not claim exact reproduction when sensors/data/protocol differ from the source study.
 
-Physical projection is **not** used in the primary metrics. A common projection control is exported separately so any gain from post-processing is visible rather than attributed to the proposed estimator.
+The mechanics constraint is an explicit part of PNTR, not hidden post-processing. Its effect is isolated by comparing the same-encoder `direct_gru_control` against `pntr_physics_residual_anchor`, which predicts only the non-negative friction slack above the mechanics lower bound before the response-based refinement.
 
 ## Fairness safeguards
 
@@ -91,7 +101,7 @@ Physical projection is **not** used in the primary metrics. A common projection 
 - equal trial budget for controlled comparison;
 - common controlled training budget;
 - test labels never used for tuning or horizon selection;
-- primary prediction contains no physical projection;
+- the mechanics projection is part of the declared PNTR estimator and is isolated by a dedicated ablation;
 - source-setting literature comparison reported separately.
 
 The legacy v1.4 tuner was also corrected so inactive `conv_channels`, inactive `huber_beta`, and fixed zero-valued losses no longer consume Optuna dimensions.
@@ -116,7 +126,7 @@ split:
 
 Whole trajectories are then assigned to one partition only. At least four trajectory/trip groups are required.
 
-## Main FRC outputs
+## Main PNTR outputs
 
 A paper benchmark writes:
 
@@ -125,17 +135,14 @@ results/lira_paper/
   metrics.csv
   metrics_by_seed.csv
   predictions_by_seed.csv
-  fixed_horizon_ablation.csv
-  frc_resolution_certificates.csv
-  frc_separation_curves.csv
-  frc_certificate_validity.csv
-  theorem_audit.json
+  pntr_component_ablation.csv
+  pntr_horizon_ablation.csv
+  pntr_method_audit.json
   fairness_audit.json
-  projection_control.csv
   reproducibility_manifest.json
 ```
 
-`theorem_audit.json` is an executable consistency gate: if the implemented grid estimator violates the stated finite-grid recovery implication on any endpoint where the full theorem premise holds, the benchmark fails.
+`pntr_method_audit.json` records the trust radius, anchor regularization, exact-fallback safeguard, and the limits of the true-error claim. The retained FRC path still produces its original theorem audit.
 
 ## Open-data policy
 
@@ -147,7 +154,7 @@ The existing data registry/download/preparation code is retained. The primary fr
 pytest -q
 ```
 
-In addition to the existing suite, `tests/test_friction_resolution.py` checks closed-form separation on a linear response map, monotonicity of `S(delta)`, grid-certificate construction, horizon fallback, exact-grid inversion, and the finite-grid theorem.
+In addition to the existing suite, `tests/test_pntr.py` checks trust-region boundedness, exact neural fallback, regularized-objective safety, local identifiability, and the conditional strong-convexity error bound. The retained FRC theorem tests remain in `tests/test_friction_resolution.py`.
 
 ## Legacy SafeGrip-CI
 

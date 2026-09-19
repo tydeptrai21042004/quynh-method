@@ -1,0 +1,20 @@
+{
+  "status": "PASS",
+  "proposal": "SafeGrip-PNTR: Physics-Neural Trust-Region friction estimation",
+  "neural_anchor": "target-standardized GRU predicting non-negative friction slack above the mechanics lower bound",
+  "same_encoder_control": "direct GRU predicting friction without the physics-residual parameterization",
+  "mechanics_constraint": "calibration-relaxed vehicle-level lower grip bound embedded in the neural output parameterization",
+  "response_model": "causal friction-conditioned GRU with counterfactual ranking loss",
+  "objective": "mean standardized response energy + normalized quadratic neural-anchor penalty",
+  "trust_radius": 0.06,
+  "anchor_lambda": 0.1,
+  "anchor_is_exact_fallback": true,
+  "deterministic_safeguard": "selected regularized objective cannot exceed the exact anchor objective",
+  "true_error_improvement_claim": "not unconditional; requires local response-model/identifiability assumptions",
+  "empirical_correction_rate_mean": 0.0,
+  "response_refinement_empirically_active": false,
+  "response_refinement_status": "SAFE_FALLBACK_ONLY",
+  "same_encoder_direct_rmse": 0.24263186604298362,
+  "physics_residual_anchor_rmse": 0.1373414504538968,
+  "physics_residual_rmse_improvement_vs_direct": 0.1052904155890868
+}

@@ -1,0 +1,4 @@
+model,kind,doi,seed,mae,rmse,r2,unsafe_overestimate_mean,unsafe_overestimate_rate_005,lower_violation_rate,mean_identified_width,point_outside_physics_set_rate,projection_correction_rate,seconds,correction_rate,mean_abs_physics_correction,mean_response_energy_reduction,mean_local_identifiability
+safegrip_pntr,proposal,,0,0.11159712821245193,0.1373414504538968,0.6600902080535889,0.08336637914180756,0.5892857142857143,0.0,0.8249320387840271,0.0,0.0,11.752156496047974,0.0,0.0,0.0,0.04032403230667114
+direct_gru_control,same_encoder_control,,0,0.24164025485515594,0.24263186604298362,-0.06085526943206787,0.14768992364406586,0.6071428571428571,,,,,0.3119666576385498,,,,
+lampe2023_lstm,literature_adapted_baseline,10.1016/j.ifacol.2023.12.056,0,0.48256969451904297,0.5300887543210635,-4.06358003616333,0.48256969451904297,1.0,,,,,1.9417448043823242,,,,

@@ -1,0 +1,13 @@
+........................................................................ [ 71%]
+.............................                                            [100%]
+=============================== warnings summary ===============================
+tests/test_data.py::test_viafrik_official_unicode_schema_and_decimal_comma
+  /mnt/data/pntr_test/src/safegrip/data.py:115: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+    dt = pd.to_datetime(s, errors="coerce", utc=True)
+
+tests/test_models.py::test_literature_model_shapes
+  /opt/pyvenv/lib/python3.13/site-packages/torch/nn/modules/conv.py:370: UserWarning: Using padding='same' with even kernel lengths and odd dilation may require a zero-padded copy of the input be created (Triggered internally at /pytorch/aten/src/ATen/native/Convolution.cpp:1025.)
+    return F.conv1d(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+101 passed, 2 warnings in 2.43s
