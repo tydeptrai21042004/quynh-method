@@ -1,3 +1,5 @@
+> **Legacy note (v2.2):** SafeGrip-PFR is the active proposal. This file is retained only to reproduce earlier experiments.
+
 # SafeGrip-PNTR: Physics-Neural Trust-Region Friction Estimation
 
 ## 1. Why the proposal changed

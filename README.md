@@ -1,161 +1,183 @@
-# SafeGrip-Open v2.1 — SafeGrip-PNTR
+# SafeGrip-Open v2.2 — SafeGrip-PFR
 
-The active proposal is **SafeGrip-PNTR: Physics-Neural Trust-Region Friction Estimation**. The previous theorem-driven SafeGrip-FRC and SafeGrip-CI v1.4 paths are retained for reproducibility.
+The active proposal is **SafeGrip-PFR: Physics-Feasible Residual Estimation**.
+The previous SafeGrip-FRC, SafeGrip-PNTR, and SafeGrip-CI paths remain in the
+repository only for reproducibility.
 
-## Active method
+## Why PFR is the active method
 
-SafeGrip-PNTR is built around a physics-residual neural estimate plus explicit physical evidence rather than global response inversion. A target-standardized GRU predicts the non-negative friction slack above the vehicle-mechanics lower bound, so the neural anchor is physically admissible by construction; a friction-conditioned causal response model may then make only a bounded local correction. The response model is trained with both response MSE and a friction-discriminative ranking loss so it cannot obtain a low training loss simply by ignoring the hypothetical friction input.
-
-For horizon $H$, PNTR minimizes locally
+PFR intentionally removes the response-inversion/trust-region stack.  It uses
+one GRU and one calibrated projection:
 
 \[
-F_{t,H}(\mu)=E_{t,H}(\mu)+\lambda_A\left(\frac{\mu-\mu_t^0}{\tau}\right)^2,
+r_t^\star=\mu_t-L_{0,t},
+\qquad
+\widetilde\mu_t=L_{0,t}+f_\theta(X_t),
 \]
 
-inside the intersection of the mechanics interval and the neural trust region. The exact neural anchor is always the fallback. Hence an accepted physics correction is bounded by $\tau$ and cannot have a larger regularized objective than the anchor.
+\[
+L_{\alpha,t}=\max\{0,L_{0,t}-q_\alpha\},
+\qquad
+\widehat\mu_t=\Pi_{[L_{\alpha,t},U]}(\widetilde\mu_t).
+\]
 
-See `SAFEGRIP_PNTR_METHOD.md` for the exact estimator, safeguards, conditional local-recovery result, and ablations.
+`L0` is the mechanics-derived lower-grip signal.  The GRU learns only the
+signed residual above that known structured term.  The scalar `q_alpha` is
+estimated from the calibration split with one-sided split conformal
+calibration.  The projection contains no learned parameter.
 
-### Retained methods
+The neural model is trained **only on training labels**.  Calibration labels
+are used only for `q_alpha`; test labels are never used for fitting,
+calibration, projection, or model selection.
 
-- `--proposal frc`: previous global finite-window response-inversion/certification method.
-- `--proposal legacy-ci`: previous SafeGrip-CI v1.4 method.
+## Main theorem
 
-## Primary paper run
+For a test point whose true friction satisfies
+
+\[
+\mu^\star\in[L_\alpha,U],
+\]
+
+orthogonal projection onto the feasible interval gives
+
+\[
+\boxed{
+|\widehat\mu-\mu^\star|^2
+\le
+|\widetilde\mu-\mu^\star|^2
+-
+\operatorname{dist}(\widetilde\mu,[L_\alpha,U])^2.
+}
+\]
+
+Thus the physics projection cannot increase the **actual squared friction
+error** on the coverage event, and its guaranteed improvement is at least the
+squared distance of the raw estimate to the feasible set.
+
+Under the standard split-conformal exchangeability assumption,
+
+\[
+\Pr\{\mu_{new}\ge L_\alpha(X_{new})\}\ge 1-\alpha.
+\]
+
+The full interval statement additionally assumes the configured physical upper
+bound `U` is valid.
+
+See [`SAFEGRIP_PFR_METHOD.md`](SAFEGRIP_PFR_METHOD.md) for the derivation,
+assumptions, theorem, and ablation logic.
+
+## Install and test
+
+```bash
+python -m pip install -e ".[paper,dev]"
+pytest -q
+```
+
+## Quick real-data run
+
+```bash
+safegrip download --datasets lira
+safegrip prepare --dataset lira
+safegrip benchmark --dataset lira --preset quick --proposal pfr --protocol controlled
+```
+
+The default proposal is already `pfr`, so `--proposal pfr` may be omitted.
+
+## Paper protocol
 
 ```bash
 bash scripts/run_paper.sh
 ```
 
-The controlled protocol is the primary comparison. It gives literature comparators a common training budget while preserving their registered architecture/preprocessing family. A source-setting comparison can be run separately:
+The paper workflow performs validation-only PFR tuning, baseline tuning, the
+five-seed controlled comparison, paired statistics, theorem/fairness audits,
+and packaging.
+
+For a separate source-setting comparator table:
 
 ```bash
 RUN_SOURCE_FAITHFUL=1 bash scripts/run_paper.sh
 ```
 
-Development run:
+## PFR tuning
+
+Only ordinary neural approximation/optimization parameters are tunable:
 
 ```bash
-TRIALS=5 TUNE_EPOCHS=8 bash scripts/run_paper.sh
+safegrip tune --method pfr --dataset lira --trials 20
 ```
 
-## Direct commands
+The following are **not** tuned against validation performance:
 
-Tune only ordinary FRC training parameters; the theorem, candidate grid, certificate deltas, and horizons are not tuned:
+- conformal level `alpha`;
+- conformal quantile rule;
+- mechanics lower-bound formula;
+- physical upper bound `mu_upper`;
+- projection theorem.
 
-```bash
-# PNTR currently uses the fixed declared method hyperparameters in configs/default.yaml.
-# The retained FRC path can still be tuned with:
-safegrip tune --method frc --dataset lira --trials 30
-```
-
-Tune literature comparators on the same validation endpoint contract and fixed tuning seeds:
-
-```bash
-safegrip tune-baselines --dataset lira --protocol controlled --trials 30
-```
-
-Run the primary benchmark:
-
-```bash
-safegrip benchmark --dataset lira --preset paper \
-  --proposal pntr --protocol controlled \
-  --baseline-hparams results/lira_baseline_tuning/best_hparams.yaml
-```
-
-Run the retained FRC proposal:
-
-```bash
-safegrip benchmark --dataset lira --preset paper --proposal frc
-```
-
-Run the retained old CI proposal:
-
-```bash
-safegrip benchmark --dataset lira --preset paper --proposal legacy-ci
-```
-
-## Primary comparison design
+## Main comparison
 
 The primary table contains:
 
-- `safegrip_pntr` — active physics-neural trust-region proposal;
-- `direct_gru_control` and `pntr_physics_residual_anchor` are exported as same-encoder/component controls rather than literature comparators;
-- `todorovic2022_cnn`;
-- `lampe2023_lstm`;
-- `lampe2023_gru`;
-- `schaefke2023_transformer`;
-- `chen2025_svdkl`.
+- `safegrip_pfr` — active proposal;
+- `direct_gru_control` — same GRU trained directly on friction;
+- the registered literature baselines.
 
-The literature implementations are adaptations to the common LiRA task. Their fidelity level is explicitly recorded in `src/safegrip/literature.py`; the code does not claim exact reproduction when sensors/data/protocol differ from the source study.
+The decisive component table contains exactly three estimators:
 
-The mechanics constraint is an explicit part of PNTR, not hidden post-processing. Its effect is isolated by comparing the same-encoder `direct_gru_control` against `pntr_physics_residual_anchor`, which predicts only the non-negative friction slack above the mechanics lower bound before the response-based refinement.
+1. `direct_gru_control`;
+2. `pfr_residual_raw` — residual estimator before projection;
+3. `safegrip_pfr` — residual estimator after calibrated projection.
 
-## Fairness safeguards
+This separates two questions cleanly:
 
-- train-only input scaling;
-- train-only response normalization;
-- strictly causal response contexts;
-- locked validation/test endpoint IDs across methods;
-- fixed common tuning seeds instead of `seed + trial.number`;
-- equal trial budget for controlled comparison;
-- common controlled training budget;
-- test labels never used for tuning or horizon selection;
-- the mechanics projection is part of the declared PNTR estimator and is isolated by a dedicated ablation;
-- source-setting literature comparison reported separately.
+- does physics residualization improve learning?
+- does the theorem-backed projection improve or preserve the raw residual estimate?
 
-The legacy v1.4 tuner was also corrected so inactive `conv_channels`, inactive `huber_beta`, and fixed zero-valued losses no longer consume Optuna dimensions.
+## Primary result files
 
-## Split protocols
-
-Default:
-
-```yaml
-split:
-  mode: spatial_within_trajectory
-```
-
-This preserves contiguous per-trajectory train/calibration/validation/test blocks with purge gaps.
-
-For the stronger distribution-shift experiment, prepare data with:
-
-```yaml
-split:
-  mode: group_holdout
-```
-
-Whole trajectories are then assigned to one partition only. At least four trajectory/trip groups are required.
-
-## Main PNTR outputs
-
-A paper benchmark writes:
+A PFR benchmark writes:
 
 ```text
 results/lira_paper/
   metrics.csv
   metrics_by_seed.csv
   predictions_by_seed.csv
-  pntr_component_ablation.csv
-  pntr_horizon_ablation.csv
-  pntr_method_audit.json
+  pfr_component_ablation.csv
+  pfr_component_ablation_by_seed.csv
+  pfr_projection_theorem_audit.csv
+  pfr_theorem_audit.json
+  pfr_method_audit.json
   fairness_audit.json
   reproducibility_manifest.json
 ```
 
-`pntr_method_audit.json` records the trust radius, anchor regularization, exact-fallback safeguard, and the limits of the true-error claim. The retained FRC path still produces its original theorem audit.
+`pfr_projection_theorem_audit.csv` evaluates the pointwise theorem identity on
+every test endpoint and seed.  `pfr_theorem_audit.json` reports covered-point
+violations; this count must be zero up to numerical tolerance.
 
-## Open-data policy
+## Fairness contract
 
-The existing data registry/download/preparation code is retained. The primary friction benchmark uses LiRA's available road-friction reference under the repository's alignment and leakage safeguards. Auxiliary datasets remain auxiliary unless they provide the exact target required by an experiment.
+PFR uses:
 
-## Tests
+- train-only input scaling;
+- train-only residual target standardization;
+- train-only neural optimization;
+- calibration-only estimation of the scalar `q_alpha`;
+- locked validation/test endpoint IDs across methods;
+- the same recurrent architecture for direct-vs-residual comparison;
+- no test labels for fitting or calibration;
+- no learned response model, search grid, trust radius, or test-time optimizer.
+
+## Retained legacy paths
+
+The following are retained for reproducing earlier experiments, but they are no
+longer the active proposal:
 
 ```bash
-pytest -q
+safegrip benchmark --dataset lira --preset paper --proposal frc
+safegrip benchmark --dataset lira --preset paper --proposal legacy-ci
 ```
 
-In addition to the existing suite, `tests/test_pntr.py` checks trust-region boundedness, exact neural fallback, regularized-objective safety, local identifiability, and the conditional strong-convexity error bound. The retained FRC theorem tests remain in `tests/test_friction_resolution.py`.
-
-## Legacy SafeGrip-CI
-
-`SAFEGRIP_CI_V14_METHOD.md` and the v1.x files are retained so old experiments remain reproducible. They are not the active proposal and are not run by the new paper script.
+`src/safegrip/pntr_benchmark.py`, `SAFEGRIP_PNTR_METHOD.md`, and the PNTR unit
+tests are also retained as historical material.

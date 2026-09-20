@@ -1,3 +1,4 @@
+# LEGACY DRIVER: SafeGrip-PFR is the active v2.2 proposal. Use KAGGLE_PFR_SINGLE_CELL.py for new experiments.
 # ============================================================
 # SafeGrip-CI v1.4.0 — FULL CORRECTED KAGGLE SINGLE-CELL DRIVER
 # Repository:

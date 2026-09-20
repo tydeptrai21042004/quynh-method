@@ -7,15 +7,14 @@ import pandas as pd
 ROOT=Path(__file__).resolve().parents[1]
 MAIN=ROOT/'results/lira_paper'
 PROC=ROOT/'data/processed/lira'
-TUNE=ROOT/'results/lira_frc_tuning'
+TUNE=ROOT/'results/lira_pfr_tuning'
 BTUNE=ROOT/'results/lira_baseline_tuning'
 
 required_main=[
     'metrics.csv','metrics_by_seed.csv','predictions_by_seed.csv',
-    'fixed_horizon_ablation.csv','frc_resolution_certificates.csv',
-    'frc_separation_curves.csv','frc_certificate_validity.csv',
-    'theorem_audit.json','fairness_audit.json','projection_control.csv',
-    'reproducibility_manifest.json','statistics/paired_bootstrap_rmse.csv',
+    'pfr_component_ablation.csv','pfr_component_ablation_by_seed.csv',
+    'pfr_projection_theorem_audit.csv','pfr_theorem_audit.json','pfr_method_audit.json',
+    'fairness_audit.json','reproducibility_manifest.json','statistics/paired_bootstrap_rmse.csv',
 ]
 required_proc=[
     'lira_aligned.csv','lira_signal_audit.csv','lira_physics_audit.json',
@@ -23,19 +22,26 @@ required_proc=[
 ]
 paper_models={
     'todorovic2022_cnn','lampe2023_lstm','lampe2023_gru',
-    'schaefke2023_transformer','chen2025_svdkl','direct_gru_control','safegrip_frc',
+    'schaefke2023_transformer','chen2025_svdkl','direct_gru_control','safegrip_pfr',
 }
 checks={}
 for f in required_main: checks[f'main:{f}']=(MAIN/f).exists()
 for f in required_proc: checks[f'processed:{f}']=(PROC/f).exists()
 
-if (MAIN/'theorem_audit.json').exists():
-    ta=json.loads((MAIN/'theorem_audit.json').read_text())
-    checks['theorem_audit_pass']=ta.get('status')=='PASS' and int(ta.get('grid_theorem_violations',1))==0 and int(ta.get('continuous_bound_violations',1))==0
+if (MAIN/'pfr_theorem_audit.json').exists():
+    ta=json.loads((MAIN/'pfr_theorem_audit.json').read_text())
+    checks['theorem_audit_pass']=ta.get('status')=='PASS' and int(ta.get('covered_point_theorem_violations',1))==0
 else: checks['theorem_audit_pass']=False
+
 if (MAIN/'fairness_audit.json').exists():
     fa=json.loads((MAIN/'fairness_audit.json').read_text())
-    checks['fairness_audit_pass']=fa.get('status')=='PASS' and bool(fa.get('same_locked_endpoints')) and not bool(fa.get('test_labels_used_for_tuning'))
+    checks['fairness_audit_pass']=(
+        fa.get('status')=='PASS'
+        and bool(fa.get('same_locked_endpoints'))
+        and bool(fa.get('neural_model_uses_training_labels_only'))
+        and bool(fa.get('conformal_relaxation_uses_calibration_labels_only'))
+        and not bool(fa.get('test_labels_used_for_training_or_calibration'))
+    )
 else: checks['fairness_audit_pass']=False
 
 if (MAIN/'metrics_by_seed.csv').exists():
@@ -45,13 +51,13 @@ if (MAIN/'metrics_by_seed.csv').exists():
 else:
     checks['all_paper_models_present']=False; checks['five_seeds_each_main_model']=False
 
-if (MAIN/'fixed_horizon_ablation_by_seed.csv').exists():
-    a=pd.read_csv(MAIN/'fixed_horizon_ablation_by_seed.csv')
-    expected={f'frc_fixed_h{h}' for h in (4,8,16,32)}
-    checks['fixed_horizon_ablations_present']=expected.issubset(set(a.model.astype(str)))
-else: checks['fixed_horizon_ablations_present']=False
+if (MAIN/'pfr_component_ablation_by_seed.csv').exists():
+    a=pd.read_csv(MAIN/'pfr_component_ablation_by_seed.csv')
+    expected={'direct_gru_control','pfr_residual_raw','safegrip_pfr'}
+    checks['decisive_ablation_present']=expected.issubset(set(a.model.astype(str)))
+else: checks['decisive_ablation_present']=False
 
-checks['frc_tuning_present']=all((TUNE/f).exists() for f in ['best_hparams.yaml','tuning_summary.json','tuning_endpoint_manifest.json'])
+checks['pfr_tuning_present']=all((TUNE/f).exists() for f in ['best_hparams.yaml','tuning_summary.json','tuning_endpoint_manifest.json'])
 checks['baseline_tuning_present']=all((BTUNE/f).exists() for f in ['best_hparams.yaml','tuning_summary.json'])
 checks['tuning_endpoint_parity']=False
 pm=TUNE/'tuning_endpoint_manifest.json'; bms=sorted(BTUNE.glob('*/tuning_endpoint_manifest.json'))
@@ -74,7 +80,7 @@ else:
 status='PAPER_READY' if all(checks.values()) else 'REVIEW'
 report={
     'status':status,'checks':checks,
-    'proposal':'SafeGrip-FRC finite-window friction resolution certification',
+    'proposal':'SafeGrip-PFR Physics-Feasible Residual Estimation',
     'note':'PAPER_READY means implementation/fairness/theorem-consistency gates passed; it does not establish novelty or empirical superiority.',
 }
 MAIN.mkdir(parents=True,exist_ok=True); (MAIN/'paper_readiness.json').write_text(json.dumps(report,indent=2))

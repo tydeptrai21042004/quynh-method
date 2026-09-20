@@ -1,3 +1,5 @@
+> **Legacy note (v2.2):** SafeGrip-PFR is the active proposal. This file is retained only to reproduce earlier experiments.
+
 # SafeGrip-CI v1.4 — Strong-Base Innovation-Energy Residual Correction
 
 SafeGrip-CI v1.4 is the active proposal in this repository. It keeps the central v1.3 idea—counterfactual friction hypotheses evaluated by a learned dynamics model—but changes the point-estimation path to address the main failure mode observed in prior LiRA runs: the selective physics module was trying to rescue a weaker primary regressor.

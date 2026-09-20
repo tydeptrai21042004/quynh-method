@@ -1,0 +1,21 @@
+SafeGrip-PFR synthetic end-to-end smoke benchmark
+=================================================
+Preset: quick (1 seed, 3 epochs)
+Test endpoints: 148
+
+RMSE:
+  safegrip_pfr       0.115796
+  pfr_residual_raw   0.115796
+  direct_gru_control 0.211586
+
+Projection theorem audit:
+  status: PASS
+  covered-point violations: 0
+  feasible interval coverage: 1.0
+
+Interpretation:
+This is a software/theorem integration test, not a paper performance claim.
+The synthetic run demonstrates that the residual parameterization is active and
+that the theorem audit is implemented correctly. Projection happened to be
+inactive on this synthetic quick run because the raw residual predictions were
+already inside the feasible interval.

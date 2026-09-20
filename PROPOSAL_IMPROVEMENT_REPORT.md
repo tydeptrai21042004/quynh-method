@@ -1,3 +1,5 @@
+> **Legacy note (v2.2):** SafeGrip-PFR is the active proposal. This file is retained only to reproduce earlier experiments.
+
 # Proposal improvement report — SafeGrip-CI v1.4
 
 ## Why v1.4 was necessary

@@ -441,3 +441,17 @@ uq:
 calibration:
   lower_fraction: 0.25
   roles: disjoint_contiguous_lower_then_uq
+# SafeGrip-PFR primary proposal: one residual GRU + calibrated convex projection.
+pfr:
+  sequence_length: 16
+  scaler: standard
+  hidden: 64
+  gru_layers: 1
+  dropout: 0.1
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_size: 128
+  epochs: 60
+  patience: 10
+
+

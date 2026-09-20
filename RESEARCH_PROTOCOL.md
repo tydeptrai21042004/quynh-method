@@ -1,49 +1,103 @@
-# Research protocol — SafeGrip-FRC
+# Research protocol — SafeGrip-PFR
 
 ## Primary question
 
-Does finite-window response inversion with a friction-resolution certificate provide useful friction estimates beyond a closely matched direct recurrent regressor and published-method adaptations?
+Does a mechanics-translated residual hypothesis class improve friction
+estimation relative to the same recurrent encoder trained directly on friction,
+and does calibrated convex projection preserve or improve that raw residual
+estimate under the stated physical-coverage assumptions?
 
-## P1 — controlled comparison
+## Data roles
 
-Primary paper metrics use `--protocol controlled`:
+The four prepared partitions have non-overlapping roles:
 
-- identical locked validation/test endpoint IDs;
-- identical test seeds;
-- equal validation trial count;
-- fixed common tuning seeds;
-- common maximum epoch/batch budget for literature comparators;
-- no primary physical projection;
-- validation RMSE only for hyperparameter selection;
-- test remains locked until final evaluation.
+- **train**: neural parameter fitting and target/input scaling;
+- **calibration**: estimation of the single one-sided conformal relaxation
+  quantile `q_alpha`;
+- **validation**: early stopping and neural hyperparameter selection;
+- **test**: final reporting only.
 
-Architecture/preprocessing families remain model-specific so a baseline is not deliberately weakened.
+No test friction label may affect training, calibration, model selection,
+projection, or hyperparameter search.
 
-## P2 — source-setting comparison
+## Proposal
 
-`--protocol source-faithful` preserves each registered literature-style epoch/batch/optimizer settings where recoverable. It is reported separately and is not described as compute-matched.
+\[
+r^\star=\mu-L_0(X),
+\qquad
+\widetilde\mu=L_0(X)+f_\theta(X),
+\]
 
-## Proposal tuning
+\[
+L_\alpha(X)=\max\{0,L_0(X)-q_\alpha\},
+\qquad
+\widehat\mu=\Pi_{[L_\alpha(X),U]}(\widetilde\mu).
+\]
 
-FRC tuning is restricted to ordinary approximation/optimization variables:
+The mathematical quantities `alpha`, the conformal quantile convention, the
+mechanics model, and `mu_upper` are protocol quantities and are not selected by
+validation RMSE.
 
-- GRU hidden width;
-- GRU layer count;
-- dropout;
-- learning rate;
-- weight decay;
-- batch size.
+## Required controlled comparison
 
-The friction grid, candidate horizons, certificate deltas, and theorem definition are fixed before final testing.
+Use identical locked validation/test endpoint IDs for:
 
-## Required scientific controls
+- `safegrip_pfr`;
+- `direct_gru_control`;
+- every registered literature comparator.
 
-1. `direct_gru_control`: same encoder depth/width and closely matched head, trained directly on friction.
-2. fixed-horizon FRC variants for every declared horizon.
-3. common physical-projection control reported separately.
-4. conditional theorem audit.
-5. unseen-trajectory split as a secondary distribution-shift experiment when the dataset contains enough independent trajectories.
+The direct GRU and residual GRU use the same architecture and optimizer budget.
+Only the target parameterization differs.
 
-## Claim discipline
+## Decisive ablation
 
-The calibration radius is empirical. The deterministic recovery theorem is claimed only conditional on its residual premise. Test-set premise frequency is an evaluation statistic, not an input to prediction.
+The required component table has only:
+
+1. `direct_gru_control`;
+2. `pfr_residual_raw`;
+3. `safegrip_pfr`.
+
+This is intentionally sufficient.  PFR has no gate, response network, trust
+radius, horizon selector, or iterative inverse solver that would require extra
+component ablations.
+
+## Required theorem audit
+
+For every seed and test endpoint, save
+
+\[
+G=(\widetilde\mu-\mu)^2-(\widehat\mu-\mu)^2
+\]
+
+and
+
+\[
+D^2=\operatorname{dist}(\widetilde\mu,[L_\alpha,U])^2.
+\]
+
+On covered endpoints the implementation must satisfy
+
+\[
+G\ge D^2
+\]
+
+up to numerical tolerance.  Any covered-point violation is a release-blocking
+implementation error.
+
+## Reporting
+
+Report mean ± standard deviation across the declared evaluation seeds for:
+
+- MAE;
+- RMSE;
+- R²;
+- unsafe positive-overestimation mean;
+- unsafe-overestimate rate at 0.05;
+- raw residual RMSE;
+- feasible-interval coverage;
+- projection correction rate;
+- mean squared error gain from projection.
+
+Also report the number of test endpoints and independent trajectory segments.
+Quick mode is a software/development run and must not be presented as the final
+paper comparison.

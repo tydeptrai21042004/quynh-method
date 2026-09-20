@@ -4,33 +4,26 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 export PYTHONPATH="$(pwd)/src${PYTHONPATH:+:${PYTHONPATH}}"
 ${PYTHON_BIN} -m pip install -q -e ".[dev]"
 SG="${PYTHON_BIN} -m safegrip.cli"
-# Small REAL-DATA development run. This verifies the complete LiRA -> SafeGrip
-# -> two literature baselines -> ablation pipeline. It is not a final paper run.
 CONFIG="${CONFIG:-configs/kaggle_small.yaml}"
 
 ${PYTHON_BIN} -m pytest -q
 $SG --config "$CONFIG" download --datasets lira
 $SG --config "$CONFIG" prepare --dataset lira
 
-# Proposal + two lightweight literature-backed comparator families.
+# One-seed / three-epoch development run.  This is a pipeline check, not a paper result.
 $SG --config "$CONFIG" benchmark \
   --dataset lira \
   --preset quick \
+  --proposal pfr \
+  --protocol controlled \
   --models todorovic2022_cnn,lampe2023_gru
 
-# Statistics use per-seed predictions and trajectory-aware paired resampling.
-$SG --config "$CONFIG" statistics --results results/lira_quick --bootstrap 500
+$SG --config "$CONFIG" statistics \
+  --results results/lira_quick \
+  --proposal safegrip_pfr \
+  --bootstrap 500
 
-# Full component ablation in one-seed / three-epoch development mode.
-$SG --config "$CONFIG" ablation \
-  --dataset lira \
-  --preset quick \
-  --variants safegrip_base_temporal,safegrip_no_target_standardization,safegrip_no_selector_warmup,safegrip_no_physics_residual,safegrip_no_utility_gate,safegrip_no_identifiability,safegrip_no_magnitude_head,safegrip_no_energy_improvement,safegrip_no_contrastive_dynamics,safegrip_no_do_no_harm,safegrip_no_bound,safegrip_no_uq,safegrip
-
-echo "Small LiRA run complete."
-echo "Main metrics: results/lira_quick/metrics.csv"
-echo "Ablation:     results/lira_ablation_quick/ablation_metrics.csv"
-echo "Diagnostics:  data/processed/lira/lira_friction_schema_report.csv"
-echo "              data/processed/lira/lira_stream_assembly_report.json"
-echo "              data/processed/lira/lira_alignment_report.csv"
-echo "              data/processed/lira/lira_preprocessing_report.json"
+echo "SafeGrip-PFR small LiRA run complete."
+echo "Main metrics:      results/lira_quick/metrics.csv"
+echo "PFR ablation:      results/lira_quick/pfr_component_ablation.csv"
+echo "Projection theorem: results/lira_quick/pfr_theorem_audit.json"

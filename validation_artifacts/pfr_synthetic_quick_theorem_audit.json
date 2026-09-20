@@ -1,0 +1,12 @@
+{
+  "status": "PASS",
+  "theorem": "If mu* is in [L_alpha,U], orthogonal projection cannot increase squared friction error and improves it by at least dist(mu_tilde,[L_alpha,U])^2.",
+  "calibration_statement": "Under split-conformal exchangeability, P(mu_new >= L_alpha(X_new)) >= 1-alpha; the full interval statement additionally assumes mu_new <= U.",
+  "alpha": 0.05,
+  "q_alpha": 0.0,
+  "calibration_count": 74,
+  "test_endpoint_count": 148,
+  "covered_test_fraction_mean_over_seeds": 1.0,
+  "covered_point_theorem_violations": 0,
+  "minimum_theorem_margin_on_covered": 0.0
+}

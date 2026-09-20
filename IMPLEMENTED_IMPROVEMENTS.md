@@ -1,5 +1,17 @@
 # Implemented improvements
 
+## v2.2.0 — Physics-Feasible Residual Estimation
+
+- Replaced PNTR as the active proposal with the smaller SafeGrip-PFR formulation.
+- Reduced the proposal to one residual GRU plus one deterministic calibrated projection.
+- Separated train and calibration roles: train labels fit the neural residual; calibration labels estimate only $q_\alpha$.
+- Added a pointwise projection theorem on the actual squared friction error.
+- Added theorem-audit exports and unit tests for the exact inequality.
+- Added the same-seed same-encoder direct-GRU control and a three-row decisive ablation.
+- Added validation-only PFR tuning that does not tune mathematical protocol quantities.
+- Updated CLI, Kaggle driver, paper scripts, release gates, and documentation around PFR.
+- Retained FRC, PNTR, and CI implementations as legacy reproducibility paths.
+
 ## v1.4.0 — Strong-Base Innovation-Energy Residual Correction
 
 - Replaced the active point backbone with a matched-scale two-layer raw-sensor GRU (TRUST/default: 256 recurrent units, 100-sample context).
