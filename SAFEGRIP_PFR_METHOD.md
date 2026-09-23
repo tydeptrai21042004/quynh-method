@@ -1,302 +1,227 @@
-# SafeGrip-PFR: Physics-Feasible Residual Estimation
+# SafeGrip-PFR-ECR: Excitation-Aware Conformal Risk-Controlled Residual Estimation
 
-## 1. Design principle
+## 1. Design objective
 
-SafeGrip-PFR is deliberately minimal.  The proposal contains one learned model
-and one deterministic projection.  It does not use a learned response model,
-friction-grid inversion, a trust radius, an adaptive horizon, or a learned
-selector.
+The revised proposal keeps a single recurrent backbone but changes how physics is
+used.  Mechanics is no longer only a broad output clipping interval.  Instead,
+it has two roles:
 
-The method is built around a decomposition of friction into a known mechanics
-term and an unknown residual.
+1. a mechanics-derived lower-grip signal anchors the residual target and marks
+   temporally informative/high-excitation observations;
+2. a separately calibrated mechanics lower estimate is fused with a one-sided
+   conformal lower estimate from the learned predictor for controller-facing
+   safety use.
 
-Let
+The method therefore exposes two outputs with different purposes:
 
-\[
-L_0(X)
-\]
+- `mu_point`: the accuracy-oriented friction estimate;
+- `mu_safe`: a conservative controller-facing lower friction estimate.
 
-be the mechanics-derived lower-grip signal computed from the observed vehicle
-state, and let \(\mu\) be the reference friction.
+The test labels are used only for final evaluation.
 
-Define the signed residual target
+## 2. Mechanics anchor and excitation
 
-\[
-\boxed{r^\star=\mu-L_0(X).}
-\]
-
-A GRU \(f_\theta\) is trained on the training split to estimate this residual:
+Let `L0_t` denote the instantaneous mechanics-derived lower-grip signal and let
+`W_t` be a trailing, trajectory-local evidence window.  The residual anchor is
 
 \[
-\widehat r=f_\theta(X).
+L^W_{0,t}=\max_{j\in W_t}L_{0,j}.
 \]
 
-The raw friction estimator is
+The learned signed residual target is
 
 \[
-\boxed{\widetilde\mu=L_0(X)+f_\theta(X).}
+r_t^\star=\mu_t-L^W_{0,t}.
 \]
 
-The residual is intentionally signed.  No ReLU or physical clipping is used in
-training, so the neural estimator can compensate for finite mechanics-model
-error without using calibration labels.
-
----
-
-## 2. Exact loss equivalence
-
-Because
+For every recurrent input timestep, the network also receives the instantaneous
+mechanics channel and the dimensionless excitation
 
 \[
-r^\star=\mu-L_0,
+e_j=\operatorname{clip}(L_{0,j}/U,0,1).
 \]
 
-we have pointwise
+These channels use only observable vehicle signals and configured mechanics
+parameters; they do not use friction labels.
+
+## 3. Excitation-aware temporal encoder
+
+A GRU produces hidden states
 
 \[
-\begin{aligned}
-\big(f_\theta(X)-r^\star\big)^2
-&=\big(f_\theta(X)-[\mu-L_0]\big)^2\\
-&=\big(L_0+f_\theta(X)-\mu\big)^2\\
-&=\big(\widetilde\mu-\mu\big)^2.
-\end{aligned}
+h_j=\operatorname{GRU}_\theta(x_j).
 \]
 
-Therefore residual MSE is exactly friction-space MSE under the translated
-hypothesis class \(L_0+\mathcal F\).  Standardizing the residual target by a
-train-only constant mean and standard deviation multiplies this objective by a
-positive constant and leaves its minimizer unchanged.
-
-No auxiliary response-energy loss is needed.
-
----
-
-## 3. Calibrated physical lower endpoint
-
-The raw mechanics model is conditional on modeling assumptions and finite
-uncertainty margins.  PFR therefore calibrates only its lower endpoint.
-
-For calibration pairs \((X_i,\mu_i)\), define
+Physics determines deterministic temporal weights
 
 \[
-s_i=L_0(X_i)-\mu_i.
+a_j=\frac{\exp(\gamma e_j)}{\sum_k\exp(\gamma e_k)},
+\qquad
+h_t^{\rm phys}=\sum_j a_jh_j.
 \]
 
-Let \(q_\alpha\) be the finite-sample higher empirical quantile at
+The parameter `gamma` is selected on validation data only.  `gamma=0` gives
+uniform temporal pooling and is retained as the decisive no-attention ablation.
+
+The residual head gives a standardized residual estimate, transformed back to
+physical units as `r_theta`.  The point estimate is
 
 \[
-\frac{\lceil(n+1)(1-\alpha)\rceil}{n}.
+\boxed{\mu_{\rm point,t}=L^W_{0,t}+r_\theta(h_t^{\rm phys}).}
 \]
 
-The implementation additionally clips \(q_\alpha\) below by zero so calibration
-can only relax, never tighten, the mechanics lower endpoint:
+A second scalar head returns
 
 \[
-\boxed{L_\alpha(X)=\max\{0,L_0(X)-q_\alpha\}.}
+\sigma_t=\operatorname{softplus}(s_\phi(h_t^{\rm phys}))+\varepsilon>0.
 \]
 
-Under the standard split-conformal exchangeability assumption,
+The scale is not interpreted as a parametric Gaussian confidence interval.  It
+is used only to normalize the one-sided conformal nonconformity score.
+
+## 4. Training objective
+
+The point head is trained on the training split only using a robust loss in
+standardized residual coordinates.  The scale head receives a small Gaussian
+negative-log-likelihood auxiliary term so it can adapt to heteroscedastic error.
+Model selection uses validation point-estimate MSE only.
+
+No calibration or test friction labels are used in neural optimization.
+
+## 5. Risk allocation
+
+Let the desired total miscoverage be `alpha_total`.  The implementation uses a
+fixed split
+
+\[
+\beta=\rho\alpha_{\rm total},
+\qquad
+\alpha_s=(1-\rho)\alpha_{\rm total},
+\]
+
+where `rho=risk_split` is a protocol parameter, not a test-tuned value.  The
+default is `rho=1/2`.
+
+## 6. Calibrated mechanics lower estimate
+
+On calibration points define
+
+\[
+s_i^{\rm phys}=L^W_{0,i}-\mu_i.
+\]
+
+Let `q_beta` be the finite-sample higher split-conformal quantile.  The mechanics
+lower estimate is
+
+\[
+\boxed{L_{\beta,t}=\max\{0,L^W_{0,t}-q_\beta\}.}
+\]
+
+Under the usual exchangeability assumption,
+
+\[
+\Pr\{L_{\beta,new}\le\mu_{new}\}\ge 1-\beta.
+\]
+
+## 7. Normalized one-sided conformal learned lower estimate
+
+For the fitted point/scale network, calibration scores are
+
+\[
+z_i=\frac{\mu_{{\rm point},i}-\mu_i}{\sigma_i}.
+\]
+
+Let `q_s` be the finite-sample higher quantile at level `1-alpha_s`.  The code
+clips `q_s` below by zero, which can only make the resulting lower estimate more
+conservative.  Define
+
+\[
+\boxed{C_{\alpha_s,t}=\mu_{\rm point,t}-q_s\sigma_t.}
+\]
+
+Then, under split-conformal exchangeability,
+
+\[
+\Pr\{C_{\alpha_s,new}\le\mu_{new}\}\ge1-\alpha_s.
+\]
+
+## 8. Controller-facing safe output
+
+The final safety value is
 
 \[
 \boxed{
-\Pr\{\mu_{new}\ge L_\alpha(X_{new})\}\ge1-\alpha.
-}
-\]
-
-PFR uses the **entire calibration split only for this scalar quantile**.  The
-neural model has already been trained using training labels only.
-
----
-
-## 4. Final estimator
-
-Assume a physical upper bound
-
-\[
-\mu\le U.
-\]
-
-The feasible interval is
-
-\[
-C(X)=[L_\alpha(X),U].
-\]
-
-The final PFR estimate is the Euclidean projection of the raw residual estimate:
-
-\[
-\boxed{
-\widehat\mu
+\mu_{\rm safe,t}
 =
-\Pi_{C(X)}(\widetilde\mu).
+\max\{L_{\beta,t},C_{\alpha_s,t}\},
 }
 \]
 
-For a scalar interval this is simply
+followed only by clipping to physical support `[0,U]`.
+
+This is intentionally not used as the primary RMSE estimate.  It is a lower
+operational value intended to reduce friction overestimation.
+
+## 9. Joint coverage theorem
+
+Suppose
 
 \[
-\widehat\mu
-=
-\min\{U,\max\{L_\alpha,\widetilde\mu\}\}.
+L_\beta\le\mu
+\quad\text{and}\quad
+C_{\alpha_s}\le\mu.
 \]
 
-Projection has no trainable parameter and requires no iterative optimization.
-
----
-
-## 5. Projection theorem
-
-### Theorem 1 — pointwise friction-error improvement
-
-Let
+Then
 
 \[
-C=[L,U]
+\max\{L_\beta,C_{\alpha_s}\}\le\mu.
 \]
 
-be a closed interval, let \(p=\Pi_C(z)\), and suppose the true value satisfies
-\(\mu^\star\in C\).  Then
+Therefore, using the union bound,
 
 \[
-\boxed{
-|p-\mu^\star|^2
-\le
-|z-\mu^\star|^2
--
-|z-p|^2.
-}
-\]
-
-Equivalently,
-
-\[
-\boxed{
-|z-\mu^\star|^2-|p-\mu^\star|^2
+\Pr\{\mu_{\rm safe}\le\mu\}
 \ge
-\operatorname{dist}(z,C)^2.
-}
-\]
-
-### Proof
-
-Projection onto a closed convex set satisfies
-
-\[
-\langle z-p,y-p\rangle\le0
-\qquad\text{for every }y\in C.
-\]
-
-Set \(y=\mu^\star\).  Expanding the squared distance gives
-
-\[
-|z-\mu^\star|^2
+1-\beta-\alpha_s
 =
-|z-p|^2+|p-\mu^\star|^2
-+2(z-p)(p-\mu^\star).
+1-\alpha_{\rm total}.
 \]
 
-The projection inequality implies the final inner-product term is nonnegative,
-therefore
+The probability statement requires the usual split-conformal exchangeability
+assumption.  Independence between the two component coverage events is not
+required for the union bound.
 
-\[
-|p-\mu^\star|^2
-\le
-|z-\mu^\star|^2-|z-p|^2.
-\]
+## 10. Decisive ablations
 
-This proves the claim. \(\square\)
+The benchmark reports:
 
-For SafeGrip-PFR, set
+1. `direct_gru_control`: direct friction regression on raw sensors;
+2. `pfr_residual_raw`: residual regression on raw sensors with endpoint GRU
+   representation;
+3. `pfr_physics_features_no_attention`: explicit PFR mechanics channels with
+   uniform temporal pooling;
+4. `safegrip_pfr`: full excitation-aware point estimator;
+5. `safegrip_pfr_safe`: controller-facing safety output, reported separately
+   from the accuracy objective.
 
-\[
-z=\widetilde\mu,
-\qquad
-p=\widehat\mu,
-\qquad
-C=[L_\alpha,U].
-\]
+This separates residual anchoring, explicit physics input, excitation-aware
+observation weighting, and conformal safety calibration.
 
-The theorem is directly about the target friction error; it does not depend on
-an auxiliary neural-response objective.
+## 11. Reporting contract
 
----
+Primary predictive comparison uses `safegrip_pfr = mu_point` and reports MAE,
+RMSE, R2, and overestimation statistics.  Safety reporting is separate and
+includes:
 
-## 6. Finite-sample calibrated consequence
+- empirical mechanics lower coverage;
+- empirical normalized conformal lower coverage;
+- empirical fused safe coverage;
+- unsafe-overestimation rate before and after safety correction;
+- mean point-to-safe gap;
+- predicted scale and attention diagnostics.
 
-If the upper-bound assumption \(\mu\le U\) holds and the split-conformal lower
-endpoint has nominal coverage \(1-\alpha\), then
-
-\[
-\Pr\left\{
-|\widehat\mu-\mu|^2
-\le
-|\widetilde\mu-\mu|^2
--
-\operatorname{dist}(\widetilde\mu,C)^2
-\right\}
-\ge1-\alpha.
-\]
-
-This statement is conditional on the usual conformal exchangeability
-assumption and the validity of \(U\).  The code reports empirical lower/upper
-coverage separately so these assumptions are visible rather than hidden.
-
----
-
-## 7. Safety corollary
-
-On the same coverage event,
-
-\[
-(\widehat\mu-\mu)_+
-\le
-(\widetilde\mu-\mu)_+.
-\]
-
-Thus projection cannot increase positive friction overestimation when the true
-friction lies in the feasible interval.  For every threshold \(\delta>0\),
-
-\[
-\mathbf 1\{\widehat\mu-\mu>\delta\}
-\le
-\mathbf 1\{\widetilde\mu-\mu>\delta\}.
-\]
-
----
-
-## 8. Decisive ablation
-
-PFR intentionally needs only three rows:
-
-1. `direct_gru_control`: same GRU trained directly on \(\mu\);
-2. `pfr_residual_raw`: \(L_0+f_\theta(X)\), before projection;
-3. `safegrip_pfr`: calibrated projection of the residual estimator.
-
-The first comparison measures the contribution of residualization.  The second
-measures the contribution of the theorem-backed feasible projection.
-
-No additional ablation is required to justify hidden gates, response networks,
-or trust-region hyperparameters because PFR contains none of them.
-
----
-
-## 9. Leakage/fairness contract
-
-- input scaler: fit on train only;
-- residual target mean/std: fit on train only;
-- neural parameters: fit on train only, early-stopped on validation;
-- \(q_\alpha\): fit on calibration only;
-- test mechanics lower bound: computed from test features, never test friction labels;
-- final projection: deterministic and label-free at inference;
-- literature models: evaluated on the same endpoint IDs.
-
----
-
-## 10. Implementation map
-
-- mathematical operators: `src/safegrip/pfr.py`;
-- training and comparison protocol: `src/safegrip/pfr_benchmark.py`;
-- mechanics/conformal calibration: `src/safegrip/physics.py`;
-- unit theorem tests: `tests/test_pfr.py`;
-- active CLI: `safegrip benchmark --proposal pfr ...`;
-- Kaggle driver: `KAGGLE_PFR_SINGLE_CELL.py`.
+The benchmark also writes a deterministic fusion audit.  A `PASS` there checks
+the algebraic implication "both component lower estimates covered => fused
+lower estimate covered".  It is not presented as an empirical proof of the
+exchangeability assumption or of population coverage.

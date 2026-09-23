@@ -540,3 +540,29 @@ def test_frc_models_shapes_and_mu_conditioning():
     assert not torch.allclose(y1, y2)
     direct = DirectGRUControl(6, hidden=16, gru_layers=1, dropout=0.0)
     assert direct(x).shape == (5,)
+
+
+def test_pfr_excitation_gru_attention_favors_more_excited_timesteps():
+    import torch
+    from safegrip.models import PFRExcitationGRU
+
+    model = PFRExcitationGRU(d=3, excitation_index=2, hidden=8, dropout=0.0, attention_gamma=4.0)
+    x = torch.zeros(2, 4, 3)
+    x[0, :, 2] = torch.tensor([0.0, 0.1, 0.2, 0.9])
+    x[1, :, 2] = 0.25
+    _, scale, weights = model(x, return_attention=True)
+    assert weights.shape == (2, 4)
+    assert torch.allclose(weights.sum(dim=1), torch.ones(2), atol=1e-6)
+    assert int(torch.argmax(weights[0]).item()) == 3
+    assert torch.allclose(weights[1], torch.full((4,), 0.25), atol=1e-6)
+    assert torch.all(scale > 0)
+
+
+def test_pfr_excitation_gru_gamma_zero_is_uniform_pooling():
+    import torch
+    from safegrip.models import PFRExcitationGRU
+
+    model = PFRExcitationGRU(d=2, excitation_index=1, hidden=8, dropout=0.0, attention_gamma=0.0)
+    x = torch.randn(3, 5, 2)
+    weights = model.attention_weights(x)
+    assert torch.allclose(weights, torch.full_like(weights, 0.2), atol=1e-7)

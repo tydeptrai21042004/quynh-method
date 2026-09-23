@@ -1,70 +1,52 @@
-# SafeGrip-Open v2.2 — SafeGrip-PFR
+# SafeGrip-Open v2.3 — SafeGrip-PFR-ECR
 
-The active proposal is **SafeGrip-PFR: Physics-Feasible Residual Estimation**.
-The previous SafeGrip-FRC, SafeGrip-PNTR, and SafeGrip-CI paths remain in the
-repository only for reproducibility.
+The active proposal is **SafeGrip-PFR-ECR: Excitation-Aware Conformal
+Risk-Controlled Residual Estimation**.  Earlier FRC, PNTR, and CI methods remain
+for reproducibility.
 
-## Why PFR is the active method
+## Active method
 
-PFR intentionally removes the response-inversion/trust-region stack.  It uses
-one GRU and one calibrated projection:
+PFR-ECR uses one GRU backbone.  It adds the mechanics lower-grip signal to the
+input and uses normalized mechanics excitation to weight the recurrent hidden
+states:
 
 \[
-r_t^\star=\mu_t-L_{0,t},
+a_j=\operatorname{softmax}(\gamma L_{0,j}/U),
 \qquad
-\widetilde\mu_t=L_{0,t}+f_\theta(X_t),
+h^{\rm phys}=\sum_j a_jh_j.
 \]
+
+The point estimate is
 
 \[
-L_{\alpha,t}=\max\{0,L_{0,t}-q_\alpha\},
-\qquad
-\widehat\mu_t=\Pi_{[L_{\alpha,t},U]}(\widetilde\mu_t).
+\mu_{\rm point}=L_0^W+r_\theta(h^{\rm phys}).
 \]
 
-`L0` is the mechanics-derived lower-grip signal.  The GRU learns only the
-signed residual above that known structured term.  The scalar `q_alpha` is
-estimated from the calibration split with one-sided split conformal
-calibration.  The projection contains no learned parameter.
-
-The neural model is trained **only on training labels**.  Calibration labels
-are used only for `q_alpha`; test labels are never used for fitting,
-calibration, projection, or model selection.
-
-## Main theorem
-
-For a test point whose true friction satisfies
+A positive scale head produces `sigma`.  Calibration creates a one-sided
+statistical lower estimate
 
 \[
-\mu^\star\in[L_\alpha,U],
+C_{\alpha_s}=\mu_{\rm point}-q_s\sigma,
 \]
 
-orthogonal projection onto the feasible interval gives
+which is fused with an independently calibrated mechanics lower estimate:
 
 \[
-\boxed{
-|\widehat\mu-\mu^\star|^2
-\le
-|\widetilde\mu-\mu^\star|^2
--
-\operatorname{dist}(\widetilde\mu,[L_\alpha,U])^2.
-}
+\mu_{\rm safe}=\max\{L_\beta,C_{\alpha_s}\}.
 \]
 
-Thus the physics projection cannot increase the **actual squared friction
-error** on the coverage event, and its guaranteed improvement is at least the
-squared distance of the raw estimate to the feasible set.
-
-Under the standard split-conformal exchangeability assumption,
+`mu_point` is the primary accuracy output.  `mu_safe` is reported separately as
+the controller-facing conservative output.  With total risk split as
+`beta + alpha_s = alpha_total`, the union-bound coverage statement is
 
 \[
-\Pr\{\mu_{new}\ge L_\alpha(X_{new})\}\ge 1-\alpha.
+\Pr\{\mu_{\rm safe}\le\mu\}\ge1-\alpha_{\rm total}
 \]
 
-The full interval statement additionally assumes the configured physical upper
-bound `U` is valid.
+under the usual split-conformal exchangeability assumptions.
 
-See [`SAFEGRIP_PFR_METHOD.md`](SAFEGRIP_PFR_METHOD.md) for the derivation,
-assumptions, theorem, and ablation logic.
+See [`SAFEGRIP_PFR_METHOD.md`](SAFEGRIP_PFR_METHOD.md) for the exact method,
+assumptions, ablations, and theorem.
 
 ## Install and test
 
@@ -73,7 +55,7 @@ python -m pip install -e ".[paper,dev]"
 pytest -q
 ```
 
-## Quick real-data run
+## Quick LiRA run
 
 ```bash
 safegrip download --datasets lira
@@ -81,17 +63,11 @@ safegrip prepare --dataset lira
 safegrip benchmark --dataset lira --preset quick --proposal pfr --protocol controlled
 ```
 
-The default proposal is already `pfr`, so `--proposal pfr` may be omitted.
-
-## Paper protocol
+## Paper workflow
 
 ```bash
 bash scripts/run_paper.sh
 ```
-
-The paper workflow performs validation-only PFR tuning, baseline tuning, the
-five-seed controlled comparison, paired statistics, theorem/fairness audits,
-and packaging.
 
 For a separate source-setting comparator table:
 
@@ -101,42 +77,28 @@ RUN_SOURCE_FAITHFUL=1 bash scripts/run_paper.sh
 
 ## PFR tuning
 
-Only ordinary neural approximation/optimization parameters are tunable:
-
 ```bash
 safegrip tune --method pfr --dataset lira --trials 20
 ```
 
-The following are **not** tuned against validation performance:
+Validation-only tuning covers ordinary approximation parameters such as context
+length, GRU width, attention strength, optimization settings, and mechanics
+window length.  The total risk level, risk split, conformal quantile rule, and
+physical support are not tuned against test performance.
 
-- conformal level `alpha`;
-- conformal quantile rule;
-- mechanics lower-bound formula;
-- physical upper bound `mu_upper`;
-- projection theorem.
+## Main comparison and ablations
 
-## Main comparison
+The main table contains `safegrip_pfr` (the point estimate),
+`direct_gru_control`, and the registered literature baselines.
 
-The primary table contains:
+The PFR component table additionally contains:
 
-- `safegrip_pfr` — active proposal;
-- `direct_gru_control` — same GRU trained directly on friction;
-- the registered literature baselines.
-
-The decisive component table contains exactly three estimators:
-
-1. `direct_gru_control`;
-2. `pfr_residual_raw` — residual estimator before projection;
-3. `safegrip_pfr` — residual estimator after calibrated projection.
-
-This separates two questions cleanly:
-
-- does physics residualization improve learning?
-- does the theorem-backed projection improve or preserve the raw residual estimate?
+- `pfr_residual_raw` — residual learning without explicit PFR physics channels;
+- `pfr_physics_features_no_attention` — physics channels with uniform pooling;
+- `safegrip_pfr` — full excitation-aware point estimator;
+- `safegrip_pfr_safe` — controller-facing safety output, not the RMSE objective.
 
 ## Primary result files
-
-A PFR benchmark writes:
 
 ```text
 results/lira_paper/
@@ -145,39 +107,35 @@ results/lira_paper/
   predictions_by_seed.csv
   pfr_component_ablation.csv
   pfr_component_ablation_by_seed.csv
-  pfr_projection_theorem_audit.csv
+  pfr_safety_metrics.csv
+  pfr_safety_metrics_by_seed.csv
+  pfr_safety_fusion_audit.csv
   pfr_theorem_audit.json
   pfr_method_audit.json
   fairness_audit.json
   reproducibility_manifest.json
 ```
 
-`pfr_projection_theorem_audit.csv` evaluates the pointwise theorem identity on
-every test endpoint and seed.  `pfr_theorem_audit.json` reports covered-point
-violations; this count must be zero up to numerical tolerance.
+`pfr_safety_fusion_audit.csv` checks the deterministic fusion logic for every
+endpoint/seed.  `pfr_theorem_audit.json` records the risk allocation, empirical
+coverage diagnostics, and the union-bound statement.
 
 ## Fairness contract
 
-PFR uses:
+The active benchmark uses:
 
-- train-only input scaling;
-- train-only residual target standardization;
+- train-only input scaling and residual standardization;
 - train-only neural optimization;
-- calibration-only estimation of the scalar `q_alpha`;
-- locked validation/test endpoint IDs across methods;
-- the same recurrent architecture for direct-vs-residual comparison;
-- no test labels for fitting or calibration;
-- no learned response model, search grid, trust radius, or test-time optimizer.
+- validation-only hyperparameter selection;
+- calibration-only mechanics and statistical conformal quantiles;
+- locked validation/test endpoint IDs across compared methods;
+- no test labels for fitting, calibration, or selection;
+- no response inversion, friction-grid search, trust radius, or iterative
+  projection solver.
 
 ## Retained legacy paths
-
-The following are retained for reproducing earlier experiments, but they are no
-longer the active proposal:
 
 ```bash
 safegrip benchmark --dataset lira --preset paper --proposal frc
 safegrip benchmark --dataset lira --preset paper --proposal legacy-ci
 ```
-
-`src/safegrip/pntr_benchmark.py`, `SAFEGRIP_PNTR_METHOD.md`, and the PNTR unit
-tests are also retained as historical material.

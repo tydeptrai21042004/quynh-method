@@ -315,6 +315,7 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
 
     ``feature_mode`` makes reviewer controls explicit:
       raw                 -> source numeric sensor channels only
+      pfr                 -> raw sensors + mechanics lower-bound/excitation channels
       safegrip            -> all label-free SafeGrip engineered channels
       safegrip_no_excitation -> engineered channels except explicit E/memory
       safegrip_endpoint   -> endpoint-safe engineered channels; derivative/memory
@@ -325,12 +326,19 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
     if feature_mode is None:
         feature_mode="safegrip" if proposal_features else "raw"
     feature_mode=str(feature_mode)
-    valid={"raw","safegrip","safegrip_no_excitation","safegrip_endpoint"}
+    valid={"raw","pfr","safegrip","safegrip_no_excitation","safegrip_endpoint"}
     if feature_mode not in valid: raise ValueError(f"Unknown feature_mode: {feature_mode}")
     df=pd.read_csv(csv_path)
-    use_sg=feature_mode!="raw"
+    use_sg=feature_mode in {"safegrip","safegrip_no_excitation","safegrip_endpoint"}
     if use_sg:
         df=add_safegrip_features(df,cfg)
+    if feature_mode=="pfr":
+        if "physics_lower_raw" not in df.columns:
+            raise ValueError("pfr feature mode requires physics_lower_raw")
+        lower=pd.to_numeric(df["physics_lower_raw"],errors="coerce").fillna(0.0).to_numpy(float)
+        df["pfr_mechanics_lower"]=np.maximum(lower,0.0)
+        upper=max(float(cfg.get("mu_upper",1.3)),1e-6)
+        df["pfr_excitation"]=np.clip(df["pfr_mechanics_lower"].to_numpy(float)/upper,0.0,1.0)
     features=[c for c in df.columns if c not in META and pd.api.types.is_numeric_dtype(df[c])]
     features=[c for c in features if c not in ("mu_ref","physics_lower_raw")]
     if feature_mode=="safegrip_no_excitation":
@@ -351,15 +359,16 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
     if min(len(Xtr),len(Xv),len(Xt))==0:
         raise RuntimeError("One split has no common-evaluation windows; lower benchmark.common_warmup_samples or inspect prepared data")
 
-    if "sg_excitation_score" in features:
-        ei=features.index("sg_excitation_score")
+    excitation_name = "sg_excitation_score" if "sg_excitation_score" in features else ("pfr_excitation" if "pfr_excitation" in features else None)
+    if excitation_name is not None:
+        ei=features.index(excitation_name)
         etr=np.clip(Xtr[:,-1,ei],0,1).astype(np.float32); ec=np.clip(Xc[:,-1,ei],0,1).astype(np.float32) if len(Xc) else np.empty(0,np.float32)
         ev=np.clip(Xv[:,-1,ei],0,1).astype(np.float32); et=np.clip(Xt[:,-1,ei],0,1).astype(np.float32)
     else:
         etr=np.zeros(len(Xtr),np.float32); ec=np.zeros(len(Xc),np.float32); ev=np.zeros(len(Xv),np.float32); et=np.zeros(len(Xt),np.float32)
 
     scaler=_make_scaler(scaler_kind).fit(Xtr.reshape(-1,len(features)))
-    excitation_feature_index=features.index("sg_excitation_score") if "sg_excitation_score" in features else None
+    excitation_feature_index=features.index(excitation_name) if excitation_name is not None else None
     def sc(X):
         if len(X)==0: return X.astype(np.float32)
         out=scaler.transform(X.reshape(-1,len(features))).reshape(X.shape).astype(np.float32)
@@ -373,7 +382,7 @@ def make_bundle(csv_path, cfg, sequence_length=None, scaler_kind="standard", eva
     loc=apply_lower_correction(raw_loc,q).astype(np.float32)
     lov=apply_lower_correction(raw_lov,q).astype(np.float32)
     lot=apply_lower_correction(raw_lot,q).astype(np.float32)
-    return Bundle(features,scaler,scaler_kind,L,start,q,bool(use_sg),feature_mode,
+    return Bundle(features,scaler,scaler_kind,L,start,q,bool(feature_mode!="raw"),feature_mode,
                   Xtr,ytr,lotr,raw_lotr,idtr,etr,Xc,yc,loc,raw_loc,idc,ec,lower_cal_mask,uq_cal_mask,
                   Xv,yv,lov,raw_lov,idv,ev,Xt,yt,lot,raw_lot,idt,et)
 

@@ -1,28 +1,15 @@
 from __future__ import annotations
 
-"""Mathematical core of SafeGrip-PFR.
+"""Mathematical core for SafeGrip-PFR-ECR.
 
-SafeGrip-PFR separates the estimator into three objects:
+The active method uses a learned point estimate plus a positive scale, a
+normalized one-sided conformal statistical lower estimate, and an independently
+calibrated mechanics lower estimate.  Their maximum is the controller-facing
+safe lower friction value.
 
-1. a mechanics predictor ``L0(x)`` that captures a known structured component;
-2. a learned signed residual ``r_theta(x)`` trained only on the training split;
-3. a calibrated feasible interval ``[L_alpha(x), U]`` used only at inference.
-
-The raw estimate is
-
-    mu_tilde = L0 + r_theta,
-
-and the final estimate is the Euclidean projection
-
-    mu_hat = Pi_[L_alpha,U](mu_tilde).
-
-For every sample whose true friction belongs to the feasible interval, projection
-satisfies the pointwise Pythagorean inequality
-
-    |mu_hat-mu*|^2 <= |mu_tilde-mu*|^2 - dist(mu_tilde,[L_alpha,U])^2.
-
-The implementation below contains only deterministic algebra.  Statistical
-coverage of ``L_alpha`` is handled by ``physics.conformal_lower_correction``.
+Legacy projection helpers remain in this module so earlier PFR experiments and
+tests are still reproducible; the active benchmark no longer uses broad
+feasible-set clipping as its defining contribution.
 """
 
 from dataclasses import dataclass
@@ -196,3 +183,142 @@ def unsafe_overestimate_improvement_audit(
     raw_over = np.maximum(raw - y, 0.0)
     pred_over = np.maximum(pred - y, 0.0)
     return (~covered) | (pred_over <= raw_over + abs(float(atol)))
+
+
+@dataclass(frozen=True)
+class SafetyFusionAudit:
+    """Diagnostics for the revised mechanics/statistical safe lower estimate."""
+
+    statistical_lower: np.ndarray
+    fused_safe: np.ndarray
+    physics_covered: np.ndarray
+    statistical_covered: np.ndarray
+    joint_component_covered: np.ndarray
+    fused_covered: np.ndarray
+    fusion_logic_holds: np.ndarray
+
+
+def _finite_sample_higher_quantile(scores: np.ndarray, alpha: float) -> float:
+    """Finite-sample split-conformal higher quantile for non-empty scores."""
+
+    scores = np.asarray(scores, dtype=float)
+    scores = scores[np.isfinite(scores)]
+    if len(scores) == 0:
+        return 0.0
+    alpha = float(alpha)
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must lie in (0, 1)")
+    level = min(1.0, np.ceil((len(scores) + 1) * (1.0 - alpha)) / len(scores))
+    try:
+        return float(np.quantile(scores, level, method="higher"))
+    except TypeError:  # NumPy < 1.22
+        return float(np.quantile(scores, level, interpolation="higher"))
+
+
+def conformal_safe_correction(
+    point_cal: np.ndarray,
+    y_cal: np.ndarray,
+    scale_cal: np.ndarray,
+    *,
+    alpha: float = 0.025,
+    scale_floor: float = 1e-6,
+) -> float:
+    """One-sided normalized conformal correction for safe friction use.
+
+    Scores are ``(mu_point - mu_true) / sigma``.  With a finite-sample higher
+    quantile ``q`` the lower operational estimate ``mu_point - q*sigma`` has
+    marginal one-sided split-conformal coverage under exchangeability.  The
+    quantile is clipped below at zero so the safety correction never increases
+    the point estimate; this can only make the estimate more conservative.
+    """
+
+    point = np.asarray(point_cal, dtype=float)
+    y = np.asarray(y_cal, dtype=float)
+    scale = np.maximum(np.asarray(scale_cal, dtype=float), float(scale_floor))
+    try:
+        point, y, scale = np.broadcast_arrays(point, y, scale)
+    except ValueError as exc:
+        raise ValueError("point_cal, y_cal and scale_cal must be broadcast compatible") from exc
+    mask = np.isfinite(point) & np.isfinite(y) & np.isfinite(scale)
+    scores = (point[mask] - y[mask]) / scale[mask]
+    return max(0.0, _finite_sample_higher_quantile(scores, float(alpha)))
+
+
+def statistical_safe_lower(
+    point_prediction: np.ndarray,
+    scale_prediction: np.ndarray,
+    q_safe: float,
+) -> np.ndarray:
+    """Return the one-sided learned lower estimate ``mu_point - q*sigma``."""
+
+    point = np.asarray(point_prediction, dtype=float)
+    scale = np.maximum(np.asarray(scale_prediction, dtype=float), 1e-8)
+    try:
+        point, scale = np.broadcast_arrays(point, scale)
+    except ValueError as exc:
+        raise ValueError("point_prediction and scale_prediction must be broadcast compatible") from exc
+    return point - max(0.0, float(q_safe)) * scale
+
+
+def fuse_safe_lower(
+    mechanics_lower: np.ndarray,
+    statistical_lower: np.ndarray,
+    mu_upper: float | np.ndarray,
+) -> np.ndarray:
+    """Fuse two lower estimates by taking the stronger one.
+
+    If both component lower estimates are valid for a sample, their maximum is
+    also a valid lower estimate.  Clipping to physical support ``[0,U]`` only
+    decreases values above ``U`` and uses the physical assumption ``mu >= 0``.
+    """
+
+    mech = np.asarray(mechanics_lower, dtype=float)
+    stat = np.asarray(statistical_lower, dtype=float)
+    upper = np.asarray(mu_upper, dtype=float)
+    try:
+        mech, stat, upper = np.broadcast_arrays(mech, stat, upper)
+    except ValueError as exc:
+        raise ValueError("mechanics_lower, statistical_lower and mu_upper are not broadcast compatible") from exc
+    if np.any(upper < 0):
+        raise ValueError("mu_upper must be non-negative")
+    fused = np.maximum(mech, stat)
+    return np.minimum(np.maximum(fused, 0.0), upper)
+
+
+def safety_fusion_audit(
+    y_true: np.ndarray,
+    mechanics_lower: np.ndarray,
+    point_prediction: np.ndarray,
+    scale_prediction: np.ndarray,
+    q_safe: float,
+    mu_upper: float | np.ndarray,
+    *,
+    atol: float = 1e-10,
+) -> SafetyFusionAudit:
+    """Audit the deterministic fusion logic behind the joint coverage claim."""
+
+    y = np.asarray(y_true, dtype=float)
+    mech = np.asarray(mechanics_lower, dtype=float)
+    stat = statistical_safe_lower(point_prediction, scale_prediction, q_safe)
+    upper = np.asarray(mu_upper, dtype=float)
+    try:
+        y, mech, stat, upper = np.broadcast_arrays(y, mech, stat, upper)
+    except ValueError as exc:
+        raise ValueError("safety audit arrays are not broadcast compatible") from exc
+    fused = fuse_safe_lower(mech, stat, upper)
+    physics_covered = mech <= y + abs(float(atol))
+    statistical_covered = stat <= y + abs(float(atol))
+    joint = physics_covered & statistical_covered
+    fused_covered = fused <= y + abs(float(atol))
+    # This is a deterministic algebraic audit, not an empirical proof of the
+    # marginal conformal coverage assumptions.
+    logic_holds = (~joint) | fused_covered
+    return SafetyFusionAudit(
+        statistical_lower=stat,
+        fused_safe=fused,
+        physics_covered=physics_covered,
+        statistical_covered=statistical_covered,
+        joint_component_covered=joint,
+        fused_covered=fused_covered,
+        fusion_logic_holds=logic_holds,
+    )

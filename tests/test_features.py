@@ -77,3 +77,22 @@ def test_bundle_preserves_excitation_score_in_physical_scale(tmp_path):
     idx=b.features.index("sg_excitation_score")
     assert np.all((b.Xtr[:,:,idx]>=0)&(b.Xtr[:,:,idx]<=1))
     assert np.allclose(b.Xtr[:,-1,idx],b.etr)
+
+
+def test_pfr_bundle_adds_label_free_mechanics_and_excitation_channels(tmp_path):
+    import yaml
+    from safegrip.data import make_synthetic
+    from safegrip.benchmark import make_bundle
+    from pathlib import Path
+
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs/kaggle_small.yaml").read_text())
+    cfg["benchmark"]["common_warmup_samples"] = 16
+    cfg["stride"] = 8
+    cfg.setdefault("physics", {})["window_samples"] = 8
+    csv = make_synthetic(tmp_path / "syn_pfr", n=1600, seed=9)
+    b = make_bundle(csv, cfg, sequence_length=8, eval_start=15, feature_mode="pfr")
+    assert "pfr_mechanics_lower" in b.features
+    assert "pfr_excitation" in b.features
+    ei = b.features.index("pfr_excitation")
+    assert np.all((b.Xtr[:, :, ei] >= 0.0) & (b.Xtr[:, :, ei] <= 1.0))
+    assert np.allclose(b.Xtr[:, -1, ei], b.etr)

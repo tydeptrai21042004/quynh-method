@@ -478,9 +478,9 @@ uq:
 calibration:
   lower_fraction: 0.25
   roles: disjoint_contiguous_lower_then_uq
-# SafeGrip-PFR primary proposal: one residual GRU + calibrated convex projection.
+# SafeGrip-PFR-ECR: excitation-aware point estimator + conformal safety output.
 pfr:
-  sequence_length: 16
+  sequence_length: 32
   scaler: standard
   hidden: 64
   gru_layers: 1
@@ -490,5 +490,11 @@ pfr:
   batch_size: 128
   epochs: 60
   patience: 10
+  attention_gamma: 4.0
+  scale_floor: 0.005
+  scale_nll_weight: 0.02
+  huber_beta: 0.5
+  physics_window_samples: 16
+  risk_split: 0.5
 
 

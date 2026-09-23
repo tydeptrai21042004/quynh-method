@@ -2287,3 +2287,70 @@ class DirectGRUControl(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         z, _ = self.encoder(x)
         return self.head(z[:, -1]).squeeze(-1)
+
+
+class PFRExcitationGRU(nn.Module):
+    """Excitation-aware recurrent encoder for the revised PFR proposal.
+
+    The network keeps the proposal deliberately small: one GRU is followed by
+    deterministic physics-guided temporal pooling and two scalar heads.  The
+    residual head predicts the standardized friction residual, while the scale
+    head predicts a positive physical-unit error scale used only for the
+    one-sided conformal safety correction.
+
+    ``excitation_index`` must point to an input channel already expressed on
+    ``[0, 1]``.  ``attention_gamma=0`` reduces the pooling to a uniform average
+    and is used as the decisive no-attention ablation.
+    """
+
+    def __init__(
+        self,
+        d: int,
+        excitation_index: int,
+        hidden: int = 128,
+        gru_layers: int = 1,
+        dropout: float = 0.1,
+        attention_gamma: float = 4.0,
+        scale_floor: float = 0.005,
+    ):
+        super().__init__()
+        if not 0 <= int(excitation_index) < int(d):
+            raise ValueError("excitation_index must refer to an input channel")
+        self.excitation_index = int(excitation_index)
+        self.attention_gamma = float(attention_gamma)
+        self.scale_floor = max(float(scale_floor), 1e-6)
+        recurrent_dropout = float(dropout) if int(gru_layers) > 1 else 0.0
+        self.encoder = nn.GRU(
+            int(d), int(hidden), num_layers=int(gru_layers), batch_first=True,
+            dropout=recurrent_dropout,
+        )
+        inner = max(32, int(hidden) // 2)
+        self.residual_head = nn.Sequential(
+            nn.Linear(int(hidden), int(hidden)),
+            nn.SiLU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden), 1),
+        )
+        self.scale_head = nn.Sequential(
+            nn.Linear(int(hidden), inner),
+            nn.SiLU(),
+            nn.Linear(inner, 1),
+        )
+
+    def attention_weights(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3:
+            raise ValueError("x must have shape [B,T,D]")
+        excitation = torch.clamp(x[:, :, self.excitation_index], 0.0, 1.0)
+        if abs(self.attention_gamma) < 1e-12:
+            return torch.full_like(excitation, 1.0 / max(excitation.shape[1], 1))
+        return torch.softmax(self.attention_gamma * excitation, dim=1)
+
+    def forward(self, x: torch.Tensor, *, return_attention: bool = False):
+        z, _ = self.encoder(x)
+        weights = self.attention_weights(x)
+        pooled = torch.sum(z * weights.unsqueeze(-1), dim=1)
+        residual_z = self.residual_head(pooled).squeeze(-1)
+        scale = nn.functional.softplus(self.scale_head(pooled).squeeze(-1)) + self.scale_floor
+        if return_attention:
+            return residual_z, scale, weights
+        return residual_z, scale

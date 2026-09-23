@@ -23,7 +23,7 @@ $SG --config "$CONFIG" statistics \
   --proposal safegrip_pfr \
   --bootstrap 500
 
-echo "SafeGrip-PFR small LiRA run complete."
+echo "SafeGrip-PFR-ECR small LiRA run complete."
 echo "Main metrics:      results/lira_quick/metrics.csv"
 echo "PFR ablation:      results/lira_quick/pfr_component_ablation.csv"
-echo "Projection theorem: results/lira_quick/pfr_theorem_audit.json"
+echo "Safety theorem:    results/lira_quick/pfr_theorem_audit.json"

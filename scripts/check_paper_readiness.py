@@ -13,7 +13,7 @@ BTUNE=ROOT/'results/lira_baseline_tuning'
 required_main=[
     'metrics.csv','metrics_by_seed.csv','predictions_by_seed.csv',
     'pfr_component_ablation.csv','pfr_component_ablation_by_seed.csv',
-    'pfr_projection_theorem_audit.csv','pfr_theorem_audit.json','pfr_method_audit.json',
+    'pfr_safety_metrics.csv','pfr_safety_metrics_by_seed.csv','pfr_safety_fusion_audit.csv','pfr_theorem_audit.json','pfr_method_audit.json',
     'fairness_audit.json','reproducibility_manifest.json','statistics/paired_bootstrap_rmse.csv',
 ]
 required_proc=[
@@ -30,7 +30,7 @@ for f in required_proc: checks[f'processed:{f}']=(PROC/f).exists()
 
 if (MAIN/'pfr_theorem_audit.json').exists():
     ta=json.loads((MAIN/'pfr_theorem_audit.json').read_text())
-    checks['theorem_audit_pass']=ta.get('status')=='PASS' and int(ta.get('covered_point_theorem_violations',1))==0
+    checks['theorem_audit_pass']=ta.get('status')=='PASS' and int(ta.get('deterministic_fusion_logic_violations',1))==0
 else: checks['theorem_audit_pass']=False
 
 if (MAIN/'fairness_audit.json').exists():
@@ -38,9 +38,10 @@ if (MAIN/'fairness_audit.json').exists():
     checks['fairness_audit_pass']=(
         fa.get('status')=='PASS'
         and bool(fa.get('same_locked_endpoints'))
-        and bool(fa.get('neural_model_uses_training_labels_only'))
-        and bool(fa.get('conformal_relaxation_uses_calibration_labels_only'))
-        and not bool(fa.get('test_labels_used_for_training_or_calibration'))
+        and bool(fa.get('point_and_scale_network_uses_training_labels_only'))
+        and bool(fa.get('physics_conformal_quantile_uses_calibration_labels_only'))
+        and bool(fa.get('statistical_conformal_quantile_uses_calibration_labels_only'))
+        and not bool(fa.get('test_labels_used_for_training_calibration_or_selection'))
     )
 else: checks['fairness_audit_pass']=False
 
@@ -53,7 +54,7 @@ else:
 
 if (MAIN/'pfr_component_ablation_by_seed.csv').exists():
     a=pd.read_csv(MAIN/'pfr_component_ablation_by_seed.csv')
-    expected={'direct_gru_control','pfr_residual_raw','safegrip_pfr'}
+    expected={'direct_gru_control','pfr_residual_raw','pfr_physics_features_no_attention','safegrip_pfr','safegrip_pfr_safe'}
     checks['decisive_ablation_present']=expected.issubset(set(a.model.astype(str)))
 else: checks['decisive_ablation_present']=False
 
@@ -80,7 +81,7 @@ else:
 status='PAPER_READY' if all(checks.values()) else 'REVIEW'
 report={
     'status':status,'checks':checks,
-    'proposal':'SafeGrip-PFR Physics-Feasible Residual Estimation',
+    'proposal':'SafeGrip-PFR-ECR Excitation-Aware Conformal Risk-Controlled Residual Estimation',
     'note':'PAPER_READY means implementation/fairness/theorem-consistency gates passed; it does not establish novelty or empirical superiority.',
 }
 MAIN.mkdir(parents=True,exist_ok=True); (MAIN/'paper_readiness.json').write_text(json.dumps(report,indent=2))

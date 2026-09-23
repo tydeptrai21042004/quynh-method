@@ -2,11 +2,15 @@ import numpy as np
 
 from safegrip.pfr import (
     compose_raw_prediction,
+    conformal_safe_correction,
     distance_to_interval,
+    fuse_safe_lower,
     pfr_from_residual,
     pfr_project,
     projection_theorem_audit,
     residual_target,
+    safety_fusion_audit,
+    statistical_safe_lower,
     unsafe_overestimate_improvement_audit,
 )
 from safegrip.physics import apply_lower_correction, conformal_lower_correction
@@ -74,3 +78,32 @@ def test_projection_cannot_increase_positive_overestimate_on_covered_samples():
     pred = pfr_project(raw, lo, 1.3)
     ok = unsafe_overestimate_improvement_audit(y, raw, pred, lo, 1.3)
     assert ok.all()
+
+
+def test_normalized_conformal_safe_correction_is_nonnegative_and_conservative():
+    point = np.array([0.70, 0.72, 0.74, 0.76, 0.78])
+    y = np.array([0.71, 0.70, 0.77, 0.75, 0.80])
+    scale = np.full(5, 0.02)
+    q = conformal_safe_correction(point, y, scale, alpha=0.2)
+    lower = statistical_safe_lower(point, scale, q)
+    assert q >= 0.0
+    assert np.all(lower <= point + 1e-12)
+
+
+def test_fused_safe_lower_is_maximum_of_valid_component_lower_bounds():
+    y = np.array([0.6, 0.8, 1.0])
+    mechanics = np.array([0.4, 0.5, 0.7])
+    statistical = np.array([0.55, 0.75, 0.95])
+    fused = fuse_safe_lower(mechanics, statistical, 1.3)
+    assert np.allclose(fused, statistical)
+    assert np.all(fused <= y)
+
+
+def test_safety_fusion_logic_holds_whenever_both_components_are_covered():
+    y = np.array([0.6, 0.8, 1.0, 0.7])
+    mechanics = np.array([0.4, 0.5, 0.7, 0.65])
+    point = np.array([0.63, 0.85, 1.08, 0.75])
+    scale = np.array([0.03, 0.04, 0.05, 0.03])
+    audit = safety_fusion_audit(y, mechanics, point, scale, q_safe=2.0, mu_upper=1.3)
+    assert audit.fusion_logic_holds.all()
+    assert np.all(audit.fused_safe[audit.joint_component_covered] <= y[audit.joint_component_covered] + 1e-12)

@@ -479,15 +479,14 @@ def tune_frc(csv_path, out_dir, cfg, trials=None, epochs=None):
 
 
 def tune_pfr(csv_path, out_dir, cfg, trials=None, epochs=None):
-    """Validation-only tuning for the small SafeGrip-PFR neural residual model.
+    """Validation-only tuning for the revised excitation-aware PFR point model.
 
-    Only ordinary approximation/optimization hyperparameters are searched.
-    The theorem parameters ``alpha``, the conformal quantile rule, the mechanics
-    lower bound, and ``mu_upper`` are fixed by the protocol and never optimized.
+    Only approximation and optimization hyperparameters are tuned.  The total
+    risk level, risk split, conformal quantile rules and physical upper support
+    are fixed by the protocol and are never optimized on validation/test labels.
     """
-    from .pfr_benchmark import _fit_scalar_gru, _predict_scalar
-    from .pfr import compose_raw_prediction, pfr_project
-    from .physics import conformal_lower_correction, apply_lower_correction
+    from .pfr_benchmark import _fit_pfr_gru, _predict_pfr, _pfr_bundle_cfg
+    from .pfr import compose_raw_prediction
 
     optuna = require_optuna()
     out = ensure_dir(out_dir)
@@ -501,38 +500,48 @@ def tune_pfr(csv_path, out_dir, cfg, trials=None, epochs=None):
     def objective(trial):
         hp = {
             "sequence_length": trial.suggest_categorical(
-                "sequence_length", space.get("sequence_length", [16, 32, 64])
+                "sequence_length", space.get("sequence_length", [32, 64, 100])
             ),
-            "scaler": trial.suggest_categorical("scaler", space.get("scaler", ["standard", "minmax"])),
-            "hidden": trial.suggest_categorical("hidden", space.get("hidden", [32, 64, 96])),
+            "scaler": trial.suggest_categorical("scaler", space.get("scaler", ["standard"])),
+            "hidden": trial.suggest_categorical("hidden", space.get("hidden", [64, 128])),
             "gru_layers": trial.suggest_categorical("gru_layers", space.get("gru_layers", [1, 2])),
-            "dropout": trial.suggest_float("dropout", *space.get("dropout", [0.0, 0.3])),
-            "lr": trial.suggest_float("lr", *space.get("lr", [1e-4, 3e-3]), log=True),
+            "dropout": trial.suggest_float("dropout", *space.get("dropout", [0.0, 0.2])),
+            "lr": trial.suggest_float("lr", *space.get("lr", [3e-4, 2e-3]), log=True),
             "weight_decay": trial.suggest_float(
                 "weight_decay", *space.get("weight_decay", [1e-6, 1e-3]), log=True
             ),
             "batch_size": trial.suggest_categorical("batch_size", space.get("batch_size", [64, 128, 256])),
+            "attention_gamma": trial.suggest_categorical(
+                "attention_gamma", space.get("attention_gamma", [1.0, 2.0, 4.0, 8.0])
+            ),
+            "scale_nll_weight": trial.suggest_categorical(
+                "scale_nll_weight", space.get("scale_nll_weight", [0.01, 0.02, 0.05])
+            ),
+            "physics_window_samples": trial.suggest_categorical(
+                "physics_window_samples", space.get("physics_window_samples", [16, 32, 64])
+            ),
+            "scale_floor": float(cfg.get("pfr", {}).get("scale_floor", 0.005)),
+            "huber_beta": float(cfg.get("pfr", {}).get("huber_beta", 0.5)),
+            "risk_split": float(cfg.get("pfr", {}).get("risk_split", 0.5)),
             "epochs": run_epochs,
             "patience": int(cfg.get("training", {}).get("patience", 10)),
         }
+        trial_cfg = _pfr_bundle_cfg(cfg, hp)
         b = make_bundle(
             csv_path,
-            cfg,
+            trial_cfg,
             sequence_length=int(hp["sequence_length"]),
             scaler_kind=str(hp["scaler"]),
             eval_start=start,
-            feature_mode="raw",
+            feature_mode="pfr",
         )
-        q = conformal_lower_correction(b.raw_loc, b.yc, float(cfg.get("alpha", 0.05)))
-        lower_v = apply_lower_correction(b.raw_lov, q)
         vals = []
         for seed in seeds:
             seed_everything(seed)
-            fit = _fit_scalar_gru(b, cfg, hp, target_mode="residual")
-            residual = _predict_scalar(fit, b.Xv)
-            raw = compose_raw_prediction(b.raw_lov, residual)
-            pred = pfr_project(raw, lower_v, float(cfg.get("mu_upper", 1.3)))
-            vals.append(float(np.sqrt(np.mean((b.yv - pred) ** 2))))
+            fit = _fit_pfr_gru(b, cfg, hp)
+            residual, _, _, _, _ = _predict_pfr(fit, b.Xv)
+            point = compose_raw_prediction(b.raw_lov, residual)
+            vals.append(float(np.sqrt(np.mean((b.yv - point) ** 2))))
         score = float(np.mean(vals))
         trial.set_user_attr("seed_rmse", vals)
         return score
@@ -540,7 +549,7 @@ def tune_pfr(csv_path, out_dir, cfg, trials=None, epochs=None):
     db = Path(out) / "optuna.sqlite3"
     study = optuna.create_study(
         direction="minimize",
-        study_name="safegrip_pfr",
+        study_name="safegrip_pfr_ecr",
         storage=f"sqlite:///{db}",
         load_if_exists=True,
         sampler=optuna.samplers.TPESampler(seed=int(cfg.get("seed", 0))),
@@ -549,13 +558,19 @@ def tune_pfr(csv_path, out_dir, cfg, trials=None, epochs=None):
     if remaining:
         study.optimize(objective, n_trials=remaining)
     best = dict(study.best_trial.params)
-    best["epochs"] = run_epochs
-    best["patience"] = int(cfg.get("training", {}).get("patience", 10))
+    best.update({
+        "epochs": run_epochs,
+        "patience": int(cfg.get("training", {}).get("patience", 10)),
+        "scale_floor": float(cfg.get("pfr", {}).get("scale_floor", 0.005)),
+        "huber_beta": float(cfg.get("pfr", {}).get("huber_beta", 0.5)),
+        "risk_split": float(cfg.get("pfr", {}).get("risk_split", 0.5)),
+    })
     (Path(out) / "best_hparams.yaml").write_text(yaml.safe_dump(best, sort_keys=False), encoding="utf-8")
     pd.DataFrame(study.trials_dataframe()).to_csv(Path(out) / "trials.csv", index=False)
+    best_cfg = _pfr_bundle_cfg(cfg, best)
     best_bundle = make_bundle(
-        csv_path, cfg, sequence_length=int(best["sequence_length"]),
-        scaler_kind=str(best["scaler"]), eval_start=start, feature_mode="raw"
+        csv_path, best_cfg, sequence_length=int(best["sequence_length"]),
+        scaler_kind=str(best["scaler"]), eval_start=start, feature_mode="pfr"
     )
     ids = best_bundle.idv.astype(str).tolist()
     endpoint_hash = __import__("hashlib").sha256("\n".join(ids).encode()).hexdigest()
@@ -564,15 +579,15 @@ def tune_pfr(csv_path, out_dir, cfg, trials=None, epochs=None):
         encoding="utf-8",
     )
     summary = {
-        "method": "safegrip_pfr",
-        "objective": "mean projected validation RMSE across fixed tuning seeds",
+        "method": "safegrip_pfr_ecr",
+        "objective": "mean point-estimate validation RMSE across fixed tuning seeds",
         "best_value": float(study.best_value),
         "best_trial": int(study.best_trial.number),
         "best_params": best,
         "n_trials_total": len(study.trials),
         "tuning_seeds": seeds,
         "test_used_during_search": False,
-        "mathematical_parameters_tuned": False,
+        "risk_or_conformal_parameters_tuned": False,
         "common_eval_start": int(start),
     }
     (Path(out) / "tuning_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

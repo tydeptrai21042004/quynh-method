@@ -1,4 +1,4 @@
-# SafeGrip-PFR corrected Kaggle single-cell driver.
+# SafeGrip-PFR-ECR corrected Kaggle single-cell driver.
 # Paste this file into one Kaggle Python cell or run it as a script.
 # Internet must be ON for cloning/downloading LiRA.
 
@@ -61,8 +61,10 @@ run(
 archive_base = RESULT_ZIP.with_suffix("")
 shutil.make_archive(str(archive_base), "zip", root_dir=result_dir)
 
-print("\nSafeGrip-PFR run complete")
+print("\nSafeGrip-PFR-ECR run complete")
 print("Metrics:", result_dir / "metrics.csv")
 print("Ablation:", result_dir / "pfr_component_ablation.csv")
+print("Safety metrics:", result_dir / "pfr_safety_metrics.csv")
+print("Safety audit:", result_dir / "pfr_safety_fusion_audit.csv")
 print("Theorem audit:", result_dir / "pfr_theorem_audit.json")
 print("Result ZIP:", RESULT_ZIP)
