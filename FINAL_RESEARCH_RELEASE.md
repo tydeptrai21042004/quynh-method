@@ -12,4 +12,4 @@ The v2.2 redesign deliberately removes the inactive PNTR response-refinement sta
 
 The old FRC, PNTR, and CI implementations remain available only for reproducibility.
 
-Local validation for this release: **108 tests passed**.  The synthetic quick end-to-end benchmark also completed successfully and the projection theorem audit reported zero covered-point violations.  These software checks do not replace the required multi-seed real-LiRA paper run.
+Local software validation is separated from empirical evidence. Paper claims require multi-seed evaluation on real measured datasets; generated benchmark data are not part of the executable data suite.

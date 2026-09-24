@@ -30,6 +30,13 @@ SOURCE = {
     "bicycle_tire": {"kind":"zenodo", "record":7866646},
     "mendeley_friction": {"kind":"mendeley", "slug":"trrcrgzg75", "version":1,
                            "landing":"https://data.mendeley.com/datasets/trrcrgzg75/1"},
+    "mssp2023_friction": {
+        "kind":"manual-public",
+        "repo":"jialin-li99/dataset_for_MSSP_2023",
+        "landing":"https://github.com/jialin-li99/dataset_for_MSSP_2023",
+        "data_url":"https://pan.baidu.com/s/1LXx21JAjvpdqyNGu7niH3g",
+        "extraction_code":"JLUc",
+    },
 }
 
 
@@ -404,6 +411,40 @@ def download_github_repo(name: str, out: Path) -> None:
     _extract(dest,out); _write_source(name,out,{"default_branch":branch})
 
 
+
+
+def download_mssp2023_metadata(out: Path) -> None:
+    """Download public metadata and write explicit real-data acquisition instructions.
+
+    The authors expose the real dynamics/video payload through a public Baidu
+    acquisition link rather than GitHub.  We do not scrape/bypass that host;
+    instead we preserve the public source metadata and tell the user exactly
+    where to place the downloaded files for ``safegrip prepare``.
+    """
+    cfg = SOURCE["mssp2023_friction"]
+    # The GitHub repository contains README/source metadata but not the data payload.
+    try:
+        download_github_repo("mssp2023_friction", out)
+    except Exception as exc:
+        print(f"[download] mssp2023_friction metadata mirror unavailable: {exc}")
+    instructions = (
+        "REAL DATA REQUIRED -- no simulated fallback is used.\n\n"
+        "Guo et al. (MSSP 2023) publish the acquisition link below.\n"
+        f"Data link: {cfg['data_url']}\n"
+        f"Extraction code: {cfg['extraction_code']}\n\n"
+        "After downloading/extracting, copy the dynamics tables (CSV/TXT/XLS/XLSX) "
+        "into this directory and run:\n"
+        "  safegrip prepare --dataset mssp2023_friction\n"
+        "The adapter requires real friction/adhesion coefficient, vehicle speed, "
+        "longitudinal acceleration, and lateral acceleration columns.\n"
+    )
+    (out / "MANUAL_REAL_DATA_REQUIRED.txt").write_text(instructions, encoding="utf-8")
+    _write_source("mssp2023_friction", out, {
+        "data_payload_downloaded": False,
+        "public_data_url": cfg["data_url"],
+        "extraction_code": cfg["extraction_code"],
+    })
+
 def download_zenodo(name: str, out: Path, *, yaml_only: bool = False) -> None:
     record=SOURCE[name]["record"]; r=requests.get(f"https://zenodo.org/api/records/{record}",headers=UA,timeout=60); r.raise_for_status()
     files=r.json().get("files",[])
@@ -482,4 +523,9 @@ def download_dataset(name: str, root: str | Path="data/raw", force: bool=False, 
     elif name in ("deep_dynamics","comma2k19","extreme_road"): download_github_repo(name,out)
     elif name=="bicycle_tire": download_zenodo(name,out,yaml_only=not full)
     elif name=="mendeley_friction": download_mendeley(out)
+    elif name=="mssp2023_friction":
+        download_mssp2023_metadata(out)
+        # Metadata is complete, but the real payload is intentionally not marked
+        # as downloaded. ``prepare`` will refuse to manufacture replacement data.
+        return out
     marker.write_text("ok\n"); return out

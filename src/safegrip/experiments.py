@@ -520,3 +520,61 @@ def run_statistical_comparison(results_dir, out_dir, *, proposal="safegrip", boo
     res=pd.DataFrame(rows); res.to_csv(out/"paired_bootstrap_rmse.csv",index=False)
     (out/"statistical_protocol.json").write_text(json.dumps(protocol,indent=2),encoding="utf-8")
     return res
+
+
+def run_external_friction_reference_validation(csv_path, out_dir) -> pd.DataFrame:
+    """Summarize a real external friction-reference dataset without pretending it
+    is a vehicle-dynamics benchmark.
+
+    This is intended for datasets such as the Mendeley tire-pavement friction
+    workbook, which contains real friction coefficients (and often speed/surface)
+    but not the full synchronized sensor set required by SafeGrip-PFR-ECR.
+    """
+    out = ensure_dir(out_dir)
+    df = pd.read_csv(csv_path)
+    if "mu_ref" not in df.columns:
+        raise RuntimeError("External friction validation requires a real mu_ref column")
+    mu = pd.to_numeric(df["mu_ref"], errors="coerce")
+    z = df.loc[mu.notna()].copy()
+    z["mu_ref"] = mu[mu.notna()].to_numpy()
+    if z.empty:
+        raise RuntimeError("External friction dataset contains no numeric friction values")
+
+    rows = [{
+        "group": "all",
+        "n": int(len(z)),
+        "mu_mean": float(z.mu_ref.mean()),
+        "mu_std": float(z.mu_ref.std(ddof=1)) if len(z) > 1 else 0.0,
+        "mu_min": float(z.mu_ref.min()),
+        "mu_q05": float(z.mu_ref.quantile(0.05)),
+        "mu_median": float(z.mu_ref.median()),
+        "mu_q95": float(z.mu_ref.quantile(0.95)),
+        "mu_max": float(z.mu_ref.max()),
+    }]
+    if "surface_canonical" in z.columns:
+        for surface, g in z.groupby("surface_canonical", dropna=False):
+            vals = pd.to_numeric(g.mu_ref, errors="coerce").dropna()
+            if len(vals):
+                rows.append({
+                    "group": f"surface:{surface}", "n": int(len(vals)),
+                    "mu_mean": float(vals.mean()),
+                    "mu_std": float(vals.std(ddof=1)) if len(vals) > 1 else 0.0,
+                    "mu_min": float(vals.min()), "mu_q05": float(vals.quantile(0.05)),
+                    "mu_median": float(vals.median()), "mu_q95": float(vals.quantile(0.95)),
+                    "mu_max": float(vals.max()),
+                })
+    summary = pd.DataFrame(rows)
+    summary.to_csv(out / "friction_reference_summary.csv", index=False)
+    if "speed_canonical" in z.columns:
+        pd.DataFrame({
+            "mu_ref": z.mu_ref,
+            "speed_canonical": pd.to_numeric(z.speed_canonical, errors="coerce"),
+            "surface_canonical": z.get("surface_canonical", pd.Series([None] * len(z))),
+        }).to_csv(out / "friction_reference_samples.csv", index=False)
+    (out / "protocol.json").write_text(json.dumps({
+        "real_data_only": True,
+        "model_trained": False,
+        "purpose": "external measured friction/speed/surface sanity validation",
+        "not_a_safegrip_point_prediction_benchmark": True,
+    }, indent=2), encoding="utf-8")
+    return summary

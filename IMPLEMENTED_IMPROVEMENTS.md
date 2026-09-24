@@ -42,4 +42,4 @@
 - Added v1.3 ablations for magnitude head, energy-improvement evidence, contrastive dynamics, and do-no-harm training.
 - Extended prediction/benchmark exports with benefit probability, correction fraction, posterior entropy and energy curvature.
 - Updated tuning/sensitivity, Kaggle TRUST/PAPER drivers, paper-readiness checks and current method documentation for v1.3.
-- Added v1.3 model/registry/tuning tests and end-to-end synthetic training validation.
+- Added v1.3 model/registry/tuning tests and real-data-path integration validation.

@@ -1,4 +1,5 @@
 from pathlib import Path
+import numpy as np
 import pandas as pd
 from safegrip.data import canonical_friction, canonical_vehicle
 
@@ -170,3 +171,45 @@ def test_group_holdout_assigns_each_trajectory_to_one_split():
     counts=out.groupby("trajectory_id")["split"].nunique()
     assert (counts==1).all()
     assert set(out["split"].unique())=={"train","calibration","validation","test"}
+
+
+def test_mssp2023_real_table_adapter_requires_measured_channels(tmp_path):
+    import yaml
+    from pathlib import Path
+    from safegrip.data import prepare_mssp2023_friction
+
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs/default.yaml").read_text())
+    raw = tmp_path / "mssp_raw"
+    out = tmp_path / "mssp_out"
+    raw.mkdir()
+    n = 240
+    i = np.arange(n, dtype=float)
+    pd.DataFrame({
+        "Time (s)": i / 50.0,
+        "Vehicle Speed km/h": 60.0 + 2.0 * np.sin(i / 10.0),
+        "Longitudinal Acceleration m/s2": 0.2 * np.sin(i / 7.0),
+        "Lateral Acceleration m/s2": 0.25 * np.cos(i / 9.0),
+        "Peak Friction Coefficient": 0.7 + 0.08 * np.sin(i / 30.0),
+    }).to_csv(raw / "real_vehicle_run.csv", index=False)
+
+    path = prepare_mssp2023_friction(raw, out, cfg)
+    z = pd.read_csv(path)
+    assert {"train", "calibration", "validation", "test"}.issubset(set(z.split))
+    assert {"speed", "ax", "ay", "mu_ref", "physics_lower_raw"}.issubset(z.columns)
+    assert len(z) == n
+    assert (out / "mssp2023_schema_audit.csv").exists()
+
+
+def test_mssp2023_adapter_never_fabricates_missing_dynamics(tmp_path):
+    import yaml
+    import pytest
+    from pathlib import Path
+    from safegrip.data import prepare_mssp2023_friction
+
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "configs/default.yaml").read_text())
+    raw = tmp_path / "mssp_missing"
+    out = tmp_path / "mssp_out"
+    raw.mkdir()
+    pd.DataFrame({"speed": np.arange(100), "mu": np.full(100, 0.7)}).to_csv(raw / "incomplete.csv", index=False)
+    with pytest.raises(RuntimeError, match="No values are synthesized"):
+        prepare_mssp2023_friction(raw, out, cfg)

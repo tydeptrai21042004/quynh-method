@@ -5,8 +5,7 @@
 The main prediction table contains only the proposal plus those paper baselines. `direct_gru_control` and other component variants are internal ablations. See `SAFEGRIP_PFR_METHOD.md` and `LITERATURE_BASELINES.md`.
 
 The active proposal is **SafeGrip-PFR-ECR: Excitation-Aware Conformal
-Risk-Controlled Residual Estimation**.  Earlier FRC, PNTR, and CI methods remain
-for reproducibility.
+Risk-Controlled Residual Estimation**. The executable benchmark is real-data-only.
 
 ## Active method
 
@@ -92,8 +91,7 @@ physical support are not tuned against test performance.
 
 ## Main comparison and ablations
 
-The main table contains `safegrip_pfr` (the point estimate),
-`direct_gru_control`, and the registered literature baselines.
+The main table contains `safegrip_pfr` (the point estimate) and the four registered paper-supported literature baselines. `direct_gru_control` is retained only as an internal ablation/control.
 
 The PFR component table additionally contains:
 
@@ -137,9 +135,12 @@ The active benchmark uses:
 - no response inversion, friction-grid search, trust radius, or iterative
   projection solver.
 
-## Retained legacy paths
+## Real-data-only policy
+
+The CLI does not expose a simulated/synthetic benchmark dataset. The full friction benchmark accepts `lira` and `mssp2023_friction`; the latter runs only after the authors' real data payload has been supplied. KIT and KU Leuven are used for real force/physics validation, while Mendeley friction is used for external real friction-reference validation. See `DATASETS.md`.
 
 ```bash
-safegrip benchmark --dataset lira --preset paper --proposal frc
-safegrip benchmark --dataset lira --preset paper --proposal legacy-ci
+safegrip datasets
+safegrip download --datasets lira
+safegrip benchmark --dataset lira --preset trust --proposal pfr --protocol controlled
 ```

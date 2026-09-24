@@ -28,5 +28,5 @@ The Levenberg source method uses high-rate transverse vibration data (~250 Hz or
 ## Validation
 
 - Unit/integration tests: `109 passed`.
-- End-to-end synthetic one-epoch integration smoke test produced main rows for exactly the proposal + four requested baselines.
+- Integration tests verify the proposal + four requested baseline paths without exposing a generated benchmark dataset.
 - `direct_gru_control` was verified to remain only in the ablation output.

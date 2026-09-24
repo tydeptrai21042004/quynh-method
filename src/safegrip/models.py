@@ -96,7 +96,7 @@ class Todorovic2022CNN(nn.Module):
             nn.Flatten(),
             nn.Dropout(dropout),
             # LazyLinear preserves the source Flatten->Dense(400) design while
-            # allowing quick tests to use a shorter synthetic input. In paper
+            # allowing unit tests to use a shorter canonical-schema fixture. In paper
             # mode L=100 materializes exactly 12*256=3072 input features.
             nn.LazyLinear(dense), nn.ReLU(),
             nn.Dropout(dropout),

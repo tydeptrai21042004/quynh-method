@@ -1,64 +1,90 @@
-# Open dataset support
+# Real dataset support
 
-SafeGrip does not merge datasets with incompatible targets into one table. Each source has a defined scientific role.
+SafeGrip-PFR-ECR does **not** generate or benchmark simulated/synthetic datasets. Every dataset registered below is a real measured/public source. Datasets with incompatible targets are kept in separate scientific roles rather than being forced into one prediction table.
 
-| ID | Source | Auto-download | Direct friction label? | Main role |
-|---|---|---|---|---|
-| `lira` | LiRA-CD platoon friction test | Figshare API | external VIAFRIK road-friction reference | primary friction benchmark |
-| `kuleuven` | LMSD Concept Car | Dataverse API | no peak-friction label; WFT force ground truth | validate virtual force/physics layer |
-| `kit` | KIT inner-drum dry-asphalt tire data | RADAR runtime discovery | measured forces, not road-reference time series | tire-force/utilization mechanics |
-| `deep_dynamics` | Deep Dynamics / IAC | GitHub archive | no | high-dynamics/domain shift |
-| `comma2k19` | comma2k19 | GitHub repo/example | no | unlabeled CAN/IMU pretraining/domain data |
-| `extreme_road` | Extreme Road Image Dataset | GitHub archive | road class, no numeric ego-tire mu | optional multimodal road prior |
-| `bicycle_tire` | Bicycle Tyre Data | Zenodo API | force/torque, bicycle test rig | auxiliary mechanics validation |
-| `mendeley_friction` | tire-pavement friction coefficient data | Mendeley public endpoint discovery | friction coefficient | external friction/speed/surface sanity check |
+| ID | Source | Real measured target/data | Role |
+|---|---|---|---|
+| `lira` | LiRA-CD platoon friction test | VIAFRIK standardized road-friction reference + Renault Zoe CAN/AutoPi sensors | **Primary friction benchmark; auto-downloadable** |
+| `mssp2023_friction` | Guo et al. MSSP 2023 friction dataset | real vehicle dynamics/video + road adhesion/friction coefficient | **Second primary friction benchmark when author payload is supplied** |
+| `kuleuven` | KU Leuven LMSD Concept Car | Kistler RoaDyn wheel forces + vehicle sensing | real-vehicle force/physics validation |
+| `kit` | KIT tire force transmission dataset | measured Fx/Fy/Fz characteristics on dry asphalt | tire-force/utilization mechanics validation |
+| `mendeley_friction` | tire-pavement friction coefficient dataset | measured friction coefficient, road condition/speed fields when available | external friction-reference validation |
+| `deep_dynamics` | Deep Dynamics / IAC | real high-dynamics vehicle signals | domain-shift/vehicle-dynamics auxiliary data |
+| `comma2k19` | comma2k19 | production driving sensor streams | unlabeled temporal/domain data |
+| `extreme_road` | Extreme Road Image Dataset | real road-surface image classes | optional multimodal road-condition prior |
+| `bicycle_tire` | Bicycle Tyre Data | measured force/torque rig data | auxiliary tire-mechanics validation |
 
-## Primary dataset: LiRA-CD
+## Primary real benchmark 1: LiRA-CD
 
-The platoon test combines normal vehicle/AutoPi/CAN data from a Renault Zoe with a VIAFRIK reference vehicle driving the same wet road. The target in this repository is named `mu_ref` deliberately: it is a standardized external road reference, not the exact instantaneous peak coefficient of the ego tire.
+The LiRA platoon-friction subset contains a regular car driving behind the VIAFRIK reference vehicle on wet road. It combines real in-vehicle/CAN/AutoPi signals with a standardized road-friction reference. The repository aligns the car trajectory to the reference trace, performs leakage-safe temporal splitting, and uses the resulting continuous `mu_ref` target for SafeGrip-PFR-ECR and all paper-supported baselines.
 
-The downloader queries Figshare article metadata at runtime and downloads the current files. In the platoon-test release, `task_7505_*.txt` files are separate asynchronous sensor streams, so the corrected preprocessor first groups them by task ID, preserves their timestamp origin, synchronizes speed/acceleration/other CAN channels, and interpolates the low-rate GPS stream onto a common vehicle timeline. It then aligns that assembled task independently against each candidate VIAFRIK direction/trace with maximum-distance, heading and monotonic-progress checks, keeping the nearest valid reference match per vehicle timestamp. Spatial split assignment occurs before split-local interpolation/resampling, and all filling is restricted to one `(trip_id, split)` block. GPS and route metadata remain excluded from learned inputs.
+```bash
+safegrip download --datasets lira
+safegrip prepare --dataset lira
+safegrip benchmark --dataset lira --preset trust --proposal pfr --protocol controlled
+```
 
-## KU Leuven LMSD Concept Car
+## Primary real benchmark 2: Guo et al. MSSP 2023
 
-This real-vehicle dataset includes automotive onboard sensing plus two front Kistler RoaDyn S635 wheel-force transducers and a Correvit optical velocity reference. SafeGrip uses it as auxiliary ground truth for the force-estimation/physics part of the method.
+The public project describes real video and vehicle-dynamics data collected for tire-road peak-friction/adhesion estimation. The GitHub repository points to a separate public Baidu acquisition link rather than embedding the payload. SafeGrip therefore downloads source metadata/instructions only and **never substitutes generated data**.
 
-The Dataverse API is public, but repository guestbook/terms may require user acceptance. SafeGrip stops with a clear message instead of bypassing it.
+```bash
+safegrip download --datasets mssp2023_friction
+# Follow data/raw/mssp2023_friction/MANUAL_REAL_DATA_REQUIRED.txt
+# Put the authors' extracted CSV/TXT/XLS/XLSX dynamics tables there.
+safegrip prepare --dataset mssp2023_friction
+safegrip benchmark --dataset mssp2023_friction --preset trust --proposal pfr --protocol controlled
+```
 
-## KIT tire data
+The adapter requires real columns corresponding to:
 
-The KIT dataset contains measured longitudinal/lateral force-transmission characteristics on dry asphalt from an inner-drum test bench plus a simulated vehicle slalom cycle. It is ideal for checking force utilization and friction-cone/ellipse assumptions, but it is not disguised as a production-CAN road-friction benchmark.
+- friction/adhesion coefficient;
+- vehicle speed;
+- longitudinal acceleration;
+- lateral acceleration.
 
-## Deep Dynamics / IAC
+If those measured channels are absent, preparation fails with a schema audit. No values are synthesized.
 
-Downloaded from the authors' public GitHub repository. It is useful for high-excitation vehicle-dynamics/domain-shift experiments. The canonicalizer collects compatible vehicle tables without manufacturing friction labels.
+## Real auxiliary validation datasets
 
-## comma2k19
+### KU Leuven LMSD Concept Car
 
-The full dataset is roughly 100 GB. `safegrip download --datasets comma2k19` intentionally downloads the public repository and bundled example so a normal paper setup does not unexpectedly consume ~100 GB. The full upstream dataset remains opt-in outside the default script.
+Used for real-vehicle wheel-force validation. It is not presented as an independent `mu_max` benchmark because it does not expose the same continuous peak-friction target as LiRA/MSSP.
 
-## Extreme Road Image Dataset
+```bash
+safegrip download --datasets kuleuven
+safegrip prepare --dataset kuleuven
+safegrip force-validate --dataset kuleuven
+```
 
-Six extreme surface classes are available for a later multimodal extension. The current primary paper remains mechanics/sensor based, so these images are not silently included in the direct sensor-only benchmark.
+### KIT tire data
 
-## Bicycle Tyre Data
+Used for measured tire-force/utilization validation rather than the main road-reference prediction table.
 
-Zenodo provides lateral force and self-aligning torque measurements across load, pressure and camber. This is mechanically useful but is a bicycle rig; the repository preserves that distinction.
+```bash
+safegrip download --datasets kit
+safegrip prepare --dataset kit
+safegrip force-validate --dataset kit
+```
 
-By default only lightweight/readme/YAML-compatible content is requested; use `--full` for all Zenodo files.
+### Mendeley tire-pavement friction data
 
-## Mendeley tire-pavement friction data
+Used as an external real friction/speed/surface reference. Because it does not provide the synchronized vehicle-dynamics sequence required by SafeGrip-PFR-ECR, the repository performs a reference-distribution validation instead of fabricating missing sensors.
 
-The public dataset contains a friction workbook measured across road conditions and vehicle speeds. Mendeley's public frontend/API can change; the downloader tries public API patterns and embedded public-file links and never attempts to bypass credentials.
+```bash
+safegrip download --datasets mendeley_friction
+safegrip prepare --dataset mendeley_friction
+safegrip friction-reference-validate --dataset mendeley_friction
+```
 
-## Commands
+## Other real sources
+
+`deep_dynamics`, `comma2k19`, `extreme_road`, and `bicycle_tire` remain available for domain, multimodal, or mechanics studies. They are not silently mixed into the primary friction-regression table because their targets differ.
 
 ```bash
 safegrip datasets
-safegrip download --datasets lira kit
+safegrip download --datasets lira kit mendeley_friction
 safegrip download --datasets all
-safegrip download --datasets bicycle_tire --full
-bash scripts/download_all_datasets.sh
 ```
 
-Every successful dataset directory receives a `SOURCE.json` with DOI/license/role metadata and a `.complete` marker.
+Every automatic download writes source metadata. Sources that require explicit user-side acquisition/terms are reported transparently rather than bypassed.

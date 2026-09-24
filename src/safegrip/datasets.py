@@ -65,4 +65,34 @@ DATASET_REGISTRY = {
         "license": "CC BY 4.0",
         "auto_download": "yes when public-file endpoint is exposed by Mendeley; clear fallback message otherwise",
     },
+    "mssp2023_friction": {
+        "title": "Guo et al. 2023 tire-road peak-friction dataset",
+        "role": "second real friction benchmark when the authors' dynamics tables are supplied",
+        "target": "tire-road peak/adhesion friction coefficient",
+        "paper": "A fusion estimation of the peak tire-road friction coefficient based on road images and dynamic information",
+        "doi": "10.1016/j.ymssp.2022.110029",
+        "license": "dataset terms are provided by the authors; verify before redistribution",
+        "auto_download": "metadata/instructions yes; data payload requires the authors' public Baidu acquisition link",
+    },
 }
+
+
+# Real datasets that can drive the full SafeGrip-PFR-ECR friction benchmark.
+# LiRA is fully auto-downloadable. The MSSP 2023 dataset is real vehicle/road
+# data with friction labels, but the authors distribute the payload through a
+# separate public Baidu link; the repository can prepare it after the user
+# places the downloaded tabular dynamics files under data/raw/mssp2023_friction.
+PRIMARY_FRICTION_DATASETS = ("lira", "mssp2023_friction")
+
+# Real auxiliary datasets are intentionally kept separate because their targets
+# are force/road-class/domain signals rather than the same continuous friction
+# target used by the primary benchmark.
+AUXILIARY_REAL_DATASETS = (
+    "kuleuven",
+    "kit",
+    "deep_dynamics",
+    "comma2k19",
+    "extreme_road",
+    "bicycle_tire",
+    "mendeley_friction",
+)

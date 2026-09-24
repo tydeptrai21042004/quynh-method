@@ -1,0 +1,11 @@
+PNTR_SMALL_EXPERIMENT.md
+validation_artifacts/pfr_synthetic_quick_ablation.csv
+validation_artifacts/pfr_synthetic_quick_metrics.csv
+validation_artifacts/pfr_synthetic_quick_summary.txt
+validation_artifacts/pfr_synthetic_quick_theorem_audit.json
+validation_artifacts/pntr_small/fairness_audit.json
+validation_artifacts/pntr_small/metrics.csv
+validation_artifacts/pntr_small/metrics_by_seed.csv
+validation_artifacts/pntr_small/pntr_component_ablation.csv
+validation_artifacts/pntr_small/pntr_horizon_ablation.csv
+validation_artifacts/pntr_small/pntr_method_audit.json

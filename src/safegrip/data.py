@@ -342,7 +342,7 @@ LIRA_TASK_FILE_FEATURES = {
 # These values are data-source metadata, not fitted parameters.  We apply the
 # correction only to the corresponding official task-file suffix and only when
 # the observed numeric channel is in the encoded/raw domain; already-physical
-# synthetic/custom files are left unchanged.
+# custom/non-LiRA files are left unchanged.
 LIRA_TABLE2_CORRECTIONS = {
     "acc_lon":      {"b_star": 198.0,   "r_star": 1.0,  "b": 198.0,   "r": 0.05, "unit": "m/s2"},
     "acc_trans":    {"b_star": 32768.0, "r_star": 1.0,  "b": 32768.0, "r": 0.04, "unit": "m/s2"},
@@ -1574,31 +1574,6 @@ def prepare_kit(raw: str|Path, out: str|Path) -> Path:
     path=out/"kit_force.csv"; z.to_csv(path,index=False); return path
 
 
-def make_synthetic(out: str|Path, n=12000, seed=20260905) -> Path:
-    rng=np.random.default_rng(seed); out=Path(out); ensure_dir(out)
-    t=np.arange(n)/20.0
-    block=max(50,n//12); mu=np.repeat(rng.uniform(.25,1.1,size=max(1,n//block+1)),block)[:n]
-    speed=np.clip(18+5*np.sin(t/37)+rng.normal(0,.5,n),2,35)
-    excitation=np.clip(rng.beta(1.2,4,size=n),0,1)
-    theta=rng.uniform(-np.pi,np.pi,n)
-    rho=mu*excitation
-    ax=9.81*rho*np.cos(theta)+rng.normal(0,.08,n)
-    ay=9.81*rho*np.sin(theta)+rng.normal(0,.08,n)
-    steer=np.clip(ay/np.maximum(speed,2)**2*2.7,-.5,.5)+rng.normal(0,.01,n)
-    yaw=ay/np.maximum(speed,2)+rng.normal(0,.01,n)
-    base=speed/.31*60/(2*np.pi)
-    wheels=np.column_stack([base+rng.normal(0,2,n) for _ in range(4)])
-    torque=np.maximum(0,150*ax)+rng.normal(0,20,n)
-    df=pd.DataFrame({"time":t,"speed":speed,"ax":ax,"ay":ay,"yaw_rate":yaw,"steer":steer,
-      "wheel_fl":wheels[:,0],"wheel_fr":wheels[:,1],"wheel_rl":wheels[:,2],"wheel_rr":wheels[:,3],
-      "torque":torque,"mu_ref":mu,"distance":np.cumsum(speed/20)})
-    df["physics_lower_raw"]=np.clip(rho-rng.uniform(0,.03,n),0,1.3)
-    q=np.linspace(0,1,n,endpoint=False); df["split"]=np.where(q<.6,"train",np.where(q<.7,"calibration",np.where(q<.8,"validation","test")))
-    df["route_id"]="SYNTH"; df["direction"]="FWD"; df["trip_id"]="synthetic_trip_0"
-    df["sample_uid"]=[f"synthetic_trip_0:{sp}:{i}" for i,sp in enumerate(df.split)]
-    path=out/"synthetic.csv"; df.to_csv(path,index=False); return path
-
-
 def _write_manifest(paths, out_path: Path, root: Path):
     rows=[]
     for p in paths:
@@ -1728,6 +1703,128 @@ def prepare_mendeley_friction(raw: str|Path, out: str|Path) -> Path:
     path=out/"mendeley_friction.csv"; z.to_csv(path,index=False); return path
 
 
+
+def _real_friction_target_column(df: pd.DataFrame) -> str | None:
+    """Resolve a measured/referenced friction coefficient without guessing labels."""
+    return find_col(df, [
+        ("peak", "friction", "coefficient"),
+        ("friction", "coefficient"),
+        ("adhesion", "coefficient"),
+        ("road", "friction"),
+        ("tire", "road", "friction"),
+        ("tyre", "road", "friction"),
+        ("mu",),
+    ])
+
+
+def _split_real_sequence(frame: pd.DataFrame, source_id: str) -> pd.DataFrame:
+    """Assign leakage-aware contiguous train/cal/val/test blocks to one real run.
+
+    We never synthesize extra samples or labels.  If the source does not provide
+    an official split, each source file/run is split chronologically so sequence
+    windows cannot use future rows to train on past test targets.
+    """
+    z = frame.reset_index(drop=True).copy()
+    n = len(z)
+    if n < 40:
+        raise RuntimeError(f"Real run {source_id!r} has only {n} usable rows; at least 40 are required")
+    q = np.arange(n, dtype=float) / max(n, 1)
+    z["split"] = np.where(q < 0.60, "train", np.where(q < 0.72, "calibration", np.where(q < 0.84, "validation", "test")))
+    z["trip_id"] = str(source_id)
+    z["segment_id"] = str(source_id)
+    z["sample_uid"] = [f"{source_id}:{sp}:{i}" for i, sp in enumerate(z["split"].astype(str))]
+    return z
+
+
+def prepare_mssp2023_friction(raw: str | Path, out: str | Path, cfg: dict) -> Path:
+    """Prepare the real Guo et al. MSSP-2023 vehicle-dynamics friction data.
+
+    The public GitHub repository points to the authors' real data payload on
+    Baidu.  This adapter intentionally requires real tabular dynamics files and
+    refuses to fabricate missing friction or vehicle-dynamics channels.  Accepted
+    inputs are CSV/TXT/XLS/XLSX exports.
+    """
+    raw = Path(raw); out = Path(out); ensure_dir(out)
+    files = list(raw.rglob("*.csv")) + list(raw.rglob("*.txt")) + list(raw.rglob("*.xlsx")) + list(raw.rglob("*.xls"))
+    # Ignore repository metadata/instruction files that are not measurement tables.
+    files = [f for f in files if "manual_real_data_required" not in f.name.lower()]
+    if not files:
+        raise RuntimeError(
+            "No real MSSP-2023 dynamics tables were found. Download the authors' real dataset "
+            "using data/raw/mssp2023_friction/MANUAL_REAL_DATA_REQUIRED.txt, then place CSV/TXT/XLS/XLSX "
+            "measurement files under data/raw/mssp2023_friction. No simulated fallback is allowed."
+        )
+
+    rows = []
+    audit = []
+    for path in files:
+        try:
+            tables = []
+            if path.suffix.lower() in {".xlsx", ".xls"}:
+                for sheet, df in pd.read_excel(path, sheet_name=None).items():
+                    tables.append((f"{path.stem}:{sheet}", df))
+            else:
+                tables.append((path.stem, read_table(path)))
+        except Exception as exc:
+            audit.append({"source": str(path.relative_to(raw)), "status": "unreadable", "reason": str(exc)})
+            continue
+
+        for table_id, df in tables:
+            target = _real_friction_target_column(df)
+            veh = canonical_vehicle(df)
+            required = {"speed", "ax", "ay"}
+            missing = sorted(required - set(veh.columns))
+            if target is None or missing:
+                audit.append({
+                    "source": str(path.relative_to(raw)),
+                    "table": table_id,
+                    "status": "skipped",
+                    "reason": "missing real friction target" if target is None else f"missing dynamics columns: {missing}",
+                })
+                continue
+            z = veh.copy()
+            z["mu_ref"] = _to_numeric(df[target])
+            z = z.replace([np.inf, -np.inf], np.nan).dropna(subset=["mu_ref", "speed", "ax", "ay"]).copy()
+            z = z[(z["mu_ref"] >= 0.0) & (z["mu_ref"] <= float(cfg.get("mu_upper", 1.3)) * 1.5)]
+            if len(z) < 40:
+                audit.append({"source": str(path.relative_to(raw)), "table": table_id, "status": "skipped", "reason": f"only {len(z)} complete rows"})
+                continue
+            if "time" not in z or z["time"].notna().sum() < 3:
+                # Sample index is an ordering coordinate only; no sampling rate is invented.
+                z["time"] = np.arange(len(z), dtype=float)
+            v = cfg["vehicle"]
+            z["physics_lower_raw"] = np.clip(
+                vehicle_level_lower_bound(
+                    z["ax"], z["ay"], z["speed"],
+                    mass=float(v["mass_kg"]), g=float(v["gravity"]), crr=float(v["crr"]),
+                    rho_air=float(v["rho_air"]), cdA=float(v["cdA_m2"]),
+                    accel_error=float(v["accel_error_ms2"]),
+                    external_force_margin=float(v["external_force_margin_n"]),
+                    vertical_force_margin=float(v["vertical_force_margin_n"]),
+                ),
+                0.0, float(cfg.get("mu_upper", 1.3)),
+            )
+            source_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", table_id)[:120]
+            z = _split_real_sequence(z, source_id)
+            z["source_file"] = str(path.relative_to(raw))
+            rows.append(z)
+            audit.append({"source": str(path.relative_to(raw)), "table": table_id, "status": "accepted", "rows": int(len(z)), "target_column": str(target)})
+
+    pd.DataFrame(audit).to_csv(out / "mssp2023_schema_audit.csv", index=False)
+    if not rows:
+        raise RuntimeError(
+            "MSSP-2023 files were found, but no table exposed all required real channels: "
+            "friction/adhesion coefficient, speed, longitudinal acceleration, and lateral acceleration. "
+            "See mssp2023_schema_audit.csv. No values are synthesized."
+        )
+    result = pd.concat(rows, ignore_index=True, sort=False)
+    # Keep only rows with a valid split/target and stable source order.
+    result = result.dropna(subset=["mu_ref", "physics_lower_raw", "speed", "ax", "ay"]).reset_index(drop=True)
+    path = out / "mssp2023_friction_aligned.csv"
+    result.to_csv(path, index=False)
+    return path
+
+
 def prepare_dataset(name: str, raw: str|Path, out: str|Path, cfg: dict | None = None) -> Path:
     name=name.lower(); cfg=cfg or {}
     if name=="lira": return prepare_lira(raw,out,cfg)
@@ -1738,5 +1835,5 @@ def prepare_dataset(name: str, raw: str|Path, out: str|Path, cfg: dict | None = 
     if name=="extreme_road": return prepare_extreme_road(raw,out)
     if name=="bicycle_tire": return prepare_bicycle_tire(raw,out)
     if name=="mendeley_friction": return prepare_mendeley_friction(raw,out)
-    if name=="synthetic": return make_synthetic(out,seed=(cfg or {}).get("seed",20260905))
+    if name=="mssp2023_friction": return prepare_mssp2023_friction(raw,out,cfg)
     raise ValueError(name)

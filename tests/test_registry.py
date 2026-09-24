@@ -1,11 +1,16 @@
-from safegrip.datasets import DATASET_REGISTRY
+from safegrip.datasets import DATASET_REGISTRY, PRIMARY_FRICTION_DATASETS
 from safegrip.literature import PAPER_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
 
 
 def test_dataset_registry_has_multiple_real_sources():
-    expected={"lira","kuleuven","kit","deep_dynamics","comma2k19","extreme_road","bicycle_tire","mendeley_friction"}
+    expected={"lira","kuleuven","kit","deep_dynamics","comma2k19","extreme_road","bicycle_tire","mendeley_friction","mssp2023_friction"}
     assert expected.issubset(DATASET_REGISTRY)
 
+
+
+def test_primary_friction_benchmarks_are_real_only():
+    assert PRIMARY_FRICTION_DATASETS == ("lira", "mssp2023_friction")
+    assert all("synthetic" not in name and "simulat" not in name for name in PRIMARY_FRICTION_DATASETS)
 
 def test_only_requested_primary_paper_baselines_are_registered():
     expected=(

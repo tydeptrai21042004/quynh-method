@@ -1,124 +1,21 @@
 {
-  "release": "SafeGrip-Open v2.2 / SafeGrip-PFR",
-  "active_proposal": "SafeGrip-PFR: Physics-Feasible Residual Estimation",
+  "release": "SafeGrip-PFR-ECR real-data-only dataset revision",
+  "active_proposal": "SafeGrip-PFR-ECR",
   "release_validation": {
-    "pytest": "108 passed, 2 warnings",
-    "focused_pfr_physics_legacy_tests": "21 passed",
-    "python_compileall": true,
-    "synthetic_pfr_quick_benchmark": true,
-    "synthetic_theorem_audit": "PASS: 0 covered-point violations"
+    "pytest": "112 passed, 2 warnings",
+    "python_compile": true,
+    "primary_real_benchmark_choices": ["lira", "mssp2023_friction"],
+    "generated_benchmark_dataset_exposed": false
   },
   "verified_invariants": [
-    "one learned GRU in the active proposal",
-    "neural residual is fitted with training labels only",
-    "q_alpha uses calibration labels only",
-    "test labels are not used for fitting or calibration",
-    "direct and residual GRU controls reset to the same initialization seed",
-    "final inference is orthogonal projection onto [L_alpha,U]",
-    "covered-point squared-error theorem is unit-tested and exported per endpoint",
-    "FRC, PNTR, and CI remain legacy reproducibility paths"
+    "SafeGrip-PFR-ECR is the only active proposal exposed by the CLI",
+    "full friction benchmark accepts real measured datasets only",
+    "LiRA remains the automatically downloadable primary friction benchmark",
+    "MSSP-2023 preparation requires author-supplied real friction and dynamics channels",
+    "MSSP-2023 adapter refuses to fabricate missing friction, speed, ax or ay channels",
+    "KIT and KU Leuven remain real force/physics validation sources",
+    "Mendeley friction is handled as an external measured friction-reference validation rather than fake sensor sequences",
+    "paper-supported friction baselines remain Du2023, Todorovic2022, Lampe2023 GRU and Levenberg2023 STFT"
   ],
-  "files": [
-    {
-      "path": "README.md",
-      "bytes": 4943,
-      "sha256": "f7760e5d89186cd8ae5324b3ab590128256a3d7125ec6ea7752bd0446fc58058"
-    },
-    {
-      "path": "SAFEGRIP_PFR_METHOD.md",
-      "bytes": 6186,
-      "sha256": "7abe59df6dab6b0f569c60d841082daeda571039bfd5e0cd91712154aa96c005"
-    },
-    {
-      "path": "RESEARCH_PROTOCOL.md",
-      "bytes": 2605,
-      "sha256": "ce8237c81c3a6107f2cb8f824414d53a571c318109fe7b3def6a11599ef0366e"
-    },
-    {
-      "path": "FINAL_RESEARCH_RELEASE.md",
-      "bytes": 963,
-      "sha256": "44fd3547c2ad771315d345e27f2d1d3a23010a1ff30941e6a92f968cfdb77f2e"
-    },
-    {
-      "path": "src/safegrip/pfr.py",
-      "bytes": 6674,
-      "sha256": "b6d0969d4109406614ed8aa595fbccb7190cfcf446a367612d117a9337baa594"
-    },
-    {
-      "path": "src/safegrip/pfr_benchmark.py",
-      "bytes": 22921,
-      "sha256": "a96542ecd80440765842be15a9d97be62bf93de4320ab140cc65e184b451f4f2"
-    },
-    {
-      "path": "src/safegrip/pntr.py",
-      "bytes": 7478,
-      "sha256": "828d8cfb13249ed3dc20e576a6d92a71f6affed849da1df79301173514142817"
-    },
-    {
-      "path": "src/safegrip/cli.py",
-      "bytes": 11641,
-      "sha256": "d6e354df5100db0a5ee73587884d0539291379f3053512355c87dc89b3c4f2cd"
-    },
-    {
-      "path": "src/safegrip/tuning.py",
-      "bytes": 35230,
-      "sha256": "50c408e60188f871f74c5434bac35953caa06b1d25aa55da0b039672615d561e"
-    },
-    {
-      "path": "tests/test_pfr.py",
-      "bytes": 2795,
-      "sha256": "f5827acb3794608aaea045f1f349418921e05109cee3fd69d264a3ceb32e8fcd"
-    },
-    {
-      "path": "configs/default.yaml",
-      "bytes": 9461,
-      "sha256": "1da325a2dc0e72e8ca49716ac490aed0bc9edd66bf35d87c1030132a8037c2af"
-    },
-    {
-      "path": "configs/kaggle_small.yaml",
-      "bytes": 8146,
-      "sha256": "36e40b1ec44b92a65663b513322c3c39e56d33aa8fef1f9b77dcd66c2113f461"
-    },
-    {
-      "path": "configs/kaggle_trust.yaml",
-      "bytes": 7776,
-      "sha256": "5bb1781984b41569ab687385092a80f45107b4b43500fcf8b81a98f10bbab3b2"
-    },
-    {
-      "path": "scripts/run_paper.sh",
-      "bytes": 1923,
-      "sha256": "774d73cacb4e95bbd2b81d385c4ea95aa57552f0e999ce1e0eff078175f380fe"
-    },
-    {
-      "path": "scripts/run_kaggle_small.sh",
-      "bytes": 991,
-      "sha256": "189fe10e9ff445341f6ebfcea39dbb1f9f98668f8f524fd74294c1d60ea39754"
-    },
-    {
-      "path": "scripts/check_paper_readiness.py",
-      "bytes": 4366,
-      "sha256": "e6b9aefac1ca8688ceb7e8ae5013394a73acfa9eeb67add4864619defb06abfa"
-    },
-    {
-      "path": "scripts/package_paper_results.py",
-      "bytes": 1332,
-      "sha256": "cc7129cbffdf61642a3bb904674eedd2334245c4865b442d068b04af4e244702"
-    },
-    {
-      "path": "KAGGLE_PFR_SINGLE_CELL.py",
-      "bytes": 2555,
-      "sha256": "6211942a2dfe418fb4431d9b17a7ecb982d390623c1b1c9a9585aebe776eb328"
-    },
-    {
-      "path": "validation_artifacts/pytest_summary.txt",
-      "bytes": 382,
-      "sha256": "8f153e64688e7beb714193f27aa0f52829dae0f99763bc5c0bc785224d44836e"
-    },
-    {
-      "path": "validation_artifacts/pfr_synthetic_quick_metrics.csv",
-      "bytes": 2312,
-      "sha256": "0c7c9734fab671bb1d5b3fcd0b34034b41e6cc5026f838931f569e6914b985d1"
-    }
-  ],
-  "note": "Validation establishes implementation consistency only; real-LiRA multi-seed results are still required for empirical claims."
+  "note": "Empirical paper claims must be based on real measured datasets. The second primary MSSP-2023 benchmark requires the authors' external data payload before it can be run."
 }

@@ -1,9 +1,4 @@
-SafeGrip-PFR v2.2 validation
-============================
-Command: PYTHONPATH=src pytest -q
-Result: 108 passed, 2 warnings
-Warnings: existing pandas datetime inference warning; existing PyTorch padding='same' warning.
-
-Focused theorem/physics/legacy compatibility tests:
-Command: PYTHONPATH=src pytest -q tests/test_pfr.py tests/test_physics.py tests/test_pntr.py
-Result: 21 passed
+SafeGrip-PFR-ECR real-data-only revision
+pytest -q: 112 passed, 2 warnings
+Primary friction benchmark choices: lira, mssp2023_friction
+No generated benchmark dataset is exposed by the CLI.
