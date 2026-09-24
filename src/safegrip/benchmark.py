@@ -503,20 +503,25 @@ def _deep_loader(X,y,lo,batch):
     return DataLoader(TensorDataset(torch.from_numpy(X),torch.from_numpy(y),torch.from_numpy(lo)),batch_size=batch,shuffle=True)
 
 
-def _optimizer(name, params, lr, weight_decay):
+def _optimizer(name, params, lr, weight_decay, momentum=0.0):
     if str(name).lower()=="adam":
         return torch.optim.Adam(params,lr=lr,weight_decay=weight_decay)
     if str(name).lower()=="adamw":
         return torch.optim.AdamW(params,lr=lr,weight_decay=weight_decay)
+    if str(name).lower()=="sgd":
+        return torch.optim.SGD(params,lr=lr,weight_decay=weight_decay,momentum=float(momentum))
     raise ValueError(f"Unsupported optimizer: {name}")
 
 
 def _fit_deterministic(model,Xtr,ytr,Xv,yv,hp,epochs):
     dev=device(); model=model.to(dev)
-    opt=_optimizer(hp.get("optimizer","adamw"),model.parameters(),float(hp["lr"]),float(hp["weight_decay"]))
+    opt=_optimizer(hp.get("optimizer","adamw"),model.parameters(),float(hp["lr"]),float(hp["weight_decay"]),float(hp.get("momentum",0.0)))
     dl=DataLoader(TensorDataset(torch.from_numpy(Xtr),torch.from_numpy(ytr)),batch_size=int(hp["batch_size"]),shuffle=True)
     xv=torch.from_numpy(Xv).to(dev); yv_t=torch.from_numpy(yv).to(dev)
     best=None; bestloss=float("inf"); bad=0; patience=int(hp.get("patience",10))
+    scheduler=None
+    if int(hp.get("lr_reduce_patience",0))>0:
+        scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau(opt,mode="min",factor=float(hp.get("lr_reduce_factor",0.5)),patience=int(hp["lr_reduce_patience"]),min_lr=float(hp.get("min_lr",1e-4)))
     for _ in range(int(epochs)):
         model.train()
         for xb,yb in dl:
@@ -524,6 +529,7 @@ def _fit_deterministic(model,Xtr,ytr,Xv,yv,hp,epochs):
             loss=nn.functional.mse_loss(pred,yb); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(),5.0); opt.step()
         model.eval()
         with torch.no_grad(): vl=nn.functional.mse_loss(model(xv),yv_t).item()
+        if scheduler is not None: scheduler.step(vl)
         if vl<bestloss-1e-7:
             bestloss=vl; best={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}; bad=0
         else: bad+=1
@@ -541,18 +547,16 @@ def literature_hparams(name,cfg,overrides=None,preset="paper"):
         "patience":int(tr.get("patience",10)),
         "epochs":int(tr["epochs_quick" if preset=="quick" else "epochs_paper"]),
     }
-    if preset in ("trust", "paper"):
-        # Trust/paper modes use the literature-specific preprocessing/context and
-        # full architecture.  Trust mode caps only the training duration so a
-        # Kaggle validation run remains practical.
-        base.update(cfg.get("baseline",{}).get(name,{}))
-        if preset == "trust":
-            base["epochs"] = int(cfg["training"].get("epochs_trust", 30))
-            base["patience"] = int(cfg["training"].get("patience_trust", min(int(base.get("patience",10)), 10)))
-    elif name=="todorovic2022_cnn":
-        # Quick mode stays lightweight while preserving the layer pattern only;
-        # it is a software smoke test, not a scientific comparison.
-        base["sequence_length"]=max(16,min(100,int(cfg.get("sequence_length",64))))
+    # Keep each paper comparator's preprocessing/optimizer settings in every
+    # preset. Quick mode only shrinks neural capacity and training duration; it
+    # is never used for scientific claims.
+    base.update(cfg.get("baseline",{}).get(name,{}))
+    if preset == "quick":
+        base["epochs"] = int(tr.get("epochs_quick",3))
+        base["patience"] = max(1,min(int(base.get("patience",3)),3))
+    elif preset == "trust":
+        base["epochs"] = int(tr.get("epochs_trust",30))
+        base["patience"] = int(tr.get("patience_trust",min(int(base.get("patience",10)),10)))
     if overrides: base.update(overrides)
     return base
 
@@ -560,12 +564,9 @@ def literature_hparams(name,cfg,overrides=None,preset="paper"):
 def fit_literature(name,b:Bundle,cfg,epochs=None,preset="paper",hp_overrides=None):
     hp=literature_hparams(name,cfg,hp_overrides,preset)
     epochs=int(epochs or hp["epochs"])
-    if name=="chen2025_svdkl":
-        from .svdkl import fit_svdkl
-        return fit_svdkl(b.Xtr,b.ytr,b.Xv,b.yv,hidden=int(hp.get("hidden",64)),feature_dim=int(hp.get("feature_dim",16)),
-                         inducing=int(hp.get("inducing",128)),dropout=float(hp["dropout"]),lr=float(hp["lr"]),
-                         weight_decay=float(hp["weight_decay"]),batch_size=int(hp["batch_size"]),epochs=epochs,
-                         patience=int(hp["patience"]),device=device(),optimizer=hp.get("optimizer","adamw"))
+    if name=="levenberg2023_stft":
+        from .levenberg import fit_levenberg2023_stft
+        return fit_levenberg2023_stft(b,cfg)
     model=make_literature_baseline(name,len(b.features),sequence_length=b.sequence_length,
                                    debug_scale=(preset=="quick"),dropout=float(hp["dropout"]),
                                    hidden=hp.get("hidden"),layers=int(hp.get("layers",2)),heads=int(hp.get("heads",4)),
@@ -574,6 +575,8 @@ def fit_literature(name,b:Bundle,cfg,epochs=None,preset="paper",hp_overrides=Non
 
 
 def predict_literature(model,name,X,batch=1024):
+    if name=="levenberg2023_stft":
+        return model.predict(X), None
     if name=="chen2025_svdkl":
         from .svdkl import predict_svdkl
         return predict_svdkl(model,X,batch_size=batch,device=device())

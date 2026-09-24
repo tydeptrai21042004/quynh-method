@@ -47,6 +47,7 @@ run(
     sys.executable, "-m", "safegrip.cli", "benchmark",
     "--dataset", "lira", "--preset", MODE,
     "--proposal", "pfr", "--protocol", "controlled",
+    "--models", "du2023_inceptiontime,todorovic2022_cnn,lampe2023_gru,levenberg2023_stft",
     *proposal_args, *baseline_args,
 )
 
@@ -63,6 +64,7 @@ shutil.make_archive(str(archive_base), "zip", root_dir=result_dir)
 
 print("\nSafeGrip-PFR-ECR run complete")
 print("Metrics:", result_dir / "metrics.csv")
+print("Paper baseline provenance:", result_dir / "paper_baseline_provenance.csv")
 print("Ablation:", result_dir / "pfr_component_ablation.csv")
 print("Safety metrics:", result_dir / "pfr_safety_metrics.csv")
 print("Risk-split sensitivity:", result_dir / "pfr_risk_split_sensitivity.csv")

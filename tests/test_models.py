@@ -4,33 +4,52 @@ from safegrip.literature import LITERATURE_BASELINES, PAPER_BASELINES, validate_
 from safegrip.benchmark import literature_hparams
 
 
-def test_literature_model_shapes():
+def test_primary_neural_paper_baseline_shapes():
     x=torch.randn(2,100,8)
-    for name in ("todorovic2022_cnn","lampe2023_lstm","lampe2023_gru"):
+    for name in ("du2023_inceptiontime","todorovic2022_cnn","lampe2023_gru"):
         model=make_literature_baseline(name,8,sequence_length=100,debug_scale=True)
         y=model(x)
         assert y.shape==(2,)
 
 
-def test_transformer_shape():
-    x=torch.randn(2,16,8)
-    model=make_literature_baseline("schaefke2023_transformer",8,sequence_length=16,debug_scale=True,hidden=32,heads=4)
-    assert model(x).shape==(2,)
-
-
-def test_lampe_paper_hparams_preserve_source_preprocessing():
+def test_paper_hparams_preserve_du_and_lampe_source_settings():
     cfg={
         "sequence_length":64,
         "training":{"lr":1e-3,"weight_decay":1e-4,"batch_size":256,"dropout":.1,"patience":10,
                     "epochs_quick":3,"epochs_paper":60},
         "baseline":{
-            "lampe2023_lstm":{"sequence_length":100,"scaler":"minmax","optimizer":"adam","lr":1e-3,
+            "du2023_inceptiontime":{"sequence_length":100,"scaler":"standard","optimizer":"sgd","lr":1e-3,
+                                      "momentum":0.98,"weight_decay":0.0,"batch_size":128,"dropout":0.0,"patience":20,"epochs":200},
+            "lampe2023_gru":{"sequence_length":100,"scaler":"minmax","optimizer":"adam","lr":1e-3,
                               "weight_decay":1e-4,"batch_size":64,"dropout":0.0,"patience":500,"epochs":500}
         },
     }
-    hp=literature_hparams("lampe2023_lstm",cfg,preset="paper")
-    assert hp["scaler"]=="minmax" and hp["optimizer"]=="adam"
-    assert hp["batch_size"]==64 and hp["epochs"]==500 and hp["dropout"]==0.0
+    du=literature_hparams("du2023_inceptiontime",cfg,preset="paper")
+    gru=literature_hparams("lampe2023_gru",cfg,preset="paper")
+    assert du["optimizer"]=="sgd" and du["momentum"]==0.98
+    assert gru["scaler"]=="minmax" and gru["optimizer"]=="adam"
+    assert gru["batch_size"]==64 and gru["epochs"]==500 and gru["dropout"]==0.0
+
+
+def test_levenberg_low_rate_stft_adaptation_is_finite_and_positive_slope():
+    import numpy as np
+    from types import SimpleNamespace
+    from sklearn.preprocessing import StandardScaler
+    from safegrip.levenberg import fit_levenberg2023_stft
+
+    rng=np.random.default_rng(4); n=40; t=20
+    raw=rng.normal(size=(n,t,3)).astype(np.float32)
+    amp=np.linspace(0.5,2.0,n).astype(np.float32)
+    phase=np.linspace(0,2*np.pi,t,endpoint=False)
+    raw[:,:,1]+=amp[:,None]*np.sin(2*phase)[None,:]
+    scaler=StandardScaler().fit(raw.reshape(-1,3))
+    X=scaler.transform(raw.reshape(-1,3)).reshape(n,t,3).astype(np.float32)
+    y=(0.6+0.04*np.log(np.maximum(amp,1e-6))).astype(np.float32)
+    b=SimpleNamespace(features=["ax","ay","yaw_rate"],scaler=scaler,Xtr=X,ytr=y)
+    model=fit_levenberg2023_stft(b,{"lira":{"resample_hz":20.0}})
+    pred=model.predict(X)
+    assert pred.shape==(n,) and np.isfinite(pred).all()
+    assert model.slope>=0.0 and 0.0<model.frequency_hz<=10.0
 
 
 def test_safegrip_v2_is_bound_parameterized():

@@ -260,8 +260,13 @@ def _baseline_space(cfg,name):
 
 
 def suggest_literature(trial,cfg,name):
-    """Dataset-adaptation search while preserving recoverable core architectures."""
+    """Validation-only adaptation search for the four primary paper baselines."""
     common,space=_baseline_space(cfg,name)
+    if name=="levenberg2023_stft":
+        # Preserve the source method's ~1 s analysis duration.  At the common
+        # 20-Hz benchmark rate this is 20 samples; its usable frequency bin and
+        # positive linear map are learned from training data inside the fitter.
+        return {"sequence_length":20}
     seq_default=common.get("sequence_length",[16,32,64,100,128])
     hp={
         "sequence_length":trial.suggest_categorical("sequence_length",space.get("sequence_length",seq_default)),
@@ -269,29 +274,12 @@ def suggest_literature(trial,cfg,name):
         "weight_decay":trial.suggest_float("weight_decay",*space.get("weight_decay",common.get("weight_decay",[1e-6,1e-3])),log=True),
         "batch_size":trial.suggest_categorical("batch_size",space.get("batch_size",common.get("batch_size",[64,128,256]))),
     }
-    # Architecture unknown publicly: tune only the adapted implementation rather
-    # than presenting arbitrary fixed values as if they were source parameters.
-    if name=="schaefke2023_transformer":
-        hp.update({
-            "hidden":trial.suggest_categorical("hidden",space.get("hidden",[64,128])),
-            "layers":trial.suggest_int("layers",*space.get("layers",[1,3])),
-            "heads":trial.suggest_categorical("heads",space.get("heads",[2,4,8])),
-            "ff_mult":trial.suggest_categorical("ff_mult",space.get("ff_mult",[2,4])),
-            "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
-        })
-    elif name=="chen2025_svdkl":
-        hp.update({
-            "hidden":trial.suggest_categorical("hidden",space.get("hidden",[32,64,128])),
-            "feature_dim":trial.suggest_categorical("feature_dim",space.get("feature_dim",[8,16,32])),
-            "inducing":trial.suggest_categorical("inducing",space.get("inducing",[64,128,256])),
-            "dropout":trial.suggest_float("dropout",*space.get("dropout",[0.0,0.3])),
-        })
+    if name=="du2023_inceptiontime":
+        hp["dropout"]=0.0
     elif name=="todorovic2022_cnn":
-        # Keep the published 100-sample context and architecture fixed.
         hp["sequence_length"]=100
         hp["dropout"]=trial.suggest_float("dropout",*space.get("dropout",[0.0,0.2]))
-    elif name in ("lampe2023_lstm","lampe2023_gru"):
-        # Architecture, MinMax scaling and source initialization remain fixed.
+    elif name=="lampe2023_gru":
         hp["dropout"]=0.0
     return hp
 
@@ -348,8 +336,9 @@ def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs
         remaining=max(0,trials-len(study.trials))
         if remaining: study.optimize(objective,n_trials=remaining)
         best={**study.best_trial.params}
+        if name=="levenberg2023_stft": best["sequence_length"]=20
         if name=="todorovic2022_cnn": best["sequence_length"]=100
-        if name in ("lampe2023_lstm","lampe2023_gru"): best["dropout"]=0.0
+        if name in ("du2023_inceptiontime","lampe2023_gru"): best["dropout"]=0.0
         all_best[name]=best
         (model_out/"best_hparams.yaml").write_text(yaml.safe_dump(best,sort_keys=False),encoding="utf-8")
         pd.DataFrame(study.trials_dataframe()).to_csv(model_out/"trials.csv",index=False)

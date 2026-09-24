@@ -28,10 +28,14 @@ def test_proposal_hyperparameter_space_is_explicit():
 def test_baseline_search_keeps_source_constraints():
     from safegrip.tuning import suggest_literature
     cfg={"baseline_tuning":{"sequence_length":[16,32,64,100,128],"space":{}}}
+    du=suggest_literature(DummyTrial(),cfg,"du2023_inceptiontime")
     tod=suggest_literature(DummyTrial(),cfg,"todorovic2022_cnn")
-    lstm=suggest_literature(DummyTrial(),cfg,"lampe2023_lstm")
+    gru=suggest_literature(DummyTrial(),cfg,"lampe2023_gru")
+    lev=suggest_literature(DummyTrial(),cfg,"levenberg2023_stft")
+    assert du["dropout"]==0.0
     assert tod["sequence_length"]==100
-    assert lstm["dropout"]==0.0
+    assert gru["dropout"]==0.0
+    assert lev=={"sequence_length":20}
 
 
 def test_global_tuning_eval_start_includes_all_search_spaces():

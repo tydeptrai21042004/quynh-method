@@ -251,3 +251,10 @@ The benchmark also writes a deterministic fusion audit.  A `PASS` there checks
 the algebraic implication "both component lower estimates covered => fused
 lower estimate covered".  It is not presented as an empirical proof of the
 exchangeability assumption or of population coverage.
+
+## Primary paper-supported comparison
+
+SafeGrip-PFR-ECR is the only active proposal. The primary accuracy table contains exactly four paper-supported road-friction/grip comparators: `du2023_inceptiontime`, `todorovic2022_cnn`, `lampe2023_gru`, and `levenberg2023_stft`. Internal controls such as `direct_gru_control` remain only in the component-ablation output and are not presented as literature baselines.
+
+The comparison uses common locked endpoints and a common continuous target. Du2023 is restricted to the dynamics-only InceptionTime branch so it receives no vision advantage. Levenberg2023 is explicitly a low-rate STFT method-structure adaptation because the repository's 20-Hz common LiRA stream cannot reproduce the paper's high-frequency vibration band. Full provenance is exported to `paper_baseline_provenance.csv`; see `LITERATURE_BASELINES.md`.
+

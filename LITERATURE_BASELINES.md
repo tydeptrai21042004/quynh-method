@@ -1,25 +1,29 @@
-# Literature comparator policy
+# Primary paper-supported baselines for SafeGrip-PFR-ECR
 
-The repository keeps five tire/road-friction literature comparators. Every direct numerical score in this repository is produced on the common prepared benchmark; source-paper scores from different datasets are not mixed into the table.
+SafeGrip-PFR-ECR is the **only active proposal** in this repository. Its main prediction table compares `safegrip_pfr` only with the four friction-estimation methods below. `direct_gru_control` is retained strictly as an internal ablation/control and is written only to `pfr_component_ablation*.csv`.
 
-| ID | Role | Fidelity wording |
-|---|---|---|
-| `todorovic2022_cnn` | temporal CNN comparator | architecture-faithful adaptation; common LiRA inputs and scalar target |
-| `lampe2023_lstm` | recurrent comparator | architecture- and reported-training-setting adaptation; LiRA sensor subset/protocol differ |
-| `lampe2023_gru` | recurrent comparator | architecture- and reported-training-setting adaptation; LiRA sensor subset/protocol differ |
-| `schaefke2023_transformer` | Transformer comparator | methodology-level adaptation; exact source architecture not claimed |
-| `chen2025_svdkl` | uncertainty/deep-kernel comparator | methodology-level adaptation; source category-selection stage not reproduced |
+| Benchmark key | Paper-supported method | Why it is comparable | Implementation status |
+|---|---|---|---|
+| `du2023_inceptiontime` | **Du2023 Dynamics-InceptionTime** | Maximum tire-road/pavement friction estimation from vehicle dynamics; LiRA/DTU research lineage | Dynamics-only InceptionTime branch: six Inception modules, residual blocks and global-average pooling. Vision is excluded for common-input fairness. |
+| `todorovic2022_cnn` | **Todorovic2022 CNN** | Friction-potential estimation under longitudinal/lateral vehicle excitation | Architecture-faithful common-target adaptation: 100 samples, Conv1D 128/128/256 + pooling, Dense 400, scalar common target. |
+| `lampe2023_gru` | **Lampe2023 GRU** | Maximum tire-road friction coefficient from serial onboard vehicle sensors | Two GRU layers with 256 units and reported optimizer/preprocessing settings where recoverable. |
+| `levenberg2023_stft` | **Levenberg2023 vibration/STFT** | Tire-pavement grip estimation from vehicle vibration spectra; LiRA/DTU research environment | Method-structure adaptation: transverse acceleration -> STFT amplitude -> relative dB -> positive linear mapping. |
 
-## Two benchmark protocols
+## Fair-comparison rules
 
-### Controlled
+All primary rows use the same continuous benchmark target, locked validation/test endpoint IDs, train-only preprocessing, and the same available vehicle-signal input policy. SafeGrip `mu_point` is used in the accuracy table; `mu_safe` is evaluated separately in the safety table.
 
-Used for the primary method comparison. Trial counts, tuning seeds, and training budget are controlled. Model architecture/preprocessing families remain intact.
+Du et al.'s vision branch is intentionally not used because SafeGrip-PFR-ECR is sensor-only. The Todorovic source output is adapted to the common scalar friction target. Lampe is retrained on the common LiRA split rather than mixing the paper's original reported metrics with this benchmark.
 
-### Source-faithful
+### Levenberg sampling limitation
 
-Uses the repository's recoverable source-setting training defaults (for example the longer Lampe schedule). This table answers a different question and is never described as compute-matched.
+The original Levenberg vibration method uses substantially higher-rate transverse acceleration (about 250 Hz or higher) and analyzes high-frequency vibration content, including a reported 70--125 Hz range in one experiment. The common benchmark in this repository is resampled to 20 Hz, whose Nyquist frequency is 10 Hz. Therefore `levenberg2023_stft` is **not** described as a source-faithful frequency reproduction. It preserves the paper's signal-processing structure, selects a usable non-DC frequency using **training data only**, normalizes spectral amplitude in dB, and learns a non-negative linear mapping. Route-level smoothing is omitted to avoid leakage across locked benchmark endpoints.
 
-## Direct control
+The benchmark writes `paper_baseline_provenance.csv` with DOI, source task, fidelity level, source constraints, and common-protocol differences for every primary comparator.
 
-`direct_gru_control` is not a literature baseline. It is an internal scientific control with the same GRU encoder width/depth as SafeGrip-FRC and a closely matched regression head. Its purpose is to isolate the value of response inversion/certification from recurrent capacity.
+## Primary citations
+
+- Du et al. (2023), *Pavement Friction Evaluation Based on Vehicle Dynamics and Vision Data Using a Multi-Feature Fusion Network*, DOI `10.1177/03611981231165029`.
+- Todorovic et al. (2022), *Neural Network Based Model for Friction Potential Estimation under Longitudinal and Lateral Excitations*, DOI `10.1088/1742-6596/2234/1/012005`.
+- Lampe, Kortmann, and Westerkamp (2023), *Neural Network based Tire-Road Friction Estimation Using Experimental Data*, DOI `10.1016/j.ifacol.2023.12.056`.
+- Levenberg et al. (2023), *Estimating the Tire-Pavement Grip Potential From Vehicle Vibrations*, DOI `10.1177/03611981231152249`.

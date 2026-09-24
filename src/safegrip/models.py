@@ -4,6 +4,72 @@ import torch
 from torch import nn
 
 
+
+
+class _DuInceptionModule(nn.Module):
+    """Multi-scale temporal module used by the Du et al. dynamics branch."""
+    def __init__(self, in_ch: int, filters: int = 32, bottleneck: int = 32):
+        super().__init__()
+        self.bottleneck = nn.Conv1d(in_ch, bottleneck, 1, bias=False) if in_ch > 1 else nn.Identity()
+        conv_in = bottleneck if in_ch > 1 else in_ch
+        self.convs = nn.ModuleList([
+            nn.Conv1d(conv_in, filters, k, padding="same", bias=False) for k in (40, 20, 10)
+        ])
+        self.pool_branch = nn.Sequential(
+            nn.MaxPool1d(3, stride=1, padding=1),
+            nn.Conv1d(in_ch, filters, 1, bias=False),
+        )
+        self.bn = nn.BatchNorm1d(filters * 4)
+
+    def forward(self, x):
+        z = self.bottleneck(x)
+        parts = [conv(z) for conv in self.convs]
+        parts.append(self.pool_branch(x))
+        return torch.relu(self.bn(torch.cat(parts, dim=1)))
+
+
+class Du2023InceptionTime(nn.Module):
+    """Dynamics-only InceptionTime adaptation of Du et al. (2023).
+
+    The full source paper fuses vision and dynamics.  The primary fair benchmark
+    intentionally uses only its vehicle-dynamics InceptionTime branch so it has
+    no information advantage over SafeGrip-PFR-ECR.
+    """
+    def __init__(self, d: int, debug_scale: bool = False):
+        super().__init__()
+        filters = 8 if debug_scale else 32
+        modules = 3 if debug_scale else 6
+        out_ch = filters * 4
+        blocks=[]
+        in_ch=d
+        for _ in range(modules):
+            blocks.append(_DuInceptionModule(in_ch, filters=filters, bottleneck=filters))
+            in_ch=out_ch
+        self.blocks=nn.ModuleList(blocks)
+        self.residual_every=3
+        n_groups=(modules + self.residual_every - 1)//self.residual_every
+        projections=[]
+        group_in=d
+        for _ in range(n_groups):
+            projections.append(nn.Sequential(nn.Conv1d(group_in,out_ch,1,bias=False),nn.BatchNorm1d(out_ch)))
+            group_in=out_ch
+        self.projections=nn.ModuleList(projections)
+        self.pool=nn.AdaptiveAvgPool1d(1)
+        self.head=nn.Linear(out_ch,1)
+
+    def forward(self,x):
+        z=x.transpose(1,2)
+        residual=z
+        group=0
+        for i,block in enumerate(self.blocks):
+            z=block(z)
+            if (i+1)%self.residual_every==0 or i==len(self.blocks)-1:
+                z=torch.relu(z+self.projections[group](residual))
+                residual=z
+                group+=1
+        return self.head(self.pool(z).squeeze(-1)).squeeze(-1)
+
+
 class Todorovic2022CNN(nn.Module):
     """Architecture-faithful adaptation of Todorovic et al. (2022).
 
@@ -137,18 +203,14 @@ def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
                              debug_scale: bool = False, dropout: float = .1,
                              hidden: int | None = None, layers: int = 2,
                              heads: int = 4, ff_mult: int = 2):
-    """Build a literature comparator; paper mode never uses debug_scale."""
+    """Build one of the primary paper-supported neural comparators."""
+    if name == "du2023_inceptiontime":
+        return Du2023InceptionTime(d, debug_scale=debug_scale)
     if name == "todorovic2022_cnn":
         return Todorovic2022CNN(d, sequence_length=sequence_length, dropout=dropout, debug_scale=debug_scale)
-    if name == "lampe2023_lstm":
-        return Lampe2023RNN(d, "lstm", hidden=32 if debug_scale else 256, dropout=dropout)
     if name == "lampe2023_gru":
         return Lampe2023RNN(d, "gru", hidden=32 if debug_scale else 256, dropout=dropout)
-    if name == "schaefke2023_transformer":
-        h = 32 if debug_scale else int(hidden or 64)
-        return Schaefke2023Transformer(d, hidden=h, dropout=dropout,
-                                       layers=1 if debug_scale else int(layers), heads=int(heads), ff_mult=int(ff_mult))
-    raise ValueError(name)
+    raise ValueError(f"No neural paper-baseline implementation for {name}")
 
 
 class SafeGripCINet(nn.Module):

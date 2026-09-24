@@ -1,4 +1,8 @@
-# SafeGrip-Open v2.3 — SafeGrip-PFR-ECR
+# SafeGrip-PFR-ECR
+
+**SafeGrip-PFR-ECR is the only active proposal in this repository.** The primary benchmark compares its point estimator with four paper-supported road-friction/grip baselines: Du2023 Dynamics-InceptionTime, Todorovic2022 CNN, Lampe2023 GRU, and Levenberg2023 vibration/STFT. Older proposal families are not exposed by the CLI.
+
+The main prediction table contains only the proposal plus those paper baselines. `direct_gru_control` and other component variants are internal ablations. See `SAFEGRIP_PFR_METHOD.md` and `LITERATURE_BASELINES.md`.
 
 The active proposal is **SafeGrip-PFR-ECR: Excitation-Aware Conformal
 Risk-Controlled Residual Estimation**.  Earlier FRC, PNTR, and CI methods remain

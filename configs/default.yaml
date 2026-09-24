@@ -31,8 +31,10 @@ evaluation:
   projection_parity_controls: true
   feature_parity_controls: true
   feature_parity_models:
+  - du2023_inceptiontime
+  - todorovic2022_cnn
   - lampe2023_gru
-  - schaefke2023_transformer
+  - levenberg2023_stft
   label_budget_parity_controls: true
   common_conformal_controls: true
 vehicle:
@@ -112,6 +114,20 @@ proposal:
   contrastive_negatives: 6
   freeze_dynamics_after_pretrain: true
 baseline:
+  du2023_inceptiontime:
+    sequence_length: 100
+    scaler: standard
+    optimizer: sgd
+    lr: 0.001
+    momentum: 0.98
+    weight_decay: 0.0
+    batch_size: 128
+    dropout: 0.0
+    patience: 20
+    epochs: 200
+    lr_reduce_patience: 10
+    lr_reduce_factor: 0.5
+    min_lr: 0.0001
   todorovic2022_cnn:
     sequence_length: 100
     scaler: standard
@@ -122,16 +138,6 @@ baseline:
     dropout: 0.0
     patience: 20
     epochs: 60
-  lampe2023_lstm:
-    sequence_length: 100
-    scaler: minmax
-    optimizer: adam
-    lr: 0.001
-    weight_decay: 0.0001
-    batch_size: 64
-    dropout: 0.0
-    patience: 500
-    epochs: 500
   lampe2023_gru:
     sequence_length: 100
     scaler: minmax
@@ -142,34 +148,61 @@ baseline:
     dropout: 0.0
     patience: 500
     epochs: 500
-  schaefke2023_transformer:
-    sequence_length: 64
+  levenberg2023_stft:
+    # Source Levenberg analysis is ~1 s but >=250 Hz.  The common benchmark
+    # is 20 Hz, so this is explicitly a low-rate common-input adaptation.
+    sequence_length: 20
     scaler: standard
-    optimizer: adamw
-    lr: 0.001
-    weight_decay: 0.0001
+    optimizer: none
+    lr: 0.0
+    weight_decay: 0.0
     batch_size: 256
-    dropout: 0.1
-    patience: 10
-    epochs: 60
-    hidden: 64
-    layers: 2
-    heads: 4
-    ff_mult: 2
-  chen2025_svdkl:
-    sequence_length: 64
-    scaler: standard
-    optimizer: adamw
-    lr: 0.001
-    weight_decay: 0.0001
-    batch_size: 256
-    dropout: 0.1
-    patience: 10
-    epochs: 60
-    hidden: 64
-    feature_dim: 16
-    inducing: 128
+    dropout: 0.0
+    patience: 1
+    epochs: 1
 baseline_tuning:
+  trials: 30
+  sequence_length:
+  - 20
+  - 64
+  - 100
+  - 128
+  lr:
+  - 0.0001
+  - 0.003
+  weight_decay:
+  - 1.0e-06
+  - 0.001
+  batch_size:
+  - 64
+  - 128
+  - 256
+  space:
+    du2023_inceptiontime:
+      sequence_length:
+      - 64
+      - 100
+      - 128
+    todorovic2022_cnn:
+      sequence_length:
+      - 100
+      dropout:
+      - 0.0
+      - 0.2
+    lampe2023_gru:
+      sequence_length:
+      - 16
+      - 32
+      - 64
+      - 100
+      - 128
+      batch_size:
+      - 64
+      - 128
+    levenberg2023_stft:
+      sequence_length:
+      - 20
+tuning:
   trials: 30
   sequence_length:
   - 16
@@ -532,7 +565,6 @@ comparison:
   source_faithful:
     enabled: true
 active_proposal: safegrip_pfr
-legacy_proposal: safegrip_ci_v1.4
 # SafeGrip-PFR-ECR primary proposal: one excitation-aware GRU with separate
 # point and controller-facing conformal safety outputs.
 pfr:

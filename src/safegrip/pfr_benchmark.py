@@ -38,7 +38,6 @@ from .benchmark import (
     regression_metrics,
     _aggregate_seed_metrics,
 )
-from .frc_benchmark import _controlled_baseline_hparams, _source_baseline_hparams
 from .literature import QUICK_BASELINES, PAPER_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
 from .models import DirectGRUControl, PFRExcitationGRU
 from .pfr import (
@@ -105,6 +104,26 @@ def _pfr_bundle_cfg(cfg: dict, hp: dict) -> dict:
     out = copy.deepcopy(cfg)
     out.setdefault("physics", {})["window_samples"] = int(hp["physics_window_samples"])
     return out
+
+
+def _controlled_baseline_hparams(name: str, cfg: dict, selected: dict | None = None) -> dict:
+    hp = literature_hparams(name, cfg, (selected or {}).get(name), "paper")
+    cc = cfg.get("comparison", {}).get("controlled", {})
+    hp.update({
+        "epochs": int(cc.get("epochs", cfg["training"]["epochs_paper"])),
+        "patience": int(cc.get("patience", cfg["training"].get("patience", 10))),
+        "batch_size": int(cc.get("batch_size", hp.get("batch_size", 128))),
+    })
+    if bool(cc.get("common_optimizer_hparams", True)) and name != "levenberg2023_stft":
+        hp["lr"] = float(cc.get("lr", hp.get("lr", 1e-3)))
+        hp["weight_decay"] = float(cc.get("weight_decay", hp.get("weight_decay", 1e-4)))
+        # Preserve Du et al.'s SGD optimizer and momentum while matching the
+        # controlled learning-rate/regularization budget.
+    return hp
+
+
+def _source_baseline_hparams(name: str, cfg: dict, selected: dict | None = None) -> dict:
+    return literature_hparams(name, cfg, (selected or {}).get(name), "paper")
 
 
 def _effective_baseline_hparams(
@@ -753,27 +772,12 @@ def run_pfr_benchmark(
         direct_fit = _fit_scalar_gru(raw_bundle, cfg, hp, target_mode="friction")
         direct_test = _predict_scalar(direct_fit, raw_bundle.Xt)
         direct_metrics = regression_metrics(raw_bundle.yt, direct_test)
-        rows.append({
-            "model": "direct_gru_control",
-            "kind": "same_encoder_capacity_control",
-            "doi": "",
-            "seed": int(seed),
-            **direct_metrics,
-            "seconds": time.time() - t1,
-        })
         ablation_rows.append({
             "model": "direct_gru_control",
             "kind": "ablation_direct_regression",
             "seed": int(seed),
             **direct_metrics,
         })
-        prediction_frames.append(pd.DataFrame({
-            "endpoint_id": raw_bundle.idt,
-            "y_true": raw_bundle.yt,
-            "model": "direct_gru_control",
-            "seed": int(seed),
-            "prediction": direct_test,
-        }))
 
     # Literature comparators retain raw inputs and the same locked endpoint IDs.
     for name in names:
@@ -805,7 +809,7 @@ def run_pfr_benchmark(
             pred, sigma = predict_literature(model, name, b.Xt)
             rows.append({
                 "model": name,
-                "kind": "literature_adapted_baseline",
+                "kind": "paper_supported_primary_baseline",
                 "doi": LITERATURE_BASELINES[name]["doi"],
                 "seed": int(seed),
                 **regression_metrics(b.yt, pred, sigma=sigma),
@@ -818,6 +822,28 @@ def run_pfr_benchmark(
                 "seed": int(seed),
                 "prediction": pred,
             }))
+
+    provenance_rows = []
+    for name in names:
+        meta = LITERATURE_BASELINES[name]
+        provenance_rows.append({
+            "model": name,
+            "display_name": meta.get("display_name", name),
+            "paper_title": meta["title"],
+            "authors": meta["authors"],
+            "year": meta["year"],
+            "venue": meta["venue"],
+            "doi": meta["doi"],
+            "source_task": meta["task"],
+            "fidelity": meta["fidelity"],
+            "source_constraints": meta["source_constraints"],
+            "common_benchmark_note": meta["common_benchmark_note"],
+            "same_common_target": True,
+            "same_locked_validation_test_endpoints": True,
+            "same_vehicle_signal_input_policy": True,
+            "primary_comparison": True,
+        })
+    pd.DataFrame(provenance_rows).to_csv(out / "paper_baseline_provenance.csv", index=False)
 
     pd.DataFrame(rows).to_csv(out / "metrics_by_seed.csv", index=False)
     metrics = _aggregate_seed_metrics(rows)
@@ -891,14 +917,17 @@ def run_pfr_benchmark(
         "physics_conformal_quantile_uses_calibration_labels_only": True,
         "statistical_conformal_quantile_uses_calibration_labels_only": True,
         "test_labels_used_for_training_calibration_or_selection": False,
+        "active_proposal": "SafeGrip-PFR-ECR",
+        "primary_paper_baselines": names,
         "baseline_fidelity": {n: LITERATURE_BASELINES[n]["fidelity"] for n in names},
+        "levenberg_sampling_limitation_disclosed": "levenberg2023_stft" not in names or "low-rate" in LITERATURE_BASELINES["levenberg2023_stft"]["fidelity"],
         "effective_preset": preset,
         "effective_pfr_epochs": int(hp["epochs"]),
     }
     (out / "fairness_audit.json").write_text(json.dumps(fairness, indent=2), encoding="utf-8")
 
     pfr_rows = [r for r in rows if r.get("model") == "safegrip_pfr"]
-    direct_rows = [r for r in rows if r.get("model") == "direct_gru_control"]
+    direct_rows = [r for r in ablation_rows if r.get("model") == "direct_gru_control"]
     residual_rows = [r for r in ablation_rows if r.get("model") == "pfr_residual_raw"]
     no_attn_rows = [r for r in ablation_rows if r.get("model") == "pfr_physics_features_no_attention"]
     no_phys_rows = [r for r in ablation_rows if r.get("model") == "pfr_no_physics_channels_uniform"]
@@ -950,9 +979,8 @@ def run_pfr_benchmark(
         "extended_ablations": bool(hp.get("extended_ablations", True)),
         "risk_split_sensitivity": [float(x) for x in hp.get("risk_split_sensitivity", [])],
         "mu_upper": upper,
-        "legacy_frc_retained": True,
-        "legacy_safegrip_ci_v14_retained": True,
-        "legacy_pntr_files_retained_for_reproducibility": True,
+        "only_active_proposal": "SafeGrip-PFR-ECR",
+        "primary_paper_baselines": names,
     }
     (out / "reproducibility_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return metrics
