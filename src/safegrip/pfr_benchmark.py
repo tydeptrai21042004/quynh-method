@@ -38,7 +38,7 @@ from .benchmark import (
     regression_metrics,
     _aggregate_seed_metrics,
 )
-from .literature import QUICK_BASELINES, PAPER_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
+from .literature import QUICK_BASELINES, PAPER_BASELINES, LITERATURE_BASELINES, validate_paper_baselines, validate_source_settings
 from .models import DirectGRUControl, PFRExcitationGRU
 from .pfr import (
     compose_raw_prediction,
@@ -149,7 +149,7 @@ def _effective_baseline_hparams(
         if protocol == "controlled"
         else _source_baseline_hparams(name, cfg, selected)
     )
-    if preset == "trust":
+    if preset == "trust" and protocol == "controlled":
         hp["epochs"] = int(cfg.get("training", {}).get("epochs_trust", 40))
         hp["patience"] = int(cfg.get("training", {}).get("patience_trust", min(int(hp.get("patience", 8)), 8)))
     return hp
@@ -486,6 +486,8 @@ def run_pfr_benchmark(
     out = ensure_dir(out_dir)
     names = list(models) if models is not None else list(QUICK_BASELINES if preset == "quick" else PAPER_BASELINES)
     validate_paper_baselines(names)
+    if protocol == "source_faithful":
+        validate_source_settings(names)
     baseline_selected = baseline_hparams or {}
     hp = _pfr_hparams(cfg, pfr_hparams)
     if not pfr_hparams or "epochs" not in pfr_hparams:
@@ -841,6 +843,9 @@ def run_pfr_benchmark(
             "same_common_target": True,
             "same_locked_validation_test_endpoints": True,
             "same_vehicle_signal_input_policy": True,
+            "paper_verified": bool(meta.get("paper_verified", False)),
+            "source_settings_available": bool(meta.get("source_settings_available", False)),
+            "protocol": protocol.replace("_", "-"),
             "primary_comparison": True,
         })
     pd.DataFrame(provenance_rows).to_csv(out / "paper_baseline_provenance.csv", index=False)

@@ -32,3 +32,30 @@ def test_levenberg_sampling_limitation_is_explicit():
     assert "low-rate" in meta["fidelity"]
     assert "20 Hz" in meta["common_benchmark_note"]
     assert "70-125 Hz" in meta["common_benchmark_note"]
+
+
+def test_only_verified_paper_baselines_are_accepted():
+    from safegrip.literature import PAPER_BASELINES, validate_paper_baselines
+    assert PAPER_BASELINES == (
+        "du2023_inceptiontime", "todorovic2022_cnn",
+        "lampe2023_gru", "levenberg2023_stft",
+    )
+    for bad in ["direct_gru_control", "lampe2023_lstm", "schaefke2023_transformer", "chen2025_svdkl"]:
+        try:
+            validate_paper_baselines([bad])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"non-primary baseline accepted: {bad}")
+
+
+def test_source_settings_protocol_rejects_nonreproducible_adaptations():
+    from safegrip.literature import validate_source_settings
+    validate_source_settings(["du2023_inceptiontime", "lampe2023_gru"])
+    for name in ["todorovic2022_cnn", "levenberg2023_stft"]:
+        try:
+            validate_source_settings([name])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"source-settings incorrectly allowed for {name}")

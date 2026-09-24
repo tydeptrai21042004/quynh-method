@@ -9,7 +9,7 @@ from .benchmark import (
     make_bundle, common_eval_start, tuning_eval_start, fit_proposal, predict_proposal, predict_proposal_details, regression_metrics,
     fit_literature, predict_literature, literature_hparams,
 )
-from .literature import PAPER_BASELINES, validate_paper_baselines
+from .literature import PAPER_BASELINES, validate_paper_baselines, validate_source_settings
 from .utils import ensure_dir, seed_everything
 
 
@@ -287,14 +287,15 @@ def suggest_literature(trial,cfg,name):
 def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs=None,protocol="controlled"):
     """Give every literature comparator the same validation-trial budget.
 
-    Core architecture/preprocessing constraints from the papers remain fixed.
-    Only dataset-dependent settings (and unknown architecture details for the
-    explicitly adapted Transformer/SV-DKL comparators) are selected on validation.
+    The registry is restricted to the four verified paper-supported comparators.
+    Dataset-dependent adaptation settings are selected on validation; methods
+    without source-setting fidelity are never labelled source-faithful.
     """
     optuna=require_optuna(); out=ensure_dir(out_dir)
     names=list(names or PAPER_BASELINES); validate_paper_baselines(names)
     protocol=str(protocol).replace("-","_")
     if protocol not in {"controlled","source_faithful"}: raise ValueError("protocol must be controlled or source_faithful")
+    if protocol == "source_faithful": validate_source_settings(names)
     controlled=cfg.get("comparison",{}).get("controlled",{})
     trials=int(trials or (controlled.get("tuning_trials",30) if protocol=="controlled" else cfg.get("baseline_tuning",{}).get("trials",30)))
     tuning_seeds=[int(x) for x in controlled.get("tuning_seeds",[1101,2202])] if protocol=="controlled" else [int(cfg.get("seed",0))]

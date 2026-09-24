@@ -539,6 +539,7 @@ def _fit_deterministic(model,Xtr,ytr,Xv,yv,hp,epochs):
 
 
 def literature_hparams(name,cfg,overrides=None,preset="paper"):
+    validate_paper_baselines([name])
     tr=cfg["training"]
     base={
         "sequence_length":int(cfg.get("sequence_length",64)), "scaler":"standard",
@@ -562,6 +563,7 @@ def literature_hparams(name,cfg,overrides=None,preset="paper"):
 
 
 def fit_literature(name,b:Bundle,cfg,epochs=None,preset="paper",hp_overrides=None):
+    validate_paper_baselines([name])
     hp=literature_hparams(name,cfg,hp_overrides,preset)
     epochs=int(epochs or hp["epochs"])
     if name=="levenberg2023_stft":
@@ -575,11 +577,9 @@ def fit_literature(name,b:Bundle,cfg,epochs=None,preset="paper",hp_overrides=Non
 
 
 def predict_literature(model,name,X,batch=1024):
+    validate_paper_baselines([name])
     if name=="levenberg2023_stft":
         return model.predict(X), None
-    if name=="chen2025_svdkl":
-        from .svdkl import predict_svdkl
-        return predict_svdkl(model,X,batch_size=batch,device=device())
     dev=device(); model.eval(); ps=[]
     with torch.no_grad():
         for i in range(0,len(X),batch): ps.append(model(torch.from_numpy(X[i:i+batch]).to(dev)).cpu().numpy())
@@ -1912,7 +1912,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     feature_parity_rows=[]; label_budget_rows=[]; common_uq_rows=[]
     compared_bundles={}
     controls_manifest={"feature_parity":[],"label_budget":[],"common_conformal":[]}
-    parity_names=set(cfg.get("evaluation",{}).get("feature_parity_models",["lampe2023_gru","schaefke2023_transformer"]))
+    parity_names=set(cfg.get("evaluation",{}).get("feature_parity_models",list(PAPER_BASELINES)))
     enable_feature_parity=bool(cfg.get("evaluation",{}).get("feature_parity_controls",True)) and preset in ("trust","paper")
     enable_label_budget=bool(cfg.get("evaluation",{}).get("label_budget_parity_controls",True)) and preset in ("trust","paper")
     enable_common_uq=bool(cfg.get("evaluation",{}).get("common_conformal_controls",True)) and preset in ("trust","paper")

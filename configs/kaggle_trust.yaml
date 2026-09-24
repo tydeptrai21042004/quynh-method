@@ -106,8 +106,22 @@ proposal:
   contrastive_negatives: 6
   freeze_dynamics_after_pretrain: true
 baseline:
-  todorovic2022_cnn:
+  du2023_inceptiontime:
     sequence_length: 100
+    scaler: minmax
+    optimizer: sgd
+    lr: 0.001
+    momentum: 0.98
+    weight_decay: 0.0
+    batch_size: 128
+    dropout: 0.0
+    patience: 20
+    epochs: 200
+    lr_reduce_patience: 10
+    lr_reduce_factor: 0.5
+    min_lr: 0.0001
+  todorovic2022_cnn:
+    sequence_length: 60
     scaler: standard
     optimizer: adam
     lr: 0.001
@@ -116,16 +130,6 @@ baseline:
     dropout: 0.0
     patience: 20
     epochs: 60
-  lampe2023_lstm:
-    sequence_length: 100
-    scaler: minmax
-    optimizer: adam
-    lr: 0.001
-    weight_decay: 0.0001
-    batch_size: 64
-    dropout: 0.0
-    patience: 500
-    epochs: 500
   lampe2023_gru:
     sequence_length: 100
     scaler: minmax
@@ -136,33 +140,16 @@ baseline:
     dropout: 0.0
     patience: 500
     epochs: 500
-  schaefke2023_transformer:
-    sequence_length: 64
+  levenberg2023_stft:
+    sequence_length: 20
     scaler: standard
-    optimizer: adamw
-    lr: 0.001
-    weight_decay: 0.0001
+    optimizer: none
+    lr: 0.0
+    weight_decay: 0.0
     batch_size: 256
-    dropout: 0.1
-    patience: 10
-    epochs: 60
-    hidden: 64
-    layers: 2
-    heads: 4
-    ff_mult: 2
-  chen2025_svdkl:
-    sequence_length: 64
-    scaler: standard
-    optimizer: adamw
-    lr: 0.001
-    weight_decay: 0.0001
-    batch_size: 256
-    dropout: 0.1
-    patience: 10
-    epochs: 60
-    hidden: 64
-    feature_dim: 16
-    inducing: 128
+    dropout: 0.0
+    patience: 1
+    epochs: 1
 baseline_tuning:
   trials: 30
   sequence_length:
@@ -182,22 +169,17 @@ baseline_tuning:
   - 128
   - 256
   space:
+    du2023_inceptiontime:
+      sequence_length:
+      - 64
+      - 100
+      - 128
     todorovic2022_cnn:
       sequence_length:
-      - 100
+      - 60
       dropout:
       - 0.0
       - 0.2
-    lampe2023_lstm:
-      sequence_length:
-      - 16
-      - 32
-      - 64
-      - 100
-      - 128
-      batch_size:
-      - 64
-      - 128
     lampe2023_gru:
       sequence_length:
       - 16
@@ -208,51 +190,9 @@ baseline_tuning:
       batch_size:
       - 64
       - 128
-    schaefke2023_transformer:
+    levenberg2023_stft:
       sequence_length:
-      - 16
-      - 32
-      - 64
-      - 100
-      - 128
-      hidden:
-      - 64
-      - 128
-      layers:
-      - 1
-      - 3
-      heads:
-      - 2
-      - 4
-      - 8
-      ff_mult:
-      - 2
-      - 4
-      dropout:
-      - 0.0
-      - 0.3
-    chen2025_svdkl:
-      sequence_length:
-      - 16
-      - 32
-      - 64
-      - 100
-      - 128
-      hidden:
-      - 32
-      - 64
-      - 128
-      feature_dim:
-      - 8
-      - 16
-      - 32
-      inducing:
-      - 64
-      - 128
-      - 256
-      dropout:
-      - 0.0
-      - 0.3
+      - 20
 tuning:
   trials: 60
   epochs: 40
@@ -441,7 +381,6 @@ uq:
 calibration:
   lower_fraction: 0.25
   roles: disjoint_contiguous_lower_then_uq
-# SafeGrip-PFR-ECR: excitation-aware point estimator + conformal safety output.
 pfr:
   sequence_length: 64
   scaler: standard
@@ -460,6 +399,7 @@ pfr:
   physics_window_samples: 32
   risk_split: 0.5
   extended_ablations: true
-  risk_split_sensitivity: [0.25, 0.50, 0.75]
-
-
+  risk_split_sensitivity:
+  - 0.25
+  - 0.5
+  - 0.75

@@ -21,8 +21,7 @@ required_proc=[
     'lira_friction_schema_report.csv','lira_alignment_report.csv','lira_preprocessing_report.json',
 ]
 paper_models={
-    'todorovic2022_cnn','lampe2023_lstm','lampe2023_gru',
-    'schaefke2023_transformer','chen2025_svdkl','direct_gru_control','safegrip_pfr',
+    'du2023_inceptiontime','todorovic2022_cnn','lampe2023_gru','levenberg2023_stft','safegrip_pfr',
 }
 checks={}
 for f in required_main: checks[f'main:{f}']=(MAIN/f).exists()

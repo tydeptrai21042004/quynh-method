@@ -38,7 +38,9 @@ class Du2023InceptionTime(nn.Module):
     def __init__(self, d: int, debug_scale: bool = False):
         super().__init__()
         filters = 8 if debug_scale else 32
-        modules = 3 if debug_scale else 6
+        # Du et al. describe six residual blocks, each containing three
+        # Inception modules.  The reduced debug path is smoke-test only.
+        modules = 3 if debug_scale else 18
         out_ch = filters * 4
         blocks=[]
         in_ch=d
@@ -71,20 +73,19 @@ class Du2023InceptionTime(nn.Module):
 
 
 class Todorovic2022CNN(nn.Module):
-    """Architecture-faithful adaptation of Todorovic et al. (2022).
+    """Paper-supported CNN adaptation of Todorovic et al. (2022).
 
-    The source architecture uses a 100-sample temporal input, three Conv1D +
-    MaxPool stages (128/128/256 channels) and a 400-unit dense layer. The
-    original paper predicts longitudinal and lateral friction potentials; the
-    common LiRA benchmark changes only the input channel count and final output
-    to the shared scalar road-friction reference.
+    The publication verifies the *method family* (CNN regression) and the
+    vehicle-signal input policy, but the repository does not have enough
+    source evidence to claim an exact layer-by-layer reproduction.  The
+    three-stage temporal CNN below is therefore deliberately labelled an
+    adaptation.  It is trained/evaluated on exactly the same LiRA endpoints
+    and target as SafeGrip-PFR-ECR.
     """
     def __init__(self, d: int, sequence_length: int = 100, dropout: float = 0.0,
                  debug_scale: bool = False):
         super().__init__()
         c1, c2, c3, dense = ((32, 32, 64, 64) if debug_scale else (128, 128, 256, 400))
-        # padding='same' preserves the source temporal length before each pool;
-        # for L=100: 100 -> 50 -> 25 -> 12, hence 12*256=3072 features.
         self.features = nn.Sequential(
             nn.Conv1d(d, c1, kernel_size=14, padding="same"), nn.ReLU(), nn.MaxPool1d(2),
             nn.Conv1d(c1, c2, kernel_size=10, padding="same"), nn.ReLU(), nn.MaxPool1d(2),
@@ -93,110 +94,47 @@ class Todorovic2022CNN(nn.Module):
         if int(sequence_length) < 8:
             raise ValueError("Todorovic2022CNN requires sequence_length >= 8")
         self.head = nn.Sequential(
-            nn.Flatten(),
-            nn.Dropout(dropout),
-            # LazyLinear preserves the source Flatten->Dense(400) design while
-            # allowing unit tests to use a shorter canonical-schema fixture. In paper
-            # mode L=100 materializes exactly 12*256=3072 input features.
-            nn.LazyLinear(dense), nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dense, 1),
+            nn.Flatten(), nn.Dropout(dropout), nn.LazyLinear(dense), nn.ReLU(),
+            nn.Dropout(dropout), nn.Linear(dense, 1),
         )
 
     def forward(self, x):
         return self.head(self.features(x.transpose(1, 2))).squeeze(-1)
 
 
-def _init_lampe(module: nn.Module) -> None:
-    """Lampe et al.: orthogonal recurrent weights, Glorot input/dense weights."""
-    if isinstance(module, (nn.LSTM, nn.GRU)):
-        for name, param in module.named_parameters():
-            if "weight_hh" in name:
-                nn.init.orthogonal_(param)
-            elif "weight_ih" in name:
-                nn.init.xavier_uniform_(param)
-            elif "bias" in name:
-                nn.init.zeros_(param)
-    elif isinstance(module, nn.Linear):
-        nn.init.xavier_uniform_(module.weight)
-        if module.bias is not None:
-            nn.init.zeros_(module.bias)
+def _init_lampe_gru(gru: nn.GRU, head: nn.Linear) -> None:
+    """Lampe et al.: orthogonal recurrent and Glorot input/dense weights.
+
+    GRU gate matrices are initialized gate-by-gate so each recurrent block is
+    orthogonal instead of applying one orthogonal transform to the concatenated
+    3*hidden matrix.
+    """
+    hidden = gru.hidden_size
+    for name, param in gru.named_parameters():
+        if "weight_hh" in name:
+            for gate in param.chunk(3, dim=0):
+                nn.init.orthogonal_(gate)
+        elif "weight_ih" in name:
+            for gate in param.chunk(3, dim=0):
+                nn.init.xavier_uniform_(gate)
+        elif "bias" in name:
+            nn.init.zeros_(param)
+    nn.init.xavier_uniform_(head.weight)
+    if head.bias is not None:
+        nn.init.zeros_(head.bias)
 
 
-class Lampe2023RNN(nn.Module):
-    """Architecture-faithful LSTM/GRU adaptation from Lampe et al. (2023)."""
-    def __init__(self, d, kind="gru", hidden=256, dropout=0.0):
+class Lampe2023GRU(nn.Module):
+    """Two-layer 256-unit GRU adaptation from Lampe et al. (2023)."""
+    def __init__(self, d: int, hidden: int = 256, dropout: float = 0.0):
         super().__init__()
-        cls = nn.LSTM if kind == "lstm" else nn.GRU
-        self.kind = kind
-        self.rnn = cls(d, hidden, num_layers=2, batch_first=True, dropout=dropout)
-        if kind == "lstm":
-            self.head = nn.Sequential(nn.Linear(hidden, 256), nn.Tanh(), nn.Linear(256, 1))
-        else:
-            self.head = nn.Linear(hidden, 1)
-        self.apply(_init_lampe)
+        self.rnn = nn.GRU(d, hidden, num_layers=2, batch_first=True, dropout=dropout)
+        self.head = nn.Linear(hidden, 1)
+        _init_lampe_gru(self.rnn, self.head)
 
     def forward(self, x):
         y, _ = self.rnn(x)
         return self.head(y[:, -1]).squeeze(-1)
-
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, max_len: int = 2048):
-        super().__init__()
-        pe = torch.zeros(max_len, d_model)
-        pos = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
-        div = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(pos * div)
-        pe[:, 1::2] = torch.cos(pos * div[:pe[:, 1::2].shape[1]])
-        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
-
-    def forward(self, x):
-        return x + self.pe[:, :x.size(1)]
-
-
-class Schaefke2023Transformer(nn.Module):
-    """Methodology-level common-sensor Transformer adaptation (Schäfke et al., 2023)."""
-    def __init__(self, d, hidden=64, dropout=.1, layers=2, heads=4, ff_mult=2):
-        super().__init__()
-        if hidden % heads:
-            raise ValueError("Transformer hidden size must be divisible by number of heads")
-        self.inp = nn.Linear(d, hidden)
-        self.pos = PositionalEncoding(hidden)
-        layer = nn.TransformerEncoderLayer(
-            hidden, nhead=heads, dim_feedforward=hidden * ff_mult, dropout=dropout,
-            batch_first=True, activation="gelu"
-        )
-        self.enc = nn.TransformerEncoder(layer, num_layers=layers)
-        self.head = nn.Linear(hidden, 1)
-
-    def forward(self, x):
-        z = self.enc(self.pos(self.inp(x)))
-        return self.head(z[:, -1]).squeeze(-1)
-
-
-class SpatioTemporalCNN(nn.Module):
-    """Feature extractor for the adapted Chen et al. (2025) SV-DKL comparator.
-
-    The public paper includes a data-category-selection stage that cannot be
-    reproduced from LiRA with the same electric-wheel-vehicle state variables.
-    This class therefore implements only the spatio-temporal feature + SV-DKL
-    portion and is explicitly labelled as an adapted comparator in provenance.
-    """
-    def __init__(self, d, hidden=64, feature_dim=16, dropout=.1):
-        super().__init__()
-        self.temporal = nn.Sequential(
-            nn.Conv1d(d, hidden, 5, padding=2), nn.ReLU(),
-            nn.Conv1d(hidden, hidden, 3, padding=1), nn.ReLU(),
-            nn.Dropout(dropout), nn.AdaptiveAvgPool1d(1)
-        )
-        self.instant = nn.Sequential(nn.Linear(d, hidden), nn.ReLU())
-        self.fuse = nn.Sequential(nn.Linear(hidden * 2, hidden), nn.ReLU(), nn.Linear(hidden, feature_dim))
-
-    def forward(self, x):
-        a = self.temporal(x.transpose(1, 2)).squeeze(-1)
-        b = self.instant(x[:, -1])
-        return self.fuse(torch.cat([a, b], dim=-1))
 
 
 def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
@@ -209,7 +147,7 @@ def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
     if name == "todorovic2022_cnn":
         return Todorovic2022CNN(d, sequence_length=sequence_length, dropout=dropout, debug_scale=debug_scale)
     if name == "lampe2023_gru":
-        return Lampe2023RNN(d, "gru", hidden=32 if debug_scale else 256, dropout=dropout)
+        return Lampe2023GRU(d, hidden=32 if debug_scale else 256, dropout=dropout)
     raise ValueError(f"No neural paper-baseline implementation for {name}")
 
 
