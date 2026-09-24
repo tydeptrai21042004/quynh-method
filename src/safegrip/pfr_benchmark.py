@@ -17,7 +17,7 @@ estimate is reported separately as the controller-facing safety output.  This
 avoids conflating accuracy and conservative safety objectives.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import copy
 import hashlib
@@ -69,6 +69,7 @@ class PFRFit:
     target_std: float
     best_val_mse: float
     attention_gamma: float
+    target_mode: str = "residual"
 
 
 def _endpoint_hash(ids: np.ndarray) -> str:
@@ -95,6 +96,8 @@ def _pfr_hparams(cfg: dict, overrides: dict | None = None) -> dict:
     hp.setdefault("huber_beta", 0.5)  # standardized residual coordinates
     hp.setdefault("physics_window_samples", 32)
     hp.setdefault("risk_split", 0.5)  # fraction of total alpha assigned to mechanics lower bound
+    hp.setdefault("extended_ablations", True)
+    hp.setdefault("risk_split_sensitivity", [0.25, 0.50, 0.75])
     return hp
 
 
@@ -239,9 +242,17 @@ def _fit_pfr_gru(
     hp: dict,
     *,
     attention_gamma: float | None = None,
+    target_mode: str = "residual",
 ) -> PFRFit:
-    """Fit the excitation-aware residual/scale network using training labels only."""
+    """Fit the excitation-aware network using training labels only.
 
+    ``target_mode='residual'`` is the proposal path. ``target_mode='friction'``
+    keeps the same features, recurrent capacity, pooling, and loss structure but
+    removes the explicit mechanics residual anchor for a controlled ablation.
+    """
+
+    if target_mode not in {"residual", "friction"}:
+        raise ValueError("target_mode must be residual or friction")
     if "pfr_excitation" not in bundle.features:
         raise ValueError("PFR bundle must contain pfr_excitation")
     dev = device()
@@ -256,12 +267,16 @@ def _fit_pfr_gru(
         scale_floor=float(hp["scale_floor"]),
     ).to(dev)
 
-    residual = residual_target(bundle.ytr, bundle.raw_lotr)
-    target_mean = float(np.mean(residual))
-    target_std = float(np.std(residual))
+    target = (
+        residual_target(bundle.ytr, bundle.raw_lotr)
+        if target_mode == "residual"
+        else np.asarray(bundle.ytr, dtype=float)
+    )
+    target_mean = float(np.mean(target))
+    target_std = float(np.std(target))
     if not np.isfinite(target_std) or target_std < 1e-6:
         target_std = 1.0
-    yz = ((residual - target_mean) / target_std).astype(np.float32)
+    yz = ((target - target_mean) / target_std).astype(np.float32)
 
     ds = TensorDataset(
         torch.from_numpy(bundle.Xtr),
@@ -292,7 +307,8 @@ def _fit_pfr_gru(
             opt.zero_grad(set_to_none=True)
             predz, sigma = model(xb)
             point_loss = nn.functional.smooth_l1_loss(predz, yzb, beta=huber_beta)
-            pred_mu = lob + predz * target_std + target_mean
+            pred_target = predz * target_std + target_mean
+            pred_mu = lob + pred_target if target_mode == "residual" else pred_target
             sigma = torch.clamp(sigma, min=float(hp["scale_floor"]))
             nll = torch.mean(0.5 * torch.square((pred_mu - yb) / sigma) + torch.log(sigma))
             loss = point_loss + scale_weight * nll
@@ -303,7 +319,8 @@ def _fit_pfr_gru(
         model.eval()
         with torch.no_grad():
             predz, _ = model(xv)
-            pred_mu = lov + predz * target_std + target_mean
+            pred_target = predz * target_std + target_mean
+            pred_mu = lov + pred_target if target_mode == "residual" else pred_target
             val_loss = nn.functional.mse_loss(pred_mu, yv).item()
         if val_loss < best_val - 1e-10:
             best_val = float(val_loss)
@@ -316,7 +333,7 @@ def _fit_pfr_gru(
 
     if best_state is not None:
         model.load_state_dict(best_state)
-    return PFRFit(model, target_mean, target_std, best_val, gamma)
+    return PFRFit(model, target_mean, target_std, best_val, gamma, target_mode)
 
 
 def _predict_pfr(fit: PFRFit, X: np.ndarray, *, batch_size: int = 1024):
@@ -353,6 +370,42 @@ def _predict_pfr(fit: PFRFit, X: np.ndarray, *, batch_size: int = 1024):
         np.concatenate(entropy).astype(np.float32),
         np.concatenate(weighted_excitation).astype(np.float32),
     )
+
+
+def _zero_bundle_features(bundle, feature_names: list[str]):
+    """Return a same-shape bundle with selected model inputs deterministically zeroed.
+
+    Keeping the dimensionality and recurrent architecture unchanged makes this a
+    cleaner feature-information ablation than switching to a different encoder.
+    """
+
+    missing = [name for name in feature_names if name not in bundle.features]
+    if missing:
+        raise ValueError(f"Cannot ablate missing features: {missing}")
+    indices = [bundle.features.index(name) for name in feature_names]
+    updates = {}
+    for field in ("Xtr", "Xc", "Xv", "Xt"):
+        arr = np.asarray(getattr(bundle, field)).copy()
+        if arr.size:
+            arr[:, :, indices] = 0.0
+        updates[field] = arr
+    return replace(bundle, **updates)
+
+
+def _safe_component_metrics(y, point, safe) -> dict:
+    """Common diagnostics for a controller-facing lower estimate."""
+
+    y = np.asarray(y, dtype=float)
+    point = np.asarray(point, dtype=float)
+    safe = np.asarray(safe, dtype=float)
+    return {
+        **regression_metrics(y, safe),
+        "lower_coverage": float(np.mean(safe <= y + 1e-8)),
+        "unsafe_overestimate_mean": float(np.mean(np.maximum(safe - y, 0.0))),
+        "unsafe_overestimate_rate_005": float(np.mean(safe > y + 0.05)),
+        "mean_point_to_safe_gap": float(np.mean(point - safe)),
+        "mean_safe_conservatism": float(np.mean(np.maximum(y - safe, 0.0))),
+    }
 
 
 def _preset_seeds(cfg: dict, preset: str) -> list[int]:
@@ -461,6 +514,7 @@ def run_pfr_benchmark(
     ablation_rows: list[dict] = []
     safety_rows: list[dict] = []
     safety_audit_rows: list[dict] = []
+    risk_split_rows: list[dict] = []
     q_safe_by_seed: dict[int, float] = {}
 
     for seed in seeds:
@@ -512,6 +566,49 @@ def run_pfr_benchmark(
             **regression_metrics(pfr_bundle.yt, safe_test),
             **safety_metrics,
         })
+
+        # Safety decomposition requires no retraining and directly tests whether
+        # mechanics-only, statistical-only, or fused protection is responsible
+        # for the observed safety/utility trade-off.
+        ablation_rows.append({
+            "model": "pfr_safe_mechanics_only",
+            "kind": "ablation_safety_mechanics_only",
+            "seed": int(seed),
+            **_safe_component_metrics(pfr_bundle.yt, point_test, lower_test),
+        })
+        ablation_rows.append({
+            "model": "pfr_safe_statistical_only",
+            "kind": "ablation_safety_statistical_only",
+            "seed": int(seed),
+            **_safe_component_metrics(pfr_bundle.yt, point_test, statistical_lower),
+        })
+
+        # Risk-allocation sensitivity is calibration-only: the learned point
+        # estimator is fixed, so these rows do not consume extra training budget.
+        for split_value in hp.get("risk_split_sensitivity", [0.25, 0.50, 0.75]):
+            split_value = float(split_value)
+            if not 0.0 < split_value < 1.0:
+                continue
+            beta = total_alpha * split_value
+            alpha_s = total_alpha - beta
+            q_phys_s = conformal_lower_correction(pfr_bundle.raw_loc, pfr_bundle.yc, beta)
+            mech_s = apply_lower_correction(pfr_bundle.raw_lot, q_phys_s).astype(np.float32)
+            q_stat_s = conformal_safe_correction(
+                point_cal, pfr_bundle.yc, sigma_cal, alpha=alpha_s, scale_floor=float(hp["scale_floor"])
+            )
+            stat_s = statistical_safe_lower(point_test, sigma_test, q_stat_s).astype(np.float32)
+            fused_s = fuse_safe_lower(mech_s, stat_s, upper).astype(np.float32)
+            risk_split_rows.append({
+                "model": "safegrip_pfr_safe",
+                "kind": "risk_split_sensitivity",
+                "seed": int(seed),
+                "risk_split": split_value,
+                "physics_alpha": float(beta),
+                "statistical_alpha": float(alpha_s),
+                "q_physics": float(q_phys_s),
+                "q_safe": float(q_stat_s),
+                **_safe_component_metrics(pfr_bundle.yt, point_test, fused_s),
+            })
 
         prediction_frames.append(pd.DataFrame({
             "endpoint_id": pfr_bundle.idt,
@@ -582,6 +679,60 @@ def run_pfr_benchmark(
             "seed": int(seed),
             **regression_metrics(pfr_bundle.yt, no_attn_point),
         })
+
+        if bool(hp.get("extended_ablations", True)):
+            # Ablation C: identical PFR tensor shape and uniform pooling, but both
+            # mechanics-derived input channels are zeroed.  Comparing this with
+            # pfr_physics_features_no_attention isolates explicit physics input
+            # information without changing encoder width or pooling.
+            zero_physics_bundle = _zero_bundle_features(
+                pfr_bundle, ["pfr_mechanics_lower", "pfr_excitation"]
+            )
+            seed_everything(int(seed))
+            no_phys_fit = _fit_pfr_gru(zero_physics_bundle, cfg, hp, attention_gamma=0.0)
+            no_phys_residual, _, _, _, _ = _predict_pfr(no_phys_fit, zero_physics_bundle.Xt)
+            no_phys_point = compose_raw_prediction(
+                zero_physics_bundle.raw_lot, no_phys_residual
+            ).astype(np.float32)
+            ablation_rows.append({
+                "model": "pfr_no_physics_channels_uniform",
+                "kind": "ablation_zero_physics_channels_same_architecture",
+                "seed": int(seed),
+                **regression_metrics(zero_physics_bundle.yt, no_phys_point),
+            })
+
+            # Ablation D: same PFR features, attention and recurrent capacity, but
+            # direct friction supervision instead of residual anchoring.
+            seed_everything(int(seed))
+            direct_target_fit = _fit_pfr_gru(
+                pfr_bundle, cfg, hp, target_mode="friction"
+            )
+            direct_target_test, _, _, _, _ = _predict_pfr(direct_target_fit, pfr_bundle.Xt)
+            ablation_rows.append({
+                "model": "pfr_direct_target_full",
+                "kind": "ablation_no_explicit_residual_anchor",
+                "seed": int(seed),
+                **regression_metrics(pfr_bundle.yt, direct_target_test),
+            })
+
+            # Ablation E: remove the heteroscedastic NLL auxiliary objective while
+            # preserving the point path.  This checks whether multi-task scale
+            # learning helps or harms point accuracy.
+            no_scale_hp = dict(hp)
+            no_scale_hp["scale_nll_weight"] = 0.0
+            seed_everything(int(seed))
+            no_scale_fit = _fit_pfr_gru(pfr_bundle, cfg, no_scale_hp)
+            no_scale_residual, _, _, _, _ = _predict_pfr(no_scale_fit, pfr_bundle.Xt)
+            no_scale_point = compose_raw_prediction(
+                pfr_bundle.raw_lot, no_scale_residual
+            ).astype(np.float32)
+            ablation_rows.append({
+                "model": "pfr_no_scale_multitask",
+                "kind": "ablation_no_scale_nll_auxiliary_loss",
+                "seed": int(seed),
+                **regression_metrics(pfr_bundle.yt, no_scale_point),
+            })
+
         ablation_rows.append({
             "model": "safegrip_pfr",
             "kind": "proposal_point_estimate",
@@ -676,6 +827,23 @@ def run_pfr_benchmark(
     _aggregate_seed_metrics(ablation_rows).to_csv(out / "pfr_component_ablation.csv", index=False)
     pd.DataFrame(safety_rows).to_csv(out / "pfr_safety_metrics_by_seed.csv", index=False)
     _aggregate_seed_metrics(safety_rows).to_csv(out / "pfr_safety_metrics.csv", index=False)
+    risk_df = pd.DataFrame(risk_split_rows)
+    risk_df.to_csv(out / "pfr_risk_split_sensitivity_by_seed.csv", index=False)
+    if len(risk_df):
+        risk_group_cols = ["model", "kind", "risk_split"]
+        risk_summary = []
+        for keys, group in risk_df.groupby(risk_group_cols, sort=False):
+            row = dict(zip(risk_group_cols, keys))
+            row["n_seeds"] = int(group["seed"].nunique())
+            for col in group.columns:
+                if col in {*risk_group_cols, "seed"} or not pd.api.types.is_numeric_dtype(group[col]):
+                    continue
+                row[col] = float(group[col].mean())
+                row[col + "_std"] = float(group[col].std(ddof=1)) if len(group) > 1 else 0.0
+            risk_summary.append(row)
+        pd.DataFrame(risk_summary).to_csv(out / "pfr_risk_split_sensitivity.csv", index=False)
+    else:
+        pd.DataFrame().to_csv(out / "pfr_risk_split_sensitivity.csv", index=False)
     safety_df = pd.DataFrame(safety_audit_rows)
     safety_df.to_csv(out / "pfr_safety_fusion_audit.csv", index=False)
 
@@ -733,6 +901,9 @@ def run_pfr_benchmark(
     direct_rows = [r for r in rows if r.get("model") == "direct_gru_control"]
     residual_rows = [r for r in ablation_rows if r.get("model") == "pfr_residual_raw"]
     no_attn_rows = [r for r in ablation_rows if r.get("model") == "pfr_physics_features_no_attention"]
+    no_phys_rows = [r for r in ablation_rows if r.get("model") == "pfr_no_physics_channels_uniform"]
+    direct_target_rows = [r for r in ablation_rows if r.get("model") == "pfr_direct_target_full"]
+    no_scale_rows = [r for r in ablation_rows if r.get("model") == "pfr_no_scale_multitask"]
     mean_rmse = lambda rs: float(np.mean([r["rmse"] for r in rs])) if rs else float("nan")
     method_audit = {
         "status": "PASS" if fusion_violations == 0 else "FAIL",
@@ -748,9 +919,15 @@ def run_pfr_benchmark(
         "direct_gru_rmse": mean_rmse(direct_rows),
         "plain_residual_gru_rmse": mean_rmse(residual_rows),
         "physics_features_no_attention_rmse": mean_rmse(no_attn_rows),
+        "no_physics_channels_uniform_rmse": mean_rmse(no_phys_rows),
+        "direct_target_full_rmse": mean_rmse(direct_target_rows),
+        "no_scale_multitask_rmse": mean_rmse(no_scale_rows),
         "safegrip_pfr_point_rmse": mean_rmse(pfr_rows),
         "gain_vs_direct_rmse": mean_rmse(direct_rows) - mean_rmse(pfr_rows),
         "gain_from_physics_features_and_attention_vs_plain_residual_rmse": mean_rmse(residual_rows) - mean_rmse(pfr_rows),
+        "gain_from_physics_channels_under_uniform_pooling_rmse": mean_rmse(no_phys_rows) - mean_rmse(no_attn_rows),
+        "gain_from_explicit_residual_anchor_rmse": mean_rmse(direct_target_rows) - mean_rmse(pfr_rows),
+        "gain_from_scale_multitask_rmse": mean_rmse(no_scale_rows) - mean_rmse(pfr_rows),
         "gain_from_excitation_attention_vs_uniform_pooling_rmse": mean_rmse(no_attn_rows) - mean_rmse(pfr_rows),
         "q_physics": float(q_physics),
         "q_safe_by_seed": {str(k): float(v) for k, v in q_safe_by_seed.items()},
@@ -770,6 +947,8 @@ def run_pfr_benchmark(
         "statistical_alpha": float(statistical_alpha),
         "q_physics": float(q_physics),
         "q_safe_by_seed": {str(k): float(v) for k, v in q_safe_by_seed.items()},
+        "extended_ablations": bool(hp.get("extended_ablations", True)),
+        "risk_split_sensitivity": [float(x) for x in hp.get("risk_split_sensitivity", [])],
         "mu_upper": upper,
         "legacy_frc_retained": True,
         "legacy_safegrip_ci_v14_retained": True,

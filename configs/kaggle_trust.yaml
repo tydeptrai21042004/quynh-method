@@ -459,5 +459,7 @@ pfr:
   huber_beta: 0.5
   physics_window_samples: 32
   risk_split: 0.5
+  extended_ablations: true
+  risk_split_sensitivity: [0.25, 0.50, 0.75]
 
 

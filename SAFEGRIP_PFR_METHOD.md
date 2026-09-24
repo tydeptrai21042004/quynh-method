@@ -194,19 +194,45 @@ required for the union bound.
 
 ## 10. Decisive ablations
 
-The benchmark reports:
+The benchmark now reports a larger controlled ablation set.  The primary
+point-estimator chain is:
 
 1. `direct_gru_control`: direct friction regression on raw sensors;
 2. `pfr_residual_raw`: residual regression on raw sensors with endpoint GRU
    representation;
-3. `pfr_physics_features_no_attention`: explicit PFR mechanics channels with
+3. `pfr_no_physics_channels_uniform`: same PFR tensor shape and uniform pooling,
+   but both mechanics-derived input channels are zeroed;
+4. `pfr_physics_features_no_attention`: explicit PFR mechanics channels with
    uniform temporal pooling;
-4. `safegrip_pfr`: full excitation-aware point estimator;
-5. `safegrip_pfr_safe`: controller-facing safety output, reported separately
-   from the accuracy objective.
+5. `safegrip_pfr`: full excitation-aware point estimator.
 
-This separates residual anchoring, explicit physics input, excitation-aware
-observation weighting, and conformal safety calibration.
+Three additional component controls isolate otherwise confounded choices:
+
+- `pfr_direct_target_full`: same full PFR architecture but direct friction
+  supervision, testing whether the explicit residual anchor contributes;
+- `pfr_no_scale_multitask`: full point path with the heteroscedastic NLL
+  auxiliary weight set to zero, testing whether scale multi-task learning
+  changes point accuracy;
+- `pfr_physics_features_no_attention` versus
+  `pfr_no_physics_channels_uniform`: isolates physics-input information while
+  holding tensor dimensionality and uniform pooling fixed.
+
+The safety path is decomposed without retraining:
+
+- `pfr_safe_mechanics_only`: calibrated mechanics lower estimate only;
+- `pfr_safe_statistical_only`: normalized conformal statistical lower estimate
+  only;
+- `safegrip_pfr_safe`: fused controller-facing lower estimate.
+
+Finally, `pfr_risk_split_sensitivity.csv` reports calibration-only sensitivity
+to mechanics/statistical risk allocations of 0.25/0.75, 0.50/0.50, and
+0.75/0.25 by default.  Because the learned point estimator is held fixed, this
+analysis does not consume additional training budget.
+
+A particularly important interpretation rule is that `pfr_excitation` is a
+normalized transform of `pfr_mechanics_lower` in the current implementation.
+The zero-both-channels control therefore tests the mechanics-derived information
+as a block and avoids over-claiming two independent physical inputs.
 
 ## 11. Reporting contract
 
