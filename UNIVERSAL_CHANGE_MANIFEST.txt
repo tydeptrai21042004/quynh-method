@@ -1,0 +1,25 @@
+Universal SafeGrip research-track implementation
+
+Core research modules added:
+- src/safegrip/universal/: physical schema, ontology, unit conversion, physical-time tokenizer, batching, target collation, ECR wrapper, smoke audit
+- src/safegrip/model/: physically typed token encoder, sensor-set latent backbone, compositional query decoder, UniversalSafeGrip wrapper
+- src/safegrip/training/: partial-supervision objectives, mechanics losses, dataset balancing, whole-channel dropout, research training step
+- src/safegrip/sensor_io/: dataset-agnostic DataFrame mapping plus bridge from prepared friction tables
+
+Research documentation added:
+- UNIVERSAL_SAFEGRIP_METHOD.md
+- IMPLEMENTED_UNIVERSAL_RESEARCH_TRACK.md
+- docs/research_specification.md
+- docs/universal_experiment_protocol.md
+
+CLI/config:
+- safegrip universal-smoke
+- configs/default.yaml universal_sensor section
+
+Validation:
+- original suite before changes: 114 passed
+- final suite in this revision: 130 passed
+- final smoke output: validation_artifacts/universal_smoke.json
+
+Important boundary:
+Full multi-dataset scientific results are not claimed complete because all required external measured datasets are not bundled in this archive. Dataset timing/sequence semantics must be verified before using auxiliary force tables as temporal training records.

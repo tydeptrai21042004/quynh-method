@@ -1,0 +1,14 @@
+{
+  "status": "ok",
+  "feature_dim": 48,
+  "token_counts": [
+    6,
+    10
+  ],
+  "prediction_shape": [
+    2,
+    3
+  ],
+  "all_scales_positive": true,
+  "max_order_invariance_abs_diff": 2.2351741790771484e-08
+}

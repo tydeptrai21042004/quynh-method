@@ -540,3 +540,26 @@ pfr_tuning:
     - 16
     - 32
     - 64
+
+# Parallel research track: heterogeneous sensor-set SafeGrip-PFR-ECR.
+# The legacy benchmark above remains the reproduction/reference implementation.
+universal_sensor:
+  patch_duration_sec: 0.5
+  waveform_points: 32
+  use_statistics: true
+  use_spectrum: true
+  relative_spectral_bands: 4
+  absolute_spectral_edges_hz: [0.0, 1.0, 5.0, 20.0, 100.0]
+  token_dim: 128
+  latent_dim: 192
+  latent_tokens: 32
+  cross_attention_heads: 4
+  latent_heads: 6
+  latent_layers: 4
+  dropout: 0.1
+  sensor_dropout: 0.20
+  dataset_balance_tau: 0.5
+  task_huber_beta: 0.5
+  utilization_consistency_weight: 0.10
+  friction_inequality_weight: 0.10
+  calibration_alpha: 0.05

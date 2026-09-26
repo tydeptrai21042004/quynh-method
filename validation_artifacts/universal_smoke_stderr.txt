@@ -1,0 +1,2 @@
+/mnt/data/quynh_work/quynh-method-main/src/safegrip/model/latent_backbone.py:49: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=latent_layers)

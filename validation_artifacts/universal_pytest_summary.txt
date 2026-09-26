@@ -1,0 +1,19 @@
+........................................................................ [ 55%]
+..........................................................               [100%]
+=============================== warnings summary ===============================
+tests/test_data.py::test_viafrik_official_unicode_schema_and_decimal_comma
+  /mnt/data/quynh_work/quynh-method-main/src/safegrip/data.py:115: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+    dt = pd.to_datetime(s, errors="coerce", utc=True)
+
+tests/test_models.py::test_primary_neural_paper_baseline_shapes
+  /opt/pyvenv/lib/python3.13/site-packages/torch/nn/modules/conv.py:370: UserWarning: Using padding='same' with even kernel lengths and odd dilation may require a zero-padded copy of the input be created (Triggered internally at /pytorch/aten/src/ATen/native/Convolution.cpp:1025.)
+    return F.conv1d(
+
+tests/test_universal_collate_trainer.py::test_partial_target_collate_and_research_loss
+tests/test_universal_model.py::test_variable_sensor_counts_one_model
+tests/test_universal_model.py::test_token_order_invariance
+  /mnt/data/quynh_work/quynh-method-main/src/safegrip/model/latent_backbone.py:49: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+    self.encoder = nn.TransformerEncoder(layer, num_layers=latent_layers)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+130 passed, 5 warnings in 3.07s

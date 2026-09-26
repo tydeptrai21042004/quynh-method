@@ -144,3 +144,17 @@ safegrip datasets
 safegrip download --datasets lira
 safegrip benchmark --dataset lira --preset trust --proposal pfr --protocol controlled
 ```
+
+---
+
+## Universal heterogeneous-sensor research track
+
+A parallel research implementation now lives under `safegrip.universal`, `safegrip.model`, `safegrip.training`, and `safegrip.sensor_io`. It preserves the existing SafeGrip-PFR-ECR benchmark as the reproduction/reference implementation while developing a dataset-independent physically typed sensor-set model.
+
+Run the architecture-only smoke audit with:
+
+```bash
+safegrip universal-smoke
+```
+
+See `UNIVERSAL_SAFEGRIP_METHOD.md`, `docs/research_specification.md`, and `docs/universal_experiment_protocol.md` before extending it to additional measured datasets. The universal track must not fabricate missing targets or timing merely to pool incompatible sources.

@@ -85,8 +85,12 @@ def main():
     rv.add_argument("--dataset", choices=["mendeley_friction"], required=True)
 
     pl=sub.add_parser("plots"); pl.add_argument("--results",required=True)
+    sub.add_parser("universal-smoke", help="run the dataset-independent Universal SafeGrip architecture smoke test")
 
     args=ap.parse_args(); cfg=load_config(args.config)
+    if args.cmd=="universal-smoke":
+        from .universal.smoke import run_universal_smoke
+        print(json.dumps(run_universal_smoke(), indent=2)); return
     if args.cmd=="datasets":
         print(json.dumps(DATASET_REGISTRY,indent=2)); return
     if args.cmd=="download":
