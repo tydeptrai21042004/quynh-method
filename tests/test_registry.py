@@ -1,61 +1,52 @@
-from safegrip.datasets import DATASET_REGISTRY, PRIMARY_FRICTION_DATASETS
-from safegrip.literature import PAPER_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
+import pytest
+
+from safegrip.datasets import DATASET_REGISTRY, PAPER_DATASETS, PRIMARY_FRICTION_DATASETS
+from safegrip.literature import (
+    PAPER_BASELINES, LITERATURE_BASELINES, DATASET_BASELINES,
+    baselines_for_dataset, validate_paper_baselines,
+)
 
 
-def test_dataset_registry_has_multiple_real_sources():
-    expected={"lira","kuleuven","kit","deep_dynamics","comma2k19","extreme_road","bicycle_tire","mendeley_friction","mssp2023_friction"}
-    assert expected.issubset(DATASET_REGISTRY)
+def test_public_registry_is_closed_to_four_paper_datasets():
+    assert PAPER_DATASETS == ("lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd")
+    assert tuple(DATASET_REGISTRY) == PAPER_DATASETS
+    assert PRIMARY_FRICTION_DATASETS == ("lira_cd",)
+    for old in ("mssp2023_friction", "kit", "kuleuven", "comma2k19"):
+        assert old not in DATASET_REGISTRY
 
 
-
-def test_primary_friction_benchmarks_are_real_only():
-    assert PRIMARY_FRICTION_DATASETS == ("lira", "mssp2023_friction")
-    assert all("synthetic" not in name and "simulat" not in name for name in PRIMARY_FRICTION_DATASETS)
-
-def test_only_requested_primary_paper_baselines_are_registered():
-    expected=(
-        "du2023_inceptiontime",
-        "todorovic2022_cnn",
-        "lampe2023_gru",
-        "levenberg2023_stft",
-    )
-    assert PAPER_BASELINES==expected
+def test_dataset_scoped_paper_baselines_are_exactly_frozen_set():
+    expected = {
+        "lira_cd": ("du2023_inceptiontime", "levenberg2023_stft"),
+        "uc3m_tire": ("mendoza2019_fuzzy", "yunta2018_fuzzy_lfc"),
+        "deep_dynamics_iac": ("chrosniak2024_ddm", "fang_yu2025_fthd"),
+        "io_vnbd": ("onyekpe2021_qgru", "wang2023_transformer"),
+    }
+    assert DATASET_BASELINES == expected
+    assert set(PAPER_BASELINES) == {x for xs in expected.values() for x in xs}
     validate_paper_baselines(PAPER_BASELINES)
-    assert set(LITERATURE_BASELINES)==set(expected)
-    for name in expected:
+    for name in PAPER_BASELINES:
         assert LITERATURE_BASELINES[name]["doi"]
-        assert "friction" in (LITERATURE_BASELINES[name]["task"]+LITERATURE_BASELINES[name]["title"]).lower() or "grip" in (LITERATURE_BASELINES[name]["task"]+LITERATURE_BASELINES[name]["title"]).lower()
+        assert LITERATURE_BASELINES[name]["dataset"] in expected
 
 
-def test_levenberg_sampling_limitation_is_explicit():
-    meta=LITERATURE_BASELINES["levenberg2023_stft"]
+def test_cross_dataset_baseline_is_rejected():
+    with pytest.raises(ValueError, match="not allowed"):
+        validate_paper_baselines(["du2023_inceptiontime"], dataset="io_vnbd")
+
+
+def test_d2_yunta_provenance_is_not_claimed_exact():
+    assert LITERATURE_BASELINES["mendoza2019_fuzzy"]["exact_dataset"] is True
+    assert LITERATURE_BASELINES["yunta2018_fuzzy_lfc"]["exact_dataset"] is False
+
+
+def test_unimplemented_reproductions_cannot_be_claimed_runnable():
+    validate_paper_baselines(baselines_for_dataset("lira_cd"), require_runnable=True)
+    with pytest.raises(ValueError, match="not implemented"):
+        validate_paper_baselines(baselines_for_dataset("io_vnbd"), require_runnable=True)
+
+
+def test_levenberg_low_rate_limitation_remains_explicit():
+    meta = LITERATURE_BASELINES["levenberg2023_stft"]
     assert "low-rate" in meta["fidelity"]
-    assert "20 Hz" in meta["common_benchmark_note"]
-    assert "70-125 Hz" in meta["common_benchmark_note"]
-
-
-def test_only_verified_paper_baselines_are_accepted():
-    from safegrip.literature import PAPER_BASELINES, validate_paper_baselines
-    assert PAPER_BASELINES == (
-        "du2023_inceptiontime", "todorovic2022_cnn",
-        "lampe2023_gru", "levenberg2023_stft",
-    )
-    for bad in ["direct_gru_control", "lampe2023_lstm", "schaefke2023_transformer", "chen2025_svdkl"]:
-        try:
-            validate_paper_baselines([bad])
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"non-primary baseline accepted: {bad}")
-
-
-def test_source_settings_protocol_rejects_nonreproducible_adaptations():
-    from safegrip.literature import validate_source_settings
-    validate_source_settings(["du2023_inceptiontime", "lampe2023_gru"])
-    for name in ["todorovic2022_cnn", "levenberg2023_stft"]:
-        try:
-            validate_source_settings([name])
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"source-settings incorrectly allowed for {name}")
+    assert "70--125 Hz" in meta["limitation"]

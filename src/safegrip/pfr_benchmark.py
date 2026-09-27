@@ -38,7 +38,7 @@ from .benchmark import (
     regression_metrics,
     _aggregate_seed_metrics,
 )
-from .literature import QUICK_BASELINES, PAPER_BASELINES, LITERATURE_BASELINES, validate_paper_baselines, validate_source_settings
+from .literature import QUICK_BASELINES, LEGACY_EXECUTABLE_BASELINES, LITERATURE_BASELINES, validate_paper_baselines, validate_source_settings
 from .models import DirectGRUControl, PFRExcitationGRU
 from .pfr import (
     compose_raw_prediction,
@@ -484,7 +484,7 @@ def run_pfr_benchmark(
         raise ValueError("preset must be quick, trust, or paper")
 
     out = ensure_dir(out_dir)
-    names = list(models) if models is not None else list(QUICK_BASELINES if preset == "quick" else PAPER_BASELINES)
+    names = list(models) if models is not None else list(QUICK_BASELINES if preset == "quick" else LEGACY_EXECUTABLE_BASELINES)
     validate_paper_baselines(names)
     if protocol == "source_faithful":
         validate_source_settings(names)

@@ -11,7 +11,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, roc_auc_score
 from joblib import dump
 
-from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, PAPER_BASELINES, QUICK_BASELINES, validate_paper_baselines
+from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, LEGACY_EXECUTABLE_BASELINES, QUICK_BASELINES, validate_paper_baselines
 from .models import make_literature_baseline, SafeGripV3Net, SafeGripV4Net, SafeGripV5Net, SafeGripV6Net, SafeGripBackboneNet, ResidualScaleHead
 from .physics import (
     project_torch, project_numpy, project_interval_numpy, gaussian_interval,
@@ -1881,7 +1881,7 @@ def _write_reproducibility_manifest(out: Path, csv_path, cfg: dict, preset: str)
 def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=None,baseline_hparams=None):
     out=ensure_dir(out_dir)
     _write_reproducibility_manifest(out,csv_path,cfg,preset)
-    baseline_names=list(models) if models is not None else list(QUICK_BASELINES if preset=="quick" else PAPER_BASELINES)
+    baseline_names=list(models) if models is not None else list(QUICK_BASELINES if preset=="quick" else LEGACY_EXECUTABLE_BASELINES)
     validate_paper_baselines(baseline_names); _export_literature_manifest(out,baseline_names)
     proposal_seq=int((hp_overrides or {}).get("sequence_length",cfg["sequence_length"]))
     baseline_plan = {
@@ -1912,7 +1912,7 @@ def run_benchmark(csv_path,out_dir,cfg,preset="quick",models=None,hp_overrides=N
     feature_parity_rows=[]; label_budget_rows=[]; common_uq_rows=[]
     compared_bundles={}
     controls_manifest={"feature_parity":[],"label_budget":[],"common_conformal":[]}
-    parity_names=set(cfg.get("evaluation",{}).get("feature_parity_models",list(PAPER_BASELINES)))
+    parity_names=set(cfg.get("evaluation",{}).get("feature_parity_models",list(LEGACY_EXECUTABLE_BASELINES)))
     enable_feature_parity=bool(cfg.get("evaluation",{}).get("feature_parity_controls",True)) and preset in ("trust","paper")
     enable_label_budget=bool(cfg.get("evaluation",{}).get("label_budget_parity_controls",True)) and preset in ("trust","paper")
     enable_common_uq=bool(cfg.get("evaluation",{}).get("common_conformal_controls",True)) and preset in ("trust","paper")

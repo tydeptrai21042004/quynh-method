@@ -5,21 +5,15 @@ import numpy as np
 import torch
 
 from .schema import SensorRecord
-from .queries import (
-    PhysicalQuery, FRICTION_QUERY, FORCE_X_QUERY, FORCE_Y_QUERY,
-    FORCE_Z_QUERY, UTILIZATION_QUERY, GRIP_MARGIN_QUERY,
-)
+from .queries import PhysicalQuery, DATASET_QUERIES, queries_for_dataset
 from .tokenizer import UniversalSensorTokenizer
 from .batching import UniversalSensorBatch, pad_tokenized_records
 
-
-DEFAULT_RESEARCH_QUERIES: tuple[PhysicalQuery, ...] = (
-    FRICTION_QUERY,
-    FORCE_X_QUERY,
-    FORCE_Y_QUERY,
-    FORCE_Z_QUERY,
-    UTILIZATION_QUERY,
-    GRIP_MARGIN_QUERY,
+# Backward-compatible union for low-level tests only.  Paper experiments should
+# always use queries_for_dataset()/collate_paper_records() so supervision from
+# unrelated tasks is never manufactured.
+DEFAULT_RESEARCH_QUERIES: tuple[PhysicalQuery, ...] = tuple(
+    dict.fromkeys(q for qs in DATASET_QUERIES.values() for q in qs)
 )
 
 
@@ -43,12 +37,17 @@ class UniversalResearchBatch:
 
 def _target_for_query(record: SensorRecord, query: PhysicalQuery):
     candidates = [query.name, query.quantity]
-    # Common aliases used by the research benchmark.
     aliases = {
         "force_x": ("fx", "force_x"),
         "force_y": ("fy", "force_y"),
         "force_z": ("fz", "force_z"),
         "friction": ("mu", "mu_ref", "friction"),
+        "slip_angle": ("alpha", "slip_angle"),
+        "velocity_x": ("vx", "velocity_x"),
+        "velocity_y": ("vy", "velocity_y"),
+        "yaw_rate": ("omega", "yaw", "yaw_rate"),
+        "displacement": ("displacement", "distance_error", "position_error"),
+        "orientation": ("orientation", "orientation_error", "yaw_error"),
         "utilization": ("u", "utilization"),
         "grip_margin": ("grip", "grip_margin"),
     }
@@ -84,3 +83,17 @@ def collate_sensor_records(
                 mask[i, j] = True
     domains = tuple(str(r.source_domain or "unknown") for r in records)
     return UniversalResearchBatch(sensor_batch, values, mask, tuple(queries), domains)
+
+
+def collate_paper_records(
+    records: list[SensorRecord] | tuple[SensorRecord, ...],
+    tokenizer: UniversalSensorTokenizer,
+    dataset: str,
+) -> UniversalResearchBatch:
+    """Collate one paper dataset using only targets that belong to its task."""
+    key = str(dataset).strip().lower()
+    for record in records:
+        domain = str(record.source_domain or key).lower()
+        if domain not in {key, "unknown"}:
+            raise ValueError(f"record domain {domain!r} does not match requested dataset {key!r}")
+    return collate_sensor_records(records, tokenizer, queries_for_dataset(key))

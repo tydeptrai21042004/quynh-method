@@ -9,7 +9,7 @@ from .benchmark import (
     make_bundle, common_eval_start, tuning_eval_start, fit_proposal, predict_proposal, predict_proposal_details, regression_metrics,
     fit_literature, predict_literature, literature_hparams,
 )
-from .literature import PAPER_BASELINES, validate_paper_baselines, validate_source_settings
+from .literature import LEGACY_EXECUTABLE_BASELINES, validate_paper_baselines, validate_source_settings
 from .utils import ensure_dir, seed_everything
 
 
@@ -292,7 +292,7 @@ def tune_literature_baselines(csv_path,out_dir,cfg,names=None,trials=None,epochs
     without source-setting fidelity are never labelled source-faithful.
     """
     optuna=require_optuna(); out=ensure_dir(out_dir)
-    names=list(names or PAPER_BASELINES); validate_paper_baselines(names)
+    names=list(names or LEGACY_EXECUTABLE_BASELINES); validate_paper_baselines(names)
     protocol=str(protocol).replace("-","_")
     if protocol not in {"controlled","source_faithful"}: raise ValueError("protocol must be controlled or source_faithful")
     if protocol == "source_faithful": validate_source_settings(names)

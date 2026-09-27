@@ -6,7 +6,7 @@ from .base import ChannelSpec, TargetSpec
 from .frame import dataframe_to_sensor_record
 
 
-def prepared_friction_frame_to_record(frame: pd.DataFrame, *, sequence_id: str = "prepared-friction", source_domain: str = "friction"):
+def prepared_friction_frame_to_record(frame: pd.DataFrame, *, sequence_id: str = "prepared-friction", source_domain: str = "lira_cd"):
     """Bridge a legacy prepared friction frame into the universal schema.
 
     This adapter deliberately consumes canonical prepared columns rather than

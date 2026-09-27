@@ -32,8 +32,6 @@ evaluation:
   feature_parity_controls: true
   feature_parity_models:
   - du2023_inceptiontime
-  - todorovic2022_cnn
-  - lampe2023_gru
   - levenberg2023_stft
   label_budget_parity_controls: true
   common_conformal_controls: true
@@ -128,26 +126,6 @@ baseline:
     lr_reduce_patience: 10
     lr_reduce_factor: 0.5
     min_lr: 0.0001
-  todorovic2022_cnn:
-    sequence_length: 60
-    scaler: standard
-    optimizer: adam
-    lr: 0.001
-    weight_decay: 0.0001
-    batch_size: 128
-    dropout: 0.0
-    patience: 20
-    epochs: 60
-  lampe2023_gru:
-    sequence_length: 100
-    scaler: minmax
-    optimizer: adam
-    lr: 0.001
-    weight_decay: 0.0001
-    batch_size: 64
-    dropout: 0.0
-    patience: 500
-    epochs: 500
   levenberg2023_stft:
     sequence_length: 20
     scaler: standard
@@ -180,22 +158,6 @@ baseline_tuning:
       sequence_length:
       - 64
       - 100
-      - 128
-    todorovic2022_cnn:
-      sequence_length:
-      - 60
-      dropout:
-      - 0.0
-      - 0.2
-    lampe2023_gru:
-      sequence_length:
-      - 16
-      - 32
-      - 64
-      - 100
-      - 128
-      batch_size:
-      - 64
       - 128
     levenberg2023_stft:
       sequence_length:
@@ -540,16 +502,18 @@ pfr_tuning:
     - 16
     - 32
     - 64
-
-# Parallel research track: heterogeneous sensor-set SafeGrip-PFR-ECR.
-# The legacy benchmark above remains the reproduction/reference implementation.
 universal_sensor:
   patch_duration_sec: 0.5
   waveform_points: 32
   use_statistics: true
   use_spectrum: true
   relative_spectral_bands: 4
-  absolute_spectral_edges_hz: [0.0, 1.0, 5.0, 20.0, 100.0]
+  absolute_spectral_edges_hz:
+  - 0.0
+  - 1.0
+  - 5.0
+  - 20.0
+  - 100.0
   token_dim: 128
   latent_dim: 192
   latent_tokens: 32
@@ -557,9 +521,40 @@ universal_sensor:
   latent_heads: 6
   latent_layers: 4
   dropout: 0.1
-  sensor_dropout: 0.20
+  sensor_dropout: 0.2
   dataset_balance_tau: 0.5
   task_huber_beta: 0.5
-  utilization_consistency_weight: 0.10
-  friction_inequality_weight: 0.10
+  utilization_consistency_weight: 0.1
+  friction_inequality_weight: 0.1
   calibration_alpha: 0.05
+paper_benchmark:
+  datasets:
+  - lira_cd
+  - uc3m_tire
+  - deep_dynamics_iac
+  - io_vnbd
+  strict_dataset_scoped_baselines: true
+  allow_unregistered_dataset: false
+  allow_cross_dataset_baseline: false
+universal:
+  token_dim: 128
+  latent_dim: 192
+  latent_tokens: 32
+  scale_nll_weight: 0.1
+  sensor_dropout: 0.2
+  min_calibration_size: 20
+  ablation_suite:
+  - full
+  - no_physical_metadata
+  - no_unit_metadata
+  - no_sampling_rate_metadata
+  - no_time_metadata
+  - no_spectrum
+  - mean_pool
+  - no_sensor_dropout
+  - no_mechanics_queries
+  - no_physics_consistency
+  - no_friction_inequality
+  - no_learned_scale
+  - dataset_id_conditioning
+  - channel_id_only

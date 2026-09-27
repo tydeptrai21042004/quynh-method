@@ -1,137 +1,170 @@
 from __future__ import annotations
 
-"""Verified paper-supported comparators for SafeGrip-PFR-ECR.
+"""Paper-backed comparator registry for the closed D1--D4 benchmark.
 
-The registry is authoritative: only these four names may enter the primary
-baseline comparison.  ``fidelity`` deliberately distinguishes a source-paper
-reproduction from a common-input/common-target adaptation.  We do not claim
-bit-exact reproduction where the publication or the common LiRA sampling
-policy does not support it.
+The registry separates *paper provenance* from *local implementation status*.
+A comparator may be accepted as a benchmark target even when this repository
+expects the authors' official implementation or a dedicated reproduction
+wrapper rather than silently substituting a generic neural network.
 """
 
 LITERATURE_BASELINES = {
     "du2023_inceptiontime": {
+        "dataset": "lira_cd",
         "display_name": "Du2023 Dynamics-InceptionTime",
         "title": "Pavement Friction Evaluation Based on Vehicle Dynamics and Vision Data Using a Multi-Feature Fusion Network",
         "authors": "Zhao Du; Asmus Skar; Matteo Pettinari; Xingyi Zhu",
         "year": 2023,
-        "venue": "Transportation Research Record",
         "doi": "10.1177/03611981231165029",
         "family": "inception_time",
-        "task": "maximum tire-road/pavement friction estimation from vehicle dynamics; dynamics branch used here",
         "fidelity": "paper-structure dynamics-only common-input adaptation",
-        "source_constraints": (
-            "paper describes an InceptionTime dynamics branch with six residual blocks of three Inception modules, "
-            "multi-scale Conv1D kernels 40/20/10, 1x1 bottleneck/max-pool branches, global-average pooling and a final dense head; "
-            "source training uses SGD lr=1e-3, momentum=0.98, early stopping patience 20, and validation-driven LR reduction"
-        ),
-        "common_benchmark_note": (
-            "vision is intentionally excluded so all primary methods receive vehicle-signal inputs only; "
-            "the code follows the paper text as six residual blocks of three Inception modules (18 modules total); the 50 m source sampling/feature policy is adapted to the locked common LiRA input protocol"
-        ),
-        "source_settings_available": True,
-        "paper_verified": True,
+        "exact_dataset": True,
         "runnable": True,
-    },
-    "todorovic2022_cnn": {
-        "display_name": "Todorovic2022 CNN adaptation",
-        "title": "Neural Network Based Model for Friction Potential Estimation under Longitudinal and Lateral Excitations",
-        "authors": "Smiljana Todorovic; Andreas Wagner; Sven Mueller; Jens Neubeck",
-        "year": 2022,
-        "venue": "Journal of Physics: Conference Series",
-        "doi": "10.1088/1742-6596/2234/1/012005",
-        "family": "temporal_cnn",
-        "task": "tire-road friction-potential estimation under longitudinal and lateral excitation using experimental 4WD vehicle data",
-        "fidelity": "paper-supported CNN/input-policy common-target adaptation; exact published layer topology is not claimed",
-        "source_constraints": (
-            "the paper supports a one-dimensional CNN friction-potential regressor using longitudinal/lateral acceleration, vehicle velocity, "
-            "wheel speeds, tire slip angle, brake/engine torque and steering angle; its source input uses the previous 99 time steps "
-            "(about 3 s) and predicts separate longitudinal/lateral friction potentials; exact table values that cannot be read reliably "
-            "from the accessible text are not invented by this repository"
-        ),
-        "common_benchmark_note": (
-            "the benchmark CNN preserves the one-dimensional temporal-CNN method family and approximately 3 s physical horizon, "
-            "but adapts the source two-output friction-potential target to the common scalar LiRA friction target and common sensor subset; "
-            "it must not be described as a bit-exact architecture reproduction"
-        ),
-        "source_settings_available": False,
-        "paper_verified": True,
-        "runnable": True,
-    },
-    "lampe2023_gru": {
-        "display_name": "Lampe2023 GRU",
-        "title": "Neural Network based Tire-Road Friction Estimation Using Experimental Data",
-        "authors": "Nicolas Lampe; Karl-Philipp Kortmann; Clemens Westerkamp",
-        "year": 2023,
-        "venue": "IFAC-PapersOnLine",
-        "doi": "10.1016/j.ifacol.2023.12.056",
-        "family": "gru",
-        "task": "maximum tire-road friction coefficient estimation from serial onboard vehicle sensors",
-        "fidelity": "architecture-faithful GRU common-input adaptation with source training settings available",
-        "source_constraints": (
-            "2 stacked GRU layers with 256 units; source training uses Adam lr=1e-3, batch 64, 500 epochs, "
-            "L2=1e-4, orthogonal recurrent-weight initialization and Glorot input/dense initialization"
-        ),
-        "common_benchmark_note": "uses the common LiRA sensor subset, split and target rather than the source test-vehicle dataset",
-        "source_settings_available": True,
-        "paper_verified": True,
-        "runnable": True,
+        "metrics": ("r2", "rmse", "mae"),
     },
     "levenberg2023_stft": {
-        "display_name": "Levenberg2023 vibration/STFT adaptation",
+        "dataset": "lira_cd",
+        "display_name": "Levenberg2023 vibration/STFT",
         "title": "Estimating the Tire-Pavement Grip Potential From Vehicle Vibrations",
         "authors": "Eyal Levenberg",
         "year": 2023,
-        "venue": "Transportation Research Record",
         "doi": "10.1177/03611981231152249",
         "family": "vibration_stft_linear",
-        "task": "tire-pavement grip-potential estimation from transverse vehicle-vibration spectra",
-        "fidelity": "paper-supported method-structure low-rate adaptation; not a source-frequency reproduction",
-        "source_constraints": (
-            "source method uses high-rate transverse acceleration, short-time Fourier spectral amplitudes, smoothing, "
-            "and a positive linear relation to grip potential"
-        ),
-        "common_benchmark_note": (
-            "LiRA is resampled to 20 Hz, so the source 70-125 Hz high-frequency vibration band cannot be reproduced; "
-            "the implementation uses training-only frequency selection below the common Nyquist limit and is reported as an adaptation"
-        ),
-        "source_settings_available": False,
-        "paper_verified": True,
+        "fidelity": "paper-supported low-rate adaptation; not a source-frequency reproduction",
+        "exact_dataset": True,
         "runnable": True,
+        "metrics": ("r2", "rmse", "mae"),
+        "limitation": "LiRA prepared signals are low-rate, so the paper's 70--125 Hz band is not claimed reproduced.",
+    },
+    "mendoza2019_fuzzy": {
+        "dataset": "uc3m_tire",
+        "display_name": "Mendoza-Petit2019 Fuzzy/Pacejka",
+        "title": "A Strain-Based Method to Estimate Tire Parameters for Intelligent Tires under Complex Maneuvering Operations",
+        "authors": "M. F. Mendoza-Petit; D. Garcia-Pozuelo; V. Diaz; O. Olatunbosun",
+        "year": 2019,
+        "doi": "10.3390/s19132973",
+        "family": "fuzzy_tire_estimator",
+        "fidelity": "exact dataset paper; dedicated fuzzy reproduction still required",
+        "exact_dataset": True,
+        "runnable": False,
+        "metrics": ("normalized_error", "rmse"),
+    },
+    "yunta2018_fuzzy_lfc": {
+        "dataset": "uc3m_tire",
+        "display_name": "Yunta2018 Fuzzy LFC",
+        "title": "A Strain-Based Method to Detect Tires' Loss of Grip and Estimate Lateral Friction Coefficient from Experimental Data by Fuzzy Logic for Intelligent Tire Development",
+        "authors": "J. Yunta et al.",
+        "year": 2018,
+        "doi": "10.3390/s18020490",
+        "family": "fuzzy_lateral_friction",
+        "fidelity": "related experimental-lineage comparator; not exact U6ICRX archive reproduction",
+        "exact_dataset": False,
+        "runnable": False,
+        "metrics": ("relative_error",),
+    },
+    "chrosniak2024_ddm": {
+        "dataset": "deep_dynamics_iac",
+        "display_name": "Chrosniak2024 Deep Dynamics (DDM)",
+        "title": "Deep Dynamics: Vehicle Dynamics Modeling With a Physics-Constrained Neural Network for Autonomous Racing",
+        "authors": "John Chrosniak; Jingyun Ning; Madhur Behl",
+        "year": 2024,
+        "doi": "10.1109/LRA.2024.3388847",
+        "family": "deep_dynamics",
+        "fidelity": "official upstream implementation/data recommended",
+        "exact_dataset": True,
+        "runnable": False,
+        "official_repo": "https://github.com/linklab-uva/deep-dynamics",
+        "metrics": ("rmse_vx", "rmse_vy", "rmse_yaw", "ade", "fde"),
+    },
+    "fang_yu2025_fthd": {
+        "dataset": "deep_dynamics_iac",
+        "display_name": "FangYu2025 FTHD/EKF-FTHD",
+        "title": "Fine-tuning hybrid dynamics with physics-informed neural networks for vehicle dynamics estimation",
+        "authors": "Fang; Yu et al.",
+        "year": 2025,
+        "doi": "10.1007/s41315-025-00452-4",
+        "family": "fthd_ekf_fthd",
+        "fidelity": "official upstream IAC implementation/data recommended",
+        "exact_dataset": True,
+        "runnable": False,
+        "official_repo": "https://github.com/Binghamton-ACSR-Lab/FTHD",
+        "metrics": ("rmse_vx", "rmse_vy", "rmse_yaw", "max_error"),
+    },
+    "onyekpe2021_qgru": {
+        "dataset": "io_vnbd",
+        "display_name": "Onyekpe2021 QGRU/GRU",
+        "title": "A Quaternion Gated Recurrent Unit Neural Network for Sensor Fusion",
+        "authors": "U. Onyekpe; V. Palade; S. Kanarachos",
+        "year": 2021,
+        "doi": "10.3390/info12030117",
+        "family": "qgru",
+        "fidelity": "paper-backed IO-VNBD comparator; dedicated reproduction still required",
+        "exact_dataset": True,
+        "runnable": False,
+        "metrics": ("crse_displacement", "crse_orientation"),
+    },
+    "wang2023_transformer": {
+        "dataset": "io_vnbd",
+        "display_name": "Wang2023 Transformer/WhONet/LSTM",
+        "title": "Wheel Odometry with Deep Learning-Based Error Prediction Model for Vehicle Localization",
+        "authors": "Wang et al.",
+        "year": 2023,
+        "doi": "10.3390/app13095588",
+        "family": "transformer_wheel_odometry",
+        "fidelity": "paper-backed IO-VNBD comparator; dedicated reproduction still required",
+        "exact_dataset": True,
+        "runnable": False,
+        "metrics": ("crse_displacement", "crse_orientation"),
     },
 }
 
-PAPER_BASELINES = (
-    "du2023_inceptiontime",
-    "todorovic2022_cnn",
-    "lampe2023_gru",
-    "levenberg2023_stft",
-)
-QUICK_BASELINES = PAPER_BASELINES
-LITERATURE_ONLY = {}
+DATASET_BASELINES = {
+    "lira_cd": ("du2023_inceptiontime", "levenberg2023_stft"),
+    "uc3m_tire": ("mendoza2019_fuzzy", "yunta2018_fuzzy_lfc"),
+    "deep_dynamics_iac": ("chrosniak2024_ddm", "fang_yu2025_fthd"),
+    "io_vnbd": ("onyekpe2021_qgru", "wang2023_transformer"),
+}
+PAPER_BASELINES = tuple(name for ds in DATASET_BASELINES.values() for name in ds)
+
+# Compatibility for the legacy LiRA-only benchmark engine.  This is deliberately
+# not the public paper registry and contains only the two selected D1 baselines.
+LEGACY_EXECUTABLE_BASELINES = DATASET_BASELINES["lira_cd"]
+QUICK_BASELINES = LEGACY_EXECUTABLE_BASELINES
+LITERATURE_ONLY = {name: meta for name, meta in LITERATURE_BASELINES.items() if not meta["runnable"]}
 
 
-def validate_paper_baselines(names) -> None:
+def baselines_for_dataset(dataset: str) -> tuple[str, ...]:
+    key = str(dataset).strip().lower()
+    if key not in DATASET_BASELINES:
+        raise ValueError(f"unknown paper dataset: {dataset}. Choices: {', '.join(DATASET_BASELINES)}")
+    return DATASET_BASELINES[key]
+
+
+def validate_paper_baselines(names, dataset: str | None = None, *, require_runnable: bool = False) -> None:
     names = list(names)
     unknown = [n for n in names if n not in LITERATURE_BASELINES]
     if unknown:
-        raise ValueError(
-            "Only verified paper-supported friction baselines are allowed: "
-            + ", ".join(PAPER_BASELINES)
-            + ". Unknown/non-primary: "
-            + ", ".join(unknown)
-        )
-    invalid = [n for n in names if not LITERATURE_BASELINES[n].get("paper_verified") or not LITERATURE_BASELINES[n].get("doi")]
+        raise ValueError("Unknown/non-paper baseline(s): " + ", ".join(unknown))
+    if dataset is not None:
+        allowed = set(baselines_for_dataset(dataset))
+        wrong = [n for n in names if n not in allowed]
+        if wrong:
+            raise ValueError(
+                f"Baseline(s) {', '.join(wrong)} are not allowed for dataset {dataset}; "
+                f"allowed: {', '.join(sorted(allowed))}"
+            )
+    invalid = [n for n in names if not LITERATURE_BASELINES[n].get("doi")]
     if invalid:
-        raise ValueError("Unverified baseline registry entries: " + ", ".join(invalid))
+        raise ValueError("Baseline registry entries without DOI: " + ", ".join(invalid))
+    if require_runnable:
+        missing = [n for n in names if not LITERATURE_BASELINES[n].get("runnable", False)]
+        if missing:
+            raise ValueError(
+                "Baseline provenance is registered, but local reproduction is not implemented for: "
+                + ", ".join(missing)
+            )
 
 
 def validate_source_settings(names) -> None:
-    """Reject a source-settings claim where the paper cannot be reproduced here."""
-    validate_paper_baselines(names)
-    unsupported = [n for n in names if not LITERATURE_BASELINES[n].get("source_settings_available", False)]
-    if unsupported:
-        raise ValueError(
-            "Source-settings protocol is unavailable for: " + ", ".join(unsupported)
-            + ". Use protocol=controlled and report these methods as adaptations."
-        )
+    """Only locally runnable D1 adaptations have source-setting support here."""
+    validate_paper_baselines(names, require_runnable=True)

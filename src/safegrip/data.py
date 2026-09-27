@@ -1825,15 +1825,68 @@ def prepare_mssp2023_friction(raw: str | Path, out: str | Path, cfg: dict) -> Pa
     return path
 
 
+
+def prepare_uc3m_tire(raw: str | Path, out: str | Path) -> Path:
+    """Preserve U6ICRX workbook measurements with file/sheet provenance.
+
+    No missing force target is reconstructed.  Slip angle is added only when it
+    is explicitly present in the table or unambiguously encoded by the official
+    deposited filename (0, 6, or 13 degrees).
+    """
+    raw = Path(raw); out = Path(out); ensure_dir(out)
+    rows = []
+    files = list(raw.rglob("*.xlsx")) + list(raw.rglob("*.xls")) + list(raw.rglob("*.csv"))
+    for path in files:
+        try:
+            tables = pd.read_excel(path, sheet_name=None) if path.suffix.lower() in {".xlsx", ".xls"} else {"csv": read_table(path)}
+        except Exception:
+            continue
+        low = path.name.lower()
+        slip = 13.0 if "13" in low and "slip" in low else (6.0 if "6" in low and "slip" in low else (0.0 if "long" in low or "0" in low else np.nan))
+        for sheet, df in tables.items():
+            if df is None or df.empty:
+                continue
+            z = df.copy()
+            z["source_file"] = str(path.relative_to(raw))
+            z["source_sheet"] = str(sheet)
+            if "slip_angle_deg_manifest" not in z:
+                z["slip_angle_deg_manifest"] = slip
+            rows.append(z)
+    if not rows:
+        return _write_manifest([p for p in raw.rglob("*") if p.is_file()], out / "uc3m_tire_manifest.csv", raw)
+    z = pd.concat(rows, ignore_index=True, sort=False)
+    path = out / "uc3m_tire_tables.csv"
+    z.to_csv(path, index=False)
+    return path
+
+
+def prepare_io_vnbd(raw: str | Path, out: str | Path) -> Path:
+    """Collect IO-VNBD tabular files while retaining scenario/file identity."""
+    raw = Path(raw); out = Path(out); ensure_dir(out)
+    rows = []
+    for path in list(raw.rglob("*.csv")) + list(raw.rglob("*.txt")):
+        try:
+            df = read_table(path)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        z = df.copy()
+        z["source_file"] = str(path.relative_to(raw))
+        rows.append(z)
+    if not rows:
+        return _write_manifest([p for p in raw.rglob("*") if p.is_file()], out / "io_vnbd_manifest.csv", raw)
+    z = pd.concat(rows, ignore_index=True, sort=False)
+    path = out / "io_vnbd_tables.csv"
+    z.to_csv(path, index=False)
+    return path
+
+
+
 def prepare_dataset(name: str, raw: str|Path, out: str|Path, cfg: dict | None = None) -> Path:
-    name=name.lower(); cfg=cfg or {}
-    if name=="lira": return prepare_lira(raw,out,cfg)
-    if name=="kit": return prepare_kit(raw,out)
-    if name=="kuleuven": return prepare_kuleuven(raw,out)
-    if name=="deep_dynamics": return prepare_deep_dynamics(raw,out)
-    if name=="comma2k19": return prepare_comma2k19(raw,out)
-    if name=="extreme_road": return prepare_extreme_road(raw,out)
-    if name=="bicycle_tire": return prepare_bicycle_tire(raw,out)
-    if name=="mendeley_friction": return prepare_mendeley_friction(raw,out)
-    if name=="mssp2023_friction": return prepare_mssp2023_friction(raw,out,cfg)
-    raise ValueError(name)
+    name = name.lower(); cfg = cfg or {}
+    if name == "lira_cd": return prepare_lira(raw, out, cfg)
+    if name == "uc3m_tire": return prepare_uc3m_tire(raw, out)
+    if name == "deep_dynamics_iac": return prepare_deep_dynamics(raw, out)
+    if name == "io_vnbd": return prepare_io_vnbd(raw, out)
+    raise ValueError(f"unsupported paper dataset: {name}")

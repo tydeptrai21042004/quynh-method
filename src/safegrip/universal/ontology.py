@@ -29,6 +29,8 @@ QUANTITIES = (
     "friction",
     "grip_margin",
     "utilization",
+    "displacement",
+    "orientation",
 )
 
 AXES = (
@@ -66,6 +68,7 @@ UNIT_CLASSES = (
     "strain",
     "temperature",
     "angle",
+    "displacement",
 )
 
 TARGET_TYPES = (
@@ -77,6 +80,9 @@ TARGET_TYPES = (
     "grip_margin",
     "utilization",
     "scale",
+    "state_component",
+    "localization",
+    "slip_angle",
 )
 
 

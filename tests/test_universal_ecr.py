@@ -12,3 +12,12 @@ def test_target_domain_calibrator_is_separate_by_domain():
     assert ("friction", "a") in c.corrections
     lo = c.statistical_lower("friction", "a", point, scale)
     assert np.all(lo <= point + 1e-12)
+
+
+def test_target_domain_calibrator_rejects_empty_or_undersized_calibration():
+    import pytest
+    c = TargetDomainCalibrator(alpha=0.2, min_calibration_size=3)
+    with pytest.raises(ValueError, match="insufficient calibration"):
+        c.fit("friction", "lira_cd", np.array([]), np.array([]), np.array([]))
+    with pytest.raises(ValueError, match="insufficient calibration"):
+        c.fit("friction", "lira_cd", np.array([0.8, 0.9]), np.array([0.7, 0.8]), np.array([0.1, 0.1]))

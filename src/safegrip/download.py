@@ -16,28 +16,21 @@ class DownloadIntegrityError(RuntimeError):
 
 
 SOURCE = {
-    "lira": {
-        "kind":"figshare",
-        "article_id":23096600,
-        "version":1,
-        "landing":"https://data.dtu.dk/articles/dataset/Data_subset_for_road_condition_modelling_-_platoon_friction_test/23096600/1",
+    "lira_cd": {
+        "kind": "figshare",
+        "article_id": 23096600,
+        "version": 1,
+        "landing": "https://data.dtu.dk/articles/dataset/Data_subset_for_road_condition_modelling_-_platoon_friction_test/23096600/1",
     },
-    "kuleuven": {"kind":"dataverse", "server":"https://rdr.kuleuven.be", "pid":"doi:10.48804/PHMF9D"},
-    "kit": {"kind":"radar", "landing":"https://radar.kit.edu/radar/en/dataset/p0rr2jc5wmf0drf8"},
-    "deep_dynamics": {"kind":"github", "repo":"linklab-uva/deep-dynamics"},
-    "comma2k19": {"kind":"github", "repo":"commaai/comma2k19"},
-    "extreme_road": {"kind":"github", "repo":"sean-shiyuez/Extreme-Road-Image-Dataset"},
-    "bicycle_tire": {"kind":"zenodo", "record":7866646},
-    "mendeley_friction": {"kind":"mendeley", "slug":"trrcrgzg75", "version":1,
-                           "landing":"https://data.mendeley.com/datasets/trrcrgzg75/1"},
-    "mssp2023_friction": {
-        "kind":"manual-public",
-        "repo":"jialin-li99/dataset_for_MSSP_2023",
-        "landing":"https://github.com/jialin-li99/dataset_for_MSSP_2023",
-        "data_url":"https://pan.baidu.com/s/1LXx21JAjvpdqyNGu7niH3g",
-        "extraction_code":"JLUc",
+    "uc3m_tire": {
+        "kind": "dataverse",
+        "server": "https://edatos.consorciomadrono.es",
+        "pid": "doi:10.21950/U6ICRX",
     },
+    "deep_dynamics_iac": {"kind": "github", "repo": "linklab-uva/deep-dynamics"},
+    "io_vnbd": {"kind": "github", "repo": "onyekpeu/IO-VNBD"},
 }
+
 
 
 def _download(
@@ -144,9 +137,28 @@ def _extract(path: Path, out: Path) -> None:
         print(f"[download] warning: {path.name} is not an archive: {e}")
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _write_source(name: str, out: Path, extra=None):
     meta = dict(DATASET_REGISTRY[name]); meta.update(SOURCE.get(name, {}))
     if extra: meta.update(extra)
+    files = []
+    for path in sorted(p for p in out.rglob("*") if p.is_file() and p.name not in {"SOURCE.json", ".complete"}):
+        try:
+            files.append({
+                "path": str(path.relative_to(out)),
+                "size_bytes": int(path.stat().st_size),
+                "sha256": _sha256_file(path),
+            })
+        except OSError:
+            continue
+    meta["files"] = files
     (out / "SOURCE.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 
@@ -159,14 +171,14 @@ def _figshare_browser_headers(*, accept_json: bool = False) -> dict:
         ),
         "Accept": "application/json,text/plain,*/*" if accept_json else "*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": SOURCE["lira"]["landing"],
+        "Referer": SOURCE["lira_cd"]["landing"],
     }
     return h
 
 
 def _lira_metadata_files() -> tuple[list[dict], list[str]]:
     """Return LiRA file metadata, tolerating Figshare API/WAF failures."""
-    cfg = SOURCE["lira"]
+    cfg = SOURCE["lira_cd"]
     article_id = int(cfg["article_id"])
     version = int(cfg.get("version", 1))
     urls = [
@@ -257,7 +269,7 @@ def _download_lira_file(item: dict, dest: Path, errors: list[str]) -> str:
 
 def _download_lira_bulk(out: Path, errors: list[str]) -> tuple[Path, str]:
     """Fallback to the public bulk-downloader used by the DTU Figshare UI."""
-    cfg = SOURCE["lira"]
+    cfg = SOURCE["lira_cd"]
     article_id = int(cfg["article_id"])
     version = int(cfg.get("version", 1))
     urls = [
@@ -316,7 +328,7 @@ def download_lira(out: Path) -> None:
                     used_urls[dest.name] = _download_lira_file(item, dest, errors)
                 _extract(dest, out)
             _write_source(
-                "lira",
+                "lira_cd",
                 out,
                 {
                     "download_route": "figshare_api_file_metadata",
@@ -342,7 +354,7 @@ def download_lira(out: Path) -> None:
     archive, url = _download_lira_bulk(out, errors)
     _extract(archive, out)
     _write_source(
-        "lira",
+        "lira_cd",
         out,
         {
             "download_route": "public_bulk_ndownloader",
@@ -355,6 +367,29 @@ def download_lira(out: Path) -> None:
 def _dataverse_metadata(server: str, pid: str) -> dict:
     r = requests.get(f"{server}/api/datasets/:persistentId/", params={"persistentId":pid}, headers=UA, timeout=60)
     r.raise_for_status(); payload=r.json(); return payload.get("data", payload)
+
+
+def download_uc3m_tire(out: Path) -> None:
+    """Download the exact U6ICRX Dataverse deposit without inventing files."""
+    cfg = SOURCE["uc3m_tire"]
+    meta = _dataverse_metadata(cfg["server"], cfg["pid"])
+    files = meta.get("latestVersion", {}).get("files", [])
+    if not files:
+        raise RuntimeError("UC3M U6ICRX Dataverse metadata returned no files")
+    downloaded = []
+    for entry in files:
+        df = entry.get("dataFile", {})
+        name = df.get("filename", "")
+        file_id = df.get("id")
+        size = df.get("filesize")
+        if not name or not file_id:
+            continue
+        dest = out / name
+        if not (dest.exists() and (not size or dest.stat().st_size == int(size))):
+            _download(f"{cfg['server']}/api/access/datafile/{file_id}", dest, expected_size=int(size) if size else None)
+        downloaded.append(name)
+        _extract(dest, out)
+    _write_source("uc3m_tire", out, {"downloaded_files": downloaded})
 
 
 def download_kuleuven(out: Path, csv_only: bool = False) -> None:
@@ -517,15 +552,12 @@ def download_dataset(name: str, root: str | Path="data/raw", force: bool=False, 
         for p in list(out.iterdir()):
             if p.is_dir(): shutil.rmtree(p)
             else: p.unlink()
-    if name=="lira": download_lira(out)
-    elif name=="kuleuven": download_kuleuven(out,csv_only=not full)
-    elif name=="kit": download_kit(out)
-    elif name in ("deep_dynamics","comma2k19","extreme_road"): download_github_repo(name,out)
-    elif name=="bicycle_tire": download_zenodo(name,out,yaml_only=not full)
-    elif name=="mendeley_friction": download_mendeley(out)
-    elif name=="mssp2023_friction":
-        download_mssp2023_metadata(out)
-        # Metadata is complete, but the real payload is intentionally not marked
-        # as downloaded. ``prepare`` will refuse to manufacture replacement data.
-        return out
+    if name == "lira_cd":
+        download_lira(out)
+    elif name == "uc3m_tire":
+        download_uc3m_tire(out)
+    elif name in ("deep_dynamics_iac", "io_vnbd"):
+        download_github_repo(name, out)
+    else:
+        raise ValueError(f"no downloader registered for paper dataset: {name}")
     marker.write_text("ok\n"); return out

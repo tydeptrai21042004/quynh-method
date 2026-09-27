@@ -1,0 +1,52 @@
+D1-D4 CHANGE-ONLY PATCH
+
+Validation:
+- pytest: 138 passed
+- D1-D4 x A0-A13 architecture integration checks: 56/56 passed
+- python compileall: passed
+
+Important scope:
+- Public dataset registry: D1-D4 only.
+- Public paper baseline registry: eight selected paper comparators only.
+- Baselines without an exact local reproduction wrapper are registered as provenance but deliberately not marked runnable; the CLI refuses generic substitutes.
+- See D1_D4_CHANGE_CHECKLIST.md for completed and remaining work.
+
+Changed/added files:
+- D1_D4_CHANGE_CHECKLIST.md
+- configs/default.yaml
+- src/safegrip/ablations.py
+- src/safegrip/benchmark.py
+- src/safegrip/cli.py
+- src/safegrip/data.py
+- src/safegrip/datasets.py
+- src/safegrip/download.py
+- src/safegrip/frc_benchmark.py
+- src/safegrip/literature.py
+- src/safegrip/model/__init__.py
+- src/safegrip/model/latent_backbone.py
+- src/safegrip/model/metadata_embedding.py
+- src/safegrip/model/safegrip_universal.py
+- src/safegrip/pfr.py
+- src/safegrip/pfr_benchmark.py
+- src/safegrip/pntr_benchmark.py
+- src/safegrip/sensor_io/__init__.py
+- src/safegrip/sensor_io/_paper_common.py
+- src/safegrip/sensor_io/deep_dynamics_iac.py
+- src/safegrip/sensor_io/io_vnbd.py
+- src/safegrip/sensor_io/lira_cd.py
+- src/safegrip/sensor_io/prepared.py
+- src/safegrip/sensor_io/uc3m_tire.py
+- src/safegrip/training/objectives.py
+- src/safegrip/training/trainer.py
+- src/safegrip/tuning.py
+- src/safegrip/universal/__init__.py
+- src/safegrip/universal/dataset.py
+- src/safegrip/universal/ecr.py
+- src/safegrip/universal/ontology.py
+- src/safegrip/universal/queries.py
+- src/safegrip/universal/units.py
+- tests/test_models.py
+- tests/test_paper_benchmark.py
+- tests/test_registry.py
+- tests/test_universal_collate_trainer.py
+- tests/test_universal_ecr.py

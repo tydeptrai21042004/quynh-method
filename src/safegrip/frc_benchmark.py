@@ -40,7 +40,7 @@ from .friction_resolution import (
     select_horizon,
     empirical_residual_radius,
 )
-from .literature import PAPER_BASELINES, QUICK_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
+from .literature import LEGACY_EXECUTABLE_BASELINES, QUICK_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
 from .models import FrictionResponseNet, DirectGRUControl
 from .physics import project_numpy
 from .utils import ensure_dir, seed_everything, device
@@ -434,7 +434,7 @@ def run_frc_benchmark(csv_path, out_dir, cfg: dict, preset: str = "paper", model
     if protocol not in {"controlled", "source_faithful"}:
         raise ValueError("protocol must be controlled or source_faithful")
     out = ensure_dir(out_dir)
-    names = list(models) if models is not None else list(QUICK_BASELINES if preset == "quick" else PAPER_BASELINES)
+    names = list(models) if models is not None else list(QUICK_BASELINES if preset == "quick" else LEGACY_EXECUTABLE_BASELINES)
     validate_paper_baselines(names)
     eval_start = _common_eval_start_frc(cfg, names)
     if baseline_hparams:

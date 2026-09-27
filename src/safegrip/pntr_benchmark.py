@@ -47,7 +47,7 @@ from .frc_benchmark import (
     _source_baseline_hparams,
 )
 from .friction_resolution import make_mu_grid
-from .literature import QUICK_BASELINES, PAPER_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
+from .literature import QUICK_BASELINES, LEGACY_EXECUTABLE_BASELINES, LITERATURE_BASELINES, validate_paper_baselines
 from .models import FrictionResponseNet, DirectGRUControl
 from .physics import project_numpy
 from .pntr import regularized_local_choice, local_identifiability
@@ -423,7 +423,7 @@ def run_pntr_benchmark(csv_path, out_dir, cfg: dict, preset: str = "paper", mode
     if protocol not in {"controlled","source_faithful"}:
         raise ValueError("protocol must be controlled or source_faithful")
     out=ensure_dir(out_dir)
-    names=list(models) if models is not None else list(QUICK_BASELINES if preset=="quick" else PAPER_BASELINES)
+    names=list(models) if models is not None else list(QUICK_BASELINES if preset=="quick" else LEGACY_EXECUTABLE_BASELINES)
     validate_paper_baselines(names)
     eval_start=_common_eval_start_frc(cfg,names)
     if baseline_hparams:

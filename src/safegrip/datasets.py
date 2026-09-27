@@ -1,98 +1,72 @@
 from __future__ import annotations
 
+"""Closed paper benchmark registry for Universal SafeGrip.
+
+Only the four datasets used by the final research protocol are public/runnable
+through the registry.  Older exploratory datasets remain outside this registry
+so they cannot accidentally enter paper tables or command-line sweeps.
+"""
+
 DATASET_REGISTRY = {
-    "lira": {
+    "lira_cd": {
+        "id": "D1",
         "title": "LiRA-CD platoon friction test",
-        "role": "primary real road-friction reference benchmark",
-        "target": "VIAFRIK standardized road-friction reference",
-        "doi": "10.11583/DTU.23096600.v1",
+        "task": "road_friction_regression",
+        "targets": ("friction",),
+        "dataset_doi": "10.11583/DTU.23096600.v1",
         "license": "CC BY 4.0",
-        "auto_download": "yes",
+        "download_kind": "figshare",
+        "input_modalities": ("vehicle_dynamics", "imu", "can", "gps"),
+        "allowed_baselines": ("du2023_inceptiontime", "levenberg2023_stft"),
     },
-    "kuleuven": {
-        "title": "KU Leuven LMSD Concept Car",
-        "role": "real-vehicle wheel-force validation",
-        "target": "Kistler RoaDyn wheel forces",
-        "doi": "10.48804/PHMF9D",
-        "license": "CC BY-NC 4.0 (data)",
-        "auto_download": "yes; repository may require accepting guestbook/terms",
+    "uc3m_tire": {
+        "id": "D2",
+        "title": "UC3M/Birmingham strain-based intelligent tire data",
+        "task": "tire_mechanics",
+        "targets": ("force_x", "force_y", "force_z", "slip_angle"),
+        "dataset_doi": "10.21950/U6ICRX",
+        "license": "see e-cienciaDatos record",
+        "download_kind": "dataverse",
+        "input_modalities": ("tire_strain",),
+        "allowed_baselines": ("mendoza2019_fuzzy", "yunta2018_fuzzy_lfc"),
+        "provenance_note": (
+            "Mendoza2019 is the exact dataset-generating paper. Yunta2018 is a "
+            "related UC3M/Birmingham experimental-lineage comparator and is not "
+            "claimed to use the exact U6ICRX deposited files."
+        ),
     },
-    "kit": {
-        "title": "KIT tire force transmission characteristic dataset",
-        "role": "tire-mechanics/force-utilization validation",
-        "target": "measured Fx/Fy/Fz characteristics",
-        "doi": "10.35097/p0rr2jc5wmf0drf8",
-        "license": "CC BY-NC-SA 4.0",
-        "auto_download": "yes",
+    "deep_dynamics_iac": {
+        "id": "D3",
+        "title": "Deep Dynamics Indy Autonomous Challenge real-vehicle data",
+        "task": "vehicle_dynamics_state_prediction",
+        "targets": ("velocity_x", "velocity_y", "yaw_rate"),
+        "dataset_doi": None,
+        "paper_doi": "10.1109/LRA.2024.3388847",
+        "license": "upstream repository GPL-3.0; verify bundled data terms",
+        "download_kind": "github",
+        "input_modalities": ("vehicle_state", "steering", "drivetrain_control"),
+        "allowed_baselines": ("chrosniak2024_ddm", "fang_yu2025_fthd"),
     },
-    "deep_dynamics": {
-        "title": "Deep Dynamics / IAC and BayesRace data",
-        "role": "high-dynamics auxiliary/domain-shift data",
-        "target": "vehicle-dynamics signals; not direct friction ground truth",
-        "doi": "10.1109/LRA.2024.3388847",
-        "license": "repository GPL-3.0; verify bundled data terms",
-        "auto_download": "yes",
-    },
-    "comma2k19": {
-        "title": "comma2k19",
-        "role": "unlabeled production-sensor temporal pretraining/domain data",
-        "target": "none for friction",
-        "paper": "A Commute in Data: The comma2k19 Dataset",
-        "license": "MIT repository; dataset terms documented upstream",
-        "auto_download": "repository/example subset yes; full dataset intentionally opt-in because it is ~100 GB",
-    },
-    "extreme_road": {
-        "title": "Extreme Road Image Dataset",
-        "role": "optional road-condition/vision auxiliary benchmark",
-        "target": "six extreme road-condition classes",
-        "doi": "10.1016/j.ymssp.2024.112039",
-        "license": "BSD-3-Clause repository",
-        "auto_download": "yes",
-    },
-    "bicycle_tire": {
-        "title": "Bicycle Tyre Data",
-        "role": "open auxiliary tire-force mechanics validation only",
-        "target": "lateral force and self-aligning torque vs load/pressure/camber",
-        "doi": "10.5281/zenodo.7866646",
-        "license": "see Zenodo record",
-        "auto_download": "yes",
-    },
-    "mendeley_friction": {
-        "title": "Tire-pavement friction coefficient dataset",
-        "role": "external friction/speed/surface reference",
-        "target": "friction coefficient",
-        "doi": "10.17632/trrcrgzg75.1",
-        "license": "CC BY 4.0",
-        "auto_download": "yes when public-file endpoint is exposed by Mendeley; clear fallback message otherwise",
-    },
-    "mssp2023_friction": {
-        "title": "Guo et al. 2023 tire-road peak-friction dataset",
-        "role": "second real friction benchmark when the authors' dynamics tables are supplied",
-        "target": "tire-road peak/adhesion friction coefficient",
-        "paper": "A fusion estimation of the peak tire-road friction coefficient based on road images and dynamic information",
-        "doi": "10.1016/j.ymssp.2022.110029",
-        "license": "dataset terms are provided by the authors; verify before redistribution",
-        "auto_download": "metadata/instructions yes; data payload requires the authors' public Baidu acquisition link",
+    "io_vnbd": {
+        "id": "D4",
+        "title": "IO-VNBD inertial and odometry vehicle navigation benchmark",
+        "task": "vehicle_localization",
+        "targets": ("displacement", "orientation"),
+        "dataset_doi": "10.1016/j.dib.2021.106885",
+        "license": "open dataset; see upstream repository/article",
+        "download_kind": "github",
+        "input_modalities": ("ins", "wheel_odometry", "vehicle_ego_motion"),
+        "allowed_baselines": ("onyekpe2021_qgru", "wang2023_transformer"),
     },
 }
 
+PAPER_DATASETS = tuple(DATASET_REGISTRY)
+PRIMARY_FRICTION_DATASETS = ("lira_cd",)
+AUXILIARY_REAL_DATASETS: tuple[str, ...] = ()
 
-# Real datasets that can drive the full SafeGrip-PFR-ECR friction benchmark.
-# LiRA is fully auto-downloadable. The MSSP 2023 dataset is real vehicle/road
-# data with friction labels, but the authors distribute the payload through a
-# separate public Baidu link; the repository can prepare it after the user
-# places the downloaded tabular dynamics files under data/raw/mssp2023_friction.
-PRIMARY_FRICTION_DATASETS = ("lira", "mssp2023_friction")
 
-# Real auxiliary datasets are intentionally kept separate because their targets
-# are force/road-class/domain signals rather than the same continuous friction
-# target used by the primary benchmark.
-AUXILIARY_REAL_DATASETS = (
-    "kuleuven",
-    "kit",
-    "deep_dynamics",
-    "comma2k19",
-    "extreme_road",
-    "bicycle_tire",
-    "mendeley_friction",
-)
+def validate_dataset(name: str) -> str:
+    key = str(name).strip().lower()
+    if key not in DATASET_REGISTRY:
+        raise ValueError(f"unknown paper dataset: {name}. Choices: {', '.join(PAPER_DATASETS)}")
+    return key

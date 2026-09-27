@@ -4,10 +4,12 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from safegrip.ablations import UniversalAblationConfig
+from safegrip.datasets import PAPER_DATASETS
 from safegrip.universal.batching import UniversalSensorBatch
 from safegrip.universal.queries import PhysicalQuery
 from .metadata_embedding import PhysicallyTypedTokenEncoder
-from .latent_backbone import SensorSetLatentBackbone
+from .latent_backbone import SensorSetLatentBackbone, MeanPoolLatentBackbone
 from .query_decoder import CompositionalQueryDecoder, QueryPrediction
 
 
@@ -20,12 +22,7 @@ class UniversalSafeGripOutput:
 
 
 class UniversalSafeGrip(nn.Module):
-    """Dataset-independent heterogeneous sensor-set prediction model.
-
-    Dataset identifiers are deliberately absent from the forward interface.
-    Only sensor observations, physical metadata and physical target queries are
-    accepted by the predictive model.
-    """
+    """Shared heterogeneous sensor-set model with explicit research ablations."""
 
     def __init__(
         self,
@@ -37,38 +34,57 @@ class UniversalSafeGrip(nn.Module):
         latent_heads: int = 6,
         latent_layers: int = 4,
         dropout: float = 0.1,
+        ablation: UniversalAblationConfig | None = None,
     ):
         super().__init__()
-        self.token_encoder = PhysicallyTypedTokenEncoder(patch_feature_dim, token_dim)
-        self.backbone = SensorSetLatentBackbone(
-            token_dim=token_dim,
-            latent_dim=latent_dim,
-            latent_tokens=latent_tokens,
-            cross_attention_heads=cross_attention_heads,
-            latent_heads=latent_heads,
-            latent_layers=latent_layers,
-            dropout=dropout,
+        self.ablation = ablation or UniversalAblationConfig()
+        self.token_encoder = PhysicallyTypedTokenEncoder(
+            patch_feature_dim, token_dim,
+            use_physical_metadata=self.ablation.physical_metadata,
+            use_unit_metadata=self.ablation.unit_metadata,
+            use_sampling_rate_metadata=self.ablation.sampling_rate_metadata,
+            use_time_metadata=self.ablation.time_metadata,
+            use_channel_id_embedding=self.ablation.channel_id_embedding,
         )
+        if self.ablation.aggregation == "latent_attention":
+            self.backbone = SensorSetLatentBackbone(
+                token_dim, latent_dim, latent_tokens, cross_attention_heads,
+                latent_heads, latent_layers, dropout,
+            )
+        elif self.ablation.aggregation == "mean_pool":
+            self.backbone = MeanPoolLatentBackbone(token_dim, latent_dim)
+        else:
+            raise ValueError(f"unknown aggregation mode: {self.ablation.aggregation}")
         self.decoder = CompositionalQueryDecoder(latent_dim=latent_dim, heads=latent_heads)
+        self.dataset_to_id = {name: i for i, name in enumerate(PAPER_DATASETS)}
+        self.dataset_embedding = nn.Embedding(len(self.dataset_to_id), token_dim)
 
     @staticmethod
-    def query_tensor(queries: list[PhysicalQuery] | tuple[PhysicalQuery, ...], batch_size: int, device=None) -> torch.Tensor:
+    def query_tensor(queries, batch_size: int, device=None) -> torch.Tensor:
         if not queries:
             raise ValueError("at least one query is required")
         ids = torch.tensor([q.ids() for q in queries], dtype=torch.long, device=device)
         return ids.unsqueeze(0).expand(batch_size, -1, -1)
 
-    def forward(self, batch: UniversalSensorBatch, queries: list[PhysicalQuery] | tuple[PhysicalQuery, ...]) -> UniversalSafeGripOutput:
+    def _dataset_condition(self, tokens: torch.Tensor, domains: tuple[str, ...] | None) -> torch.Tensor:
+        if not self.ablation.dataset_id_conditioning:
+            return tokens
+        if domains is None or len(domains) != tokens.shape[0]:
+            raise ValueError("domains are required for dataset-ID conditioning ablation")
+        try:
+            ids = torch.tensor([self.dataset_to_id[str(d).lower()] for d in domains], device=tokens.device)
+        except KeyError as exc:
+            raise ValueError(f"unknown dataset domain for conditioning: {exc.args[0]}") from exc
+        return tokens + self.dataset_embedding(ids).unsqueeze(1)
+
+    def forward(self, batch: UniversalSensorBatch, queries, *, domains: tuple[str, ...] | None = None) -> UniversalSafeGripOutput:
         tokens = self.token_encoder(
-            batch.features,
-            batch.quantity_ids,
-            batch.axis_ids,
-            batch.location_ids,
-            batch.unit_class_ids,
-            batch.sample_rates_hz,
-            batch.times_sec,
+            batch.features, batch.quantity_ids, batch.axis_ids, batch.location_ids,
+            batch.unit_class_ids, batch.sample_rates_hz, batch.times_sec, batch.channel_ids,
         )
+        tokens = self._dataset_condition(tokens, domains)
         latent = self.backbone(tokens, batch.token_mask)
         qids = self.query_tensor(queries, batch.features.shape[0], device=batch.features.device)
         pred: QueryPrediction = self.decoder(latent, qids)
-        return UniversalSafeGripOutput(pred.point, pred.scale, latent, tokens)
+        scale = pred.scale if self.ablation.learned_scale else torch.ones_like(pred.point)
+        return UniversalSafeGripOutput(pred.point, scale, latent, tokens)
