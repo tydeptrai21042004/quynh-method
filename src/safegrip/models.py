@@ -148,6 +148,13 @@ def make_literature_baseline(name: str, d: int, *, sequence_length: int = 64,
         return Todorovic2022CNN(d, sequence_length=sequence_length, dropout=dropout, debug_scale=debug_scale)
     if name == "lampe2023_gru":
         return Lampe2023GRU(d, hidden=32 if debug_scale else 256, dropout=dropout)
+    # D2--D4 paper-structured reproductions live in a separate module to keep
+    # the legacy D1 benchmark stable while exposing one public factory.
+    try:
+        from .paper_baselines import make_paper_baseline
+        return make_paper_baseline(name, d, debug_scale=debug_scale).model
+    except ValueError:
+        pass
     raise ValueError(f"No neural paper-baseline implementation for {name}")
 
 

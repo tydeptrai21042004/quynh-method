@@ -40,10 +40,15 @@ def test_d2_yunta_provenance_is_not_claimed_exact():
     assert LITERATURE_BASELINES["yunta2018_fuzzy_lfc"]["exact_dataset"] is False
 
 
-def test_unimplemented_reproductions_cannot_be_claimed_runnable():
+def test_all_registered_d2_d4_reproductions_are_locally_runnable_and_labeled_structural():
     validate_paper_baselines(baselines_for_dataset("lira_cd"), require_runnable=True)
-    with pytest.raises(ValueError, match="not implemented"):
-        validate_paper_baselines(baselines_for_dataset("io_vnbd"), require_runnable=True)
+    for dataset in ("uc3m_tire", "deep_dynamics_iac", "io_vnbd"):
+        names = baselines_for_dataset(dataset)
+        validate_paper_baselines(names, dataset=dataset, require_runnable=True)
+        for name in names:
+            meta = LITERATURE_BASELINES[name]
+            assert meta["implementation_kind"] == "paper_structured_local_reproduction"
+            assert meta["supported_targets"]
 
 
 def test_levenberg_low_rate_limitation_remains_explicit():

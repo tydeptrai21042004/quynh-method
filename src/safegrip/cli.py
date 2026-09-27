@@ -79,6 +79,44 @@ def _universal_check(dataset: str, ablation_name: str) -> dict:
     }
 
 
+def _baseline_check(dataset: str, *, train_step: bool = False) -> dict:
+    import torch
+    from .paper_baselines import make_paper_baseline
+    from .baseline_training import train_baseline
+
+    # Smoke dimensions reflect the canonical adapter contracts; real benchmark
+    # runs obtain dimensionality from prepared data rather than these constants.
+    input_dims = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 8}
+    if dataset == "lira_cd":
+        return {"dataset": dataset, "note": "D1 uses the legacy end-to-end benchmark engine", "passed": True}
+    d = input_dims[dataset]
+    torch.manual_seed(7)
+    x = 0.1 * torch.randn(2, 12, d)
+    # Keep the state channels physically non-degenerate for D3.
+    if dataset == "deep_dynamics_iac":
+        x[..., 0] += 8.0
+    rows = []
+    for name in baselines_for_dataset(dataset):
+        build = make_paper_baseline(name, d, debug_scale=True)
+        build.model.eval()
+        with torch.no_grad():
+            y = build.model(x)
+        trained = None
+        if train_step:
+            target = torch.zeros_like(y)
+            result = train_baseline(build.model, x, target, epochs=1, lr=1e-4)
+            trained = result.losses[-1]
+        rows.append({
+            "name": name,
+            "targets": list(build.target_names),
+            "output_shape": list(y.shape),
+            "finite": bool(torch.isfinite(y).all()),
+            "train_step_loss": trained,
+            "fidelity": LITERATURE_BASELINES[name]["fidelity"],
+        })
+    return {"dataset": dataset, "baselines": rows, "passed": all(r["finite"] for r in rows)}
+
+
 def main():
     ap = argparse.ArgumentParser(prog="safegrip", description="Universal SafeGrip D1--D4 paper benchmark")
     ap.add_argument("--config", default=None)
@@ -89,6 +127,10 @@ def main():
 
     bl = sub.add_parser("baselines", help="show the only paper comparators allowed for a dataset")
     bl.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
+
+    bc = sub.add_parser("baseline-check", help="instantiate and smoke-test the local D2--D4 baseline reproductions")
+    bc.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
+    bc.add_argument("--train-step", action="store_true")
 
     d = sub.add_parser("download")
     d.add_argument("--datasets", nargs="+", default=["lira_cd"])
@@ -127,6 +169,9 @@ def main():
     if args.cmd == "baselines":
         payload = {name: LITERATURE_BASELINES[name] for name in baselines_for_dataset(args.dataset)}
         print(json.dumps(payload, indent=2)); return
+    if args.cmd == "baseline-check":
+        validate_paper_baselines(baselines_for_dataset(args.dataset), dataset=args.dataset, require_runnable=True)
+        print(json.dumps(_baseline_check(args.dataset, train_step=args.train_step), indent=2)); return
     if args.cmd == "download":
         names = list(PAPER_DATASETS) if "all" in args.datasets else args.datasets
         for n in names:
@@ -144,10 +189,12 @@ def main():
         names = args.models.split(",") if args.models else list(baselines_for_dataset(args.dataset))
         validate_paper_baselines(names, dataset=args.dataset)
         if args.dataset != "lira_cd":
-            missing = [n for n in names if not LITERATURE_BASELINES[n]["runnable"]]
+            validate_paper_baselines(names, dataset=args.dataset, require_runnable=True)
             raise RuntimeError(
-                "Dataset and paper-baseline provenance are registered, but exact local baseline wrappers are not yet implemented for "
-                f"{args.dataset}: {', '.join(missing)}. Do not substitute generic baselines."
+                "The D2--D4 comparator models are locally runnable, but this legacy `benchmark` command still expects the "
+                "D1 LiRA table layout. Use `safegrip baseline-check --dataset " + args.dataset + " --train-step` to verify the "
+                "reproductions; D2--D4 end-to-end evaluation should be driven by the universal prepared-record pipeline so targets "
+                "are never fabricated."
             )
         validate_paper_baselines(names, dataset="lira_cd", require_runnable=True)
         csv = _ensure_primary(args.dataset, cfg)

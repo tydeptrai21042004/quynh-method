@@ -56,8 +56,21 @@ class UniversalSafeGrip(nn.Module):
         else:
             raise ValueError(f"unknown aggregation mode: {self.ablation.aggregation}")
         self.decoder = CompositionalQueryDecoder(latent_dim=latent_dim, heads=latent_heads)
-        self.dataset_to_id = {name: i for i, name in enumerate(PAPER_DATASETS)}
-        self.dataset_embedding = nn.Embedding(len(self.dataset_to_id), token_dim)
+
+        # The proposal is dataset-agnostic by construction.  Dataset identity is
+        # available *only* as an explicit ablation; the default/full method does
+        # not allocate dataset-specific parameters at all.
+        if self.ablation.dataset_id_conditioning:
+            self.dataset_to_id = {name: i for i, name in enumerate(PAPER_DATASETS)}
+            self.dataset_embedding: nn.Embedding | None = nn.Embedding(len(self.dataset_to_id), token_dim)
+        else:
+            self.dataset_to_id = {}
+            self.dataset_embedding = None
+
+    @property
+    def is_dataset_agnostic(self) -> bool:
+        """True for the proposal used in the paper; False only for the ID-conditioning ablation."""
+        return self.dataset_embedding is None
 
     @staticmethod
     def query_tensor(queries, batch_size: int, device=None) -> torch.Tensor:
@@ -71,6 +84,8 @@ class UniversalSafeGrip(nn.Module):
             return tokens
         if domains is None or len(domains) != tokens.shape[0]:
             raise ValueError("domains are required for dataset-ID conditioning ablation")
+        if self.dataset_embedding is None:
+            raise RuntimeError("dataset embedding exists only in the dataset-ID conditioning ablation")
         try:
             ids = torch.tensor([self.dataset_to_id[str(d).lower()] for d in domains], device=tokens.device)
         except KeyError as exc:
