@@ -1,6 +1,8 @@
+> **Archived research note.** The current active proposal is **SafeGrip-PFR-ECR** as defined in `SAFEGRIP_PFR_METHOD.md`. Statements below that call another method "active" describe the historical revision documented by this file only.
+
 # SafeGrip-CI method — current release v1.3
 
-The active proposal is **Counterfactual Energy-Guided Selective Physics Correction**.
+At that historical revision, the proposal was **Counterfactual Energy-Guided Selective Physics Correction**.
 
 A causal Conv1D+GRU produces the primary friction estimate. A separately pretrained friction-conditioned dynamics network scores a local grid of nearby friction hypotheses. Their energy posterior produces a physics candidate, posterior entropy gives local identifiability, and two learned heads separately estimate (1) whether physics is likely to help and (2) what fraction of the proposed correction should be used. The final correction is followed by the optional physical feasible-set projection and leakage-safe conformal UQ.
 

@@ -1,4 +1,4 @@
-> **Legacy note (v2.2):** SafeGrip-PFR is the active proposal. This file is retained only to reproduce earlier experiments.
+> **Archived research note.** The current active proposal is **SafeGrip-PFR-ECR** as defined in `SAFEGRIP_PFR_METHOD.md`. Statements below that call another method "active" describe the historical revision documented by this file only.
 
 # SafeGrip-PNTR small validation experiment
 

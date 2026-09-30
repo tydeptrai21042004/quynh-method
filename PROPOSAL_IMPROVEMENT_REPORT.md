@@ -1,4 +1,4 @@
-> **Legacy note (v2.2):** SafeGrip-PFR is the active proposal. This file is retained only to reproduce earlier experiments.
+> **Archived research note.** The current active proposal is **SafeGrip-PFR-ECR** as defined in `SAFEGRIP_PFR_METHOD.md`. Statements below that call another method "active" describe the historical revision documented by this file only.
 
 # Proposal improvement report — SafeGrip-CI v1.4
 
@@ -9,7 +9,7 @@ Earlier LiRA TRUST results showed that the counterfactual branch could make smal
 ## Implemented changes
 
 ### Matched-scale strong GRU base
-The active proposal now uses a raw-sensor two-layer GRU with a 100-sample context and 256 recurrent units in the TRUST/default configuration. This removes the previous 96/128-unit capacity disadvantage relative to the strongest GRU comparator.
+The proposal in that historical revision used a raw-sensor two-layer GRU with a 100-sample context and 256 recurrent units in the TRUST/default configuration. This removes the previous 96/128-unit capacity disadvantage relative to the strongest GRU comparator.
 
 ### Accuracy-first Stage A
 The base estimator is pretrained with MSE only. Asymmetric safety, UQ, counterfactual and selector losses are excluded from Stage A. The friction target is standardized using training-only statistics, and the active base head is linear in standardized target space rather than using `mu_upper * sigmoid(z)`.

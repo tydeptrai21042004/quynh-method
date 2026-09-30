@@ -8,7 +8,7 @@ The active path is intentionally compact:
         -> one GRU
         -> physics-guided temporal pooling
         -> point residual + positive scale
-        -> point estimate mu_point = L0^W + r_theta
+        -> point estimate mu_point = A0^W + r_theta
         -> one-sided normalized conformal lower estimate
         -> max(statistical lower, calibrated mechanics lower)
 
@@ -49,6 +49,7 @@ from .pfr import (
     statistical_safe_lower,
 )
 from .physics import apply_lower_correction, conformal_lower_correction
+from .conformal import resolved_block_size
 from .utils import ensure_dir, seed_everything, device
 
 
@@ -94,7 +95,7 @@ def _pfr_hparams(cfg: dict, overrides: dict | None = None) -> dict:
     hp.setdefault("scale_nll_weight", 0.02)
     hp.setdefault("huber_beta", 0.5)  # standardized residual coordinates
     hp.setdefault("physics_window_samples", 32)
-    hp.setdefault("risk_split", 0.5)  # fraction of total alpha assigned to mechanics lower bound
+    hp.setdefault("risk_split", 0.5)  # fraction of total alpha assigned to the calibrated mechanics component
     hp.setdefault("extended_ablations", True)
     hp.setdefault("risk_split_sensitivity", [0.25, 0.50, 0.75])
     return hp
@@ -525,7 +526,21 @@ def run_pfr_benchmark(
         raise ValueError("pfr.risk_split must lie in (0, 1)")
     physics_alpha = total_alpha * risk_split
     statistical_alpha = total_alpha - physics_alpha
-    q_physics = conformal_lower_correction(pfr_bundle.raw_loc, pfr_bundle.yc, physics_alpha)
+    uq_cfg = cfg.get("uq", {})
+    uq_method = str(uq_cfg.get("method", "block_max_split_conformal"))
+    if uq_method not in {"block_max_split_conformal", "iid_split_conformal"}:
+        raise ValueError(f"unsupported uq.method for PFR-ECR: {uq_method}")
+    calibration_block_size = (
+        resolved_block_size(
+            uq_cfg, sequence_length=int(hp["sequence_length"]), stride=int(cfg.get("stride", 1))
+        )
+        if uq_method == "block_max_split_conformal"
+        else 1
+    )
+    q_physics = conformal_lower_correction(
+        pfr_bundle.raw_loc, pfr_bundle.yc, physics_alpha,
+        endpoint_ids=pfr_bundle.idc, block_size=calibration_block_size,
+    )
     lower_test = apply_lower_correction(pfr_bundle.raw_lot, q_physics).astype(np.float32)
     upper = float(cfg.get("mu_upper", 1.3))
     seeds = _preset_seeds(cfg, preset)
@@ -553,6 +568,8 @@ def run_pfr_benchmark(
             sigma_cal,
             alpha=statistical_alpha,
             scale_floor=float(hp["scale_floor"]),
+            endpoint_ids=pfr_bundle.idc,
+            block_size=calibration_block_size,
         )
         q_safe_by_seed[int(seed)] = float(q_safe)
         statistical_lower = statistical_safe_lower(point_test, sigma_test, q_safe).astype(np.float32)
@@ -612,10 +629,15 @@ def run_pfr_benchmark(
                 continue
             beta = total_alpha * split_value
             alpha_s = total_alpha - beta
-            q_phys_s = conformal_lower_correction(pfr_bundle.raw_loc, pfr_bundle.yc, beta)
+            q_phys_s = conformal_lower_correction(
+                pfr_bundle.raw_loc, pfr_bundle.yc, beta,
+                endpoint_ids=pfr_bundle.idc, block_size=calibration_block_size,
+            )
             mech_s = apply_lower_correction(pfr_bundle.raw_lot, q_phys_s).astype(np.float32)
             q_stat_s = conformal_safe_correction(
-                point_cal, pfr_bundle.yc, sigma_cal, alpha=alpha_s, scale_floor=float(hp["scale_floor"])
+                point_cal, pfr_bundle.yc, sigma_cal, alpha=alpha_s,
+                scale_floor=float(hp["scale_floor"]), endpoint_ids=pfr_bundle.idc,
+                block_size=calibration_block_size,
             )
             stat_s = statistical_safe_lower(point_test, sigma_test, q_stat_s).astype(np.float32)
             fused_s = fuse_safe_lower(mech_s, stat_s, upper).astype(np.float32)
@@ -887,7 +909,15 @@ def run_pfr_benchmark(
             "With marginal miscoverage beta and alpha_s, the union bound gives joint coverage at least "
             "1-beta-alpha_s."
         ),
-        "coverage_note": "The finite-sample coverage statement additionally requires the usual split-conformal exchangeability assumption.",
+        "coverage_note": (
+            "The union-bound fusion implication is deterministic. Population finite-sample coverage additionally requires "
+            "exchangeability (or an appropriate exchangeable-block argument) for the calibration/test units. Block-max "
+            "calibration mitigates overlap-induced pseudo-replication but is not claimed to prove validity under arbitrary dependence."
+        ),
+        "split_mode": str(cfg.get("split", {}).get("mode", "spatial_within_trajectory")),
+        "uq_method": uq_method,
+        "calibration_block_size": int(calibration_block_size),
+        "dependence_claim": str(uq_cfg.get("dependence_claim", "mitigation_only")),
         "total_alpha": float(total_alpha),
         "physics_alpha": float(physics_alpha),
         "statistical_alpha": float(statistical_alpha),
@@ -942,10 +972,10 @@ def run_pfr_benchmark(
     method_audit = {
         "status": "PASS" if fusion_violations == 0 else "FAIL",
         "proposal": "SafeGrip-PFR-ECR: Excitation-Aware Conformal Risk-Controlled Residual Estimation",
-        "point_estimator": "mu_point=L0^W+r_theta(X,L0,e), with mechanics-excitation-weighted temporal pooling",
+        "point_estimator": "mu_point=A0^W+r_theta(X,L0,e), where A0^W is the trailing mechanics anchor and pooling is mechanics-excitation-weighted",
         "scale_estimator": "positive sigma_theta from the same pooled recurrent representation",
         "statistical_safe_lower": "C_alpha=mu_point-q_alpha*sigma using normalized one-sided split conformal calibration",
-        "mechanics_safe_lower": "L_beta=max(0,L0^W-q_beta)",
+        "mechanics_safe_lower": "L_beta=max(0,A0^W-q_beta), where A0^W is a trailing mechanics anchor; calling A0^W itself a current-friction lower bound requires local temporal persistence",
         "controller_facing_output": "mu_safe=max(L_beta,C_alpha), clipped only to physical support [0,U]",
         "extra_neural_backbones": 0,
         "search_or_inversion": False,
@@ -981,6 +1011,10 @@ def run_pfr_benchmark(
         "statistical_alpha": float(statistical_alpha),
         "q_physics": float(q_physics),
         "q_safe_by_seed": {str(k): float(v) for k, v in q_safe_by_seed.items()},
+        "split_mode": str(cfg.get("split", {}).get("mode", "spatial_within_trajectory")),
+        "uq_method": uq_method,
+        "calibration_block_size": int(calibration_block_size),
+        "dependence_claim": str(uq_cfg.get("dependence_claim", "mitigation_only")),
         "extended_ablations": bool(hp.get("extended_ablations", True)),
         "risk_split_sensitivity": [float(x) for x in hp.get("risk_split_sensitivity", [])],
         "mu_upper": upper,

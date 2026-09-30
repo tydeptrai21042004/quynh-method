@@ -13,6 +13,7 @@ from joblib import dump
 
 from .literature import LITERATURE_BASELINES, LITERATURE_ONLY, LEGACY_EXECUTABLE_BASELINES, QUICK_BASELINES, validate_paper_baselines
 from .models import make_literature_baseline, SafeGripV3Net, SafeGripV4Net, SafeGripV5Net, SafeGripV6Net, SafeGripBackboneNet, ResidualScaleHead
+from .conformal import finite_sample_higher_quantile
 from .physics import (
     project_torch, project_numpy, project_interval_numpy, gaussian_interval,
     conformal_lower_correction, apply_lower_correction,
@@ -143,9 +144,11 @@ def windows_for_split(df, features, split, L, stride, eval_start=None, physics_w
 
     This prevents the subtle leakage/error where filtering all rows by split and
     then resetting the index creates a sequence that bridges two independent
-    trips or discontinuous matched trajectory segments.  The physics lower
-    endpoint is the maximum over a fixed trailing physics window, matching the
-    partial-identification theorem used in the paper. Stable endpoint IDs are
+    trips or discontinuous matched trajectory segments. The mechanics value
+    supplied to PFR is the maximum over a fixed trailing physics window. It is
+    treated as a mechanics-derived *anchor*: interpreting that trailing maximum
+    itself as a deterministic lower bound for current friction additionally
+    requires a local temporal-persistence assumption. Stable endpoint IDs are
     returned for exact cross-model parity checks.
     """
     z=df[df.split==split].copy()
@@ -960,11 +963,7 @@ def _finite_sample_quantile(values, alpha: float) -> float:
     values=values[np.isfinite(values)]
     if len(values)==0:
         return 1.0
-    level=min(1.0,np.ceil((len(values)+1)*(1-float(alpha)))/len(values))
-    try:
-        return float(np.quantile(values,level,method="higher"))
-    except TypeError:
-        return float(np.quantile(values,level,interpolation="higher"))
+    return finite_sample_higher_quantile(values, float(alpha))
 
 
 def _segment_key(endpoint_id: str) -> str:

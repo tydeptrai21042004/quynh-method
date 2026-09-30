@@ -73,6 +73,9 @@ def test_official_lira_task_streams_are_synchronised_before_alignment(tmp_path):
     }).to_csv(raw / "m3_custom_fric_hh.csv", index=False)
 
     cfg = yaml.safe_load((Path(__file__).parents[1] / "configs" / "default.yaml").read_text())
+    # This fixture intentionally contains one trajectory and tests stream
+    # synchronization/alignment rather than the paper group-holdout protocol.
+    cfg["split"]["mode"] = "spatial_within_trajectory"
     cfg["lira"]["resample_hz"] = 10.0
     cfg["lira"]["heading_tolerance_deg"] = 60.0
 

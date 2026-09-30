@@ -5,25 +5,26 @@ export PYTHONPATH="$(pwd)/src${PYTHONPATH:+:${PYTHONPATH}}"
 ${PYTHON_BIN} -m pip install -q -e ".[dev]"
 SG="${PYTHON_BIN} -m safegrip.cli"
 CONFIG="${CONFIG:-configs/kaggle_small.yaml}"
+MODELS="du2023_inceptiontime,todorovic2022_cnn,lampe2023_gru,levenberg2023_stft"
 
 ${PYTHON_BIN} -m pytest -q
-$SG --config "$CONFIG" download --datasets lira
-$SG --config "$CONFIG" prepare --dataset lira
+$SG --config "$CONFIG" download --datasets lira_cd
+$SG --config "$CONFIG" prepare --dataset lira_cd
 
-# One-seed / three-epoch development run.  This is a pipeline check, not a paper result.
+# Development smoke run only; the PFR benchmark itself writes component and
+# safety ablations, so there is no separate legacy `ablation` CLI command.
 $SG --config "$CONFIG" benchmark \
-  --dataset lira \
+  --dataset lira_cd \
   --preset quick \
-  --proposal pfr \
   --protocol controlled \
-  --models todorovic2022_cnn,lampe2023_gru
+  --models "$MODELS"
 
 $SG --config "$CONFIG" statistics \
-  --results results/lira_quick \
+  --results results/lira_cd_quick \
   --proposal safegrip_pfr \
   --bootstrap 500
 
 echo "SafeGrip-PFR-ECR small LiRA run complete."
-echo "Main metrics:      results/lira_quick/metrics.csv"
-echo "PFR ablation:      results/lira_quick/pfr_component_ablation.csv"
-echo "Safety theorem:    results/lira_quick/pfr_theorem_audit.json"
+echo "Main metrics:      results/lira_cd_quick/metrics.csv"
+echo "PFR ablation:      results/lira_cd_quick/pfr_component_ablation.csv"
+echo "Safety theorem:    results/lira_cd_quick/pfr_theorem_audit.json"

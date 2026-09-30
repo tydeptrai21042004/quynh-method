@@ -17,7 +17,7 @@ def test_public_registry_is_closed_to_four_paper_datasets():
 
 def test_dataset_scoped_paper_baselines_are_exactly_frozen_set():
     expected = {
-        "lira_cd": ("du2023_inceptiontime", "levenberg2023_stft"),
+        "lira_cd": ("du2023_inceptiontime", "todorovic2022_cnn", "lampe2023_gru", "levenberg2023_stft"),
         "uc3m_tire": ("mendoza2019_fuzzy", "yunta2018_fuzzy_lfc"),
         "deep_dynamics_iac": ("chrosniak2024_ddm", "fang_yu2025_fthd"),
         "io_vnbd": ("onyekpe2021_qgru", "wang2023_transformer"),
@@ -55,3 +55,9 @@ def test_levenberg_low_rate_limitation_remains_explicit():
     meta = LITERATURE_BASELINES["levenberg2023_stft"]
     assert "low-rate" in meta["fidelity"]
     assert "70--125 Hz" in meta["limitation"]
+
+
+def test_lira_provenance_fields_required_by_pfr_export_exist():
+    required = {"venue", "task", "source_constraints", "common_benchmark_note", "paper_verified", "source_settings_available"}
+    for name in DATASET_BASELINES["lira_cd"]:
+        assert required.issubset(LITERATURE_BASELINES[name])

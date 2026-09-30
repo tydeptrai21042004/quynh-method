@@ -1104,7 +1104,7 @@ def add_lira_trajectory_segments(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Assign leakage-safe data partitions.
 
-    ``split.mode=spatial_within_trajectory`` (default) keeps the established
+    ``split.mode=spatial_within_trajectory`` keeps the legacy
     contiguous-with-purge protocol. ``split.mode=group_holdout`` assigns whole
     trajectory IDs to a single partition and is intended for the stronger
     unseen-trajectory generalization experiment. Splitting happens before

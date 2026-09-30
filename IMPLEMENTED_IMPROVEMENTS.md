@@ -1,8 +1,10 @@
+> **Archived research note.** The current active proposal is **SafeGrip-PFR-ECR** as defined in `SAFEGRIP_PFR_METHOD.md`. Statements below that call another method "active" describe the historical revision documented by this file only.
+
 # Implemented improvements
 
 ## v2.2.0 — Physics-Feasible Residual Estimation
 
-- Replaced PNTR as the active proposal with the smaller SafeGrip-PFR formulation.
+- At that historical revision, replaced PNTR with the smaller SafeGrip-PFR formulation.
 - Reduced the proposal to one residual GRU plus one deterministic calibrated projection.
 - Separated train and calibration roles: train labels fit the neural residual; calibration labels estimate only $q_\alpha$.
 - Added a pointwise projection theorem on the actual squared friction error.

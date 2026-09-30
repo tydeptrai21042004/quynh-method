@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from .conformal import block_max_scores, finite_sample_higher_quantile
+
 
 def robust_force_utilization_lower(fx, fy, fz, eps_t=0.0, eps_z=0.0):
     """Conservative friction-utilization lower bound under bounded force errors.
@@ -153,30 +155,33 @@ def physics_truncated_gaussian_interval(mean, sigma, lower, upper, z=1.96):
     return project_interval_numpy(raw_low, raw_high, lower, upper)
 
 
-def conformal_lower_correction(lower_cal, y_cal, alpha=0.05):
-    """One-sided split-conformal relaxation for a physics-derived lower bound.
+def conformal_lower_correction(lower_cal, y_cal, alpha=0.05, *, endpoint_ids=None, block_size=1):
+    """One-sided split-conformal relaxation for a mechanics-derived anchor.
 
-    Scores are ``s_i = lower_i - y_i``. The finite-sample higher quantile is
-    used, and ``q`` is clipped below at zero so calibration can only relax the
-    deterministic mechanics lower endpoint. Statistical coverage still relies
-    on the usual calibration/exchangeability assumptions and is not a physical
-    guarantee under arbitrary domain shift.
+    Scores are ``s_i = anchor_i - y_i``. The trailing-window maximum is an
+    *anchor*, not an unconditional deterministic lower bound for the current
+    friction unless a local temporal-persistence assumption is supplied. The
+    finite-sample correction therefore calibrates observed anchor violations.
+
+    When ``endpoint_ids`` are provided, one worst-case score is retained per
+    consecutive block within each trajectory segment. This mitigates the
+    pseudo-replication caused by overlapping windows but does not establish
+    arbitrary-dependence validity.
     """
     lower = np.asarray(lower_cal, float)
     y = np.asarray(y_cal, float)
+    if lower.shape != y.shape:
+        raise ValueError("lower_cal and y_cal must have identical shapes")
     mask = np.isfinite(lower) & np.isfinite(y)
-    lower = lower[mask]
-    y = y[mask]
-    scores = lower - y
-    n = len(scores)
-    if n == 0:
+    scores = lower[mask] - y[mask]
+    if endpoint_ids is not None:
+        ids = np.asarray(endpoint_ids, dtype=str)
+        if ids.shape != lower.shape:
+            raise ValueError("endpoint_ids must match lower_cal")
+        scores = block_max_scores(scores, ids[mask], block_size)
+    if len(scores) == 0:
         return 0.0
-    level = min(1.0, np.ceil((n + 1) * (1 - float(alpha))) / n)
-    try:
-        q = float(np.quantile(scores, level, method="higher"))
-    except TypeError:  # NumPy < 1.22 compatibility
-        q = float(np.quantile(scores, level, interpolation="higher"))
-    return max(0.0, q)
+    return max(0.0, finite_sample_higher_quantile(scores, float(alpha)))
 
 
 def apply_lower_correction(lower, q):

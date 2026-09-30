@@ -15,10 +15,54 @@ LITERATURE_BASELINES = {
         "title": "Pavement Friction Evaluation Based on Vehicle Dynamics and Vision Data Using a Multi-Feature Fusion Network",
         "authors": "Zhao Du; Asmus Skar; Matteo Pettinari; Xingyi Zhu",
         "year": 2023,
+        "venue": "Transportation Research Record",
         "doi": "10.1177/03611981231165029",
+        "task": "pavement friction estimation from vehicle dynamics and vision",
         "family": "inception_time",
         "fidelity": "paper-structure dynamics-only common-input adaptation",
+        "source_constraints": "Original study includes a vision branch; the common LiRA benchmark intentionally uses only vehicle-dynamics inputs.",
+        "common_benchmark_note": "Retrained on the locked LiRA split and common continuous friction target; no vision advantage is used.",
+        "paper_verified": True,
+        "source_settings_available": True,
         "exact_dataset": True,
+        "runnable": True,
+        "metrics": ("r2", "rmse", "mae"),
+    },
+    "todorovic2022_cnn": {
+        "dataset": "lira_cd",
+        "display_name": "Todorovic2022 CNN",
+        "title": "Neural Network Based Model for Friction Potential Estimation under Longitudinal and Lateral Excitations",
+        "authors": "Todorovic et al.",
+        "year": 2022,
+        "venue": "Journal of Physics: Conference Series",
+        "doi": "10.1088/1742-6596/2234/1/012005",
+        "task": "friction-potential estimation under longitudinal and lateral vehicle excitation",
+        "family": "cnn",
+        "fidelity": "paper-supported CNN/input-policy common-target adaptation; exact layer-by-layer source reproduction is not claimed",
+        "source_constraints": "Accessible paper evidence supports the CNN regression/input policy, but not every implementation detail needed for a bit-exact source reproduction.",
+        "common_benchmark_note": "Uses the common LiRA vehicle-signal inputs, continuous target, locked endpoints, and controlled training budget.",
+        "paper_verified": True,
+        "source_settings_available": False,
+        "exact_dataset": False,
+        "runnable": True,
+        "metrics": ("r2", "rmse", "mae"),
+    },
+    "lampe2023_gru": {
+        "dataset": "lira_cd",
+        "display_name": "Lampe2023 GRU",
+        "title": "Neural Network based Tire-Road Friction Estimation Using Experimental Data",
+        "authors": "Lampe; Kortmann; Westerkamp",
+        "year": 2023,
+        "venue": "IFAC-PapersOnLine",
+        "doi": "10.1016/j.ifacol.2023.12.056",
+        "task": "maximum tire-road friction coefficient estimation from serial onboard vehicle sensors",
+        "family": "gru",
+        "fidelity": "architecture-faithful two-layer 256-unit GRU adaptation with reported optimizer/training settings available",
+        "source_constraints": "The common LiRA sensor subset and target differ from the source experiment, so reported source metrics are not mixed with benchmark metrics.",
+        "common_benchmark_note": "Retrained from scratch on the same locked LiRA partitions and common target as SafeGrip-PFR-ECR.",
+        "paper_verified": True,
+        "source_settings_available": True,
+        "exact_dataset": False,
         "runnable": True,
         "metrics": ("r2", "rmse", "mae"),
     },
@@ -28,9 +72,15 @@ LITERATURE_BASELINES = {
         "title": "Estimating the Tire-Pavement Grip Potential From Vehicle Vibrations",
         "authors": "Eyal Levenberg",
         "year": 2023,
+        "venue": "Transportation Research Record",
         "doi": "10.1177/03611981231152249",
+        "task": "tire-pavement grip-potential estimation from vehicle vibration spectra",
         "family": "vibration_stft_linear",
         "fidelity": "paper-supported low-rate adaptation; not a source-frequency reproduction",
+        "source_constraints": "The source method relies on substantially higher-rate vibration data and reported high-frequency content that is unavailable after the common 20-Hz LiRA preparation.",
+        "common_benchmark_note": "Preserves the STFT-to-linear-regression structure at available frequencies and is labelled a low-rate adaptation, not an original-method reproduction.",
+        "paper_verified": True,
+        "source_settings_available": False,
         "exact_dataset": True,
         "runnable": True,
         "metrics": ("r2", "rmse", "mae"),
@@ -131,15 +181,15 @@ LITERATURE_BASELINES = {
 }
 
 DATASET_BASELINES = {
-    "lira_cd": ("du2023_inceptiontime", "levenberg2023_stft"),
+    "lira_cd": ("du2023_inceptiontime", "todorovic2022_cnn", "lampe2023_gru", "levenberg2023_stft"),
     "uc3m_tire": ("mendoza2019_fuzzy", "yunta2018_fuzzy_lfc"),
     "deep_dynamics_iac": ("chrosniak2024_ddm", "fang_yu2025_fthd"),
     "io_vnbd": ("onyekpe2021_qgru", "wang2023_transformer"),
 }
 PAPER_BASELINES = tuple(name for ds in DATASET_BASELINES.values() for name in ds)
 
-# Compatibility for the legacy LiRA-only benchmark engine.  This is deliberately
-# not the public paper registry and contains only the two selected D1 baselines.
+# Compatibility for the LiRA-only PFR benchmark engine. The active D1 registry
+# is the same frozen four-comparator set used by the paper table.
 LEGACY_EXECUTABLE_BASELINES = DATASET_BASELINES["lira_cd"]
 QUICK_BASELINES = LEGACY_EXECUTABLE_BASELINES
 LITERATURE_ONLY = {name: meta for name, meta in LITERATURE_BASELINES.items() if not meta["runnable"]}
@@ -178,5 +228,11 @@ def validate_paper_baselines(names, dataset: str | None = None, *, require_runna
 
 
 def validate_source_settings(names) -> None:
-    """Only locally runnable D1 adaptations have source-setting support here."""
+    """Require baselines whose published/source settings are sufficiently specified."""
     validate_paper_baselines(names, require_runnable=True)
+    unavailable = [n for n in names if not LITERATURE_BASELINES[n].get("source_settings_available", False)]
+    if unavailable:
+        raise ValueError(
+            "Source-faithful settings are not sufficiently specified for: " + ", ".join(unavailable)
+            + ". Use the controlled protocol for the full primary comparison."
+        )

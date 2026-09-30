@@ -19,11 +19,22 @@ a_j=\operatorname{softmax}(\gamma L_{0,j}/U),
 h^{\rm phys}=\sum_j a_jh_j.
 \]
 
+Let the trailing mechanics quantity be the anchor
+
+\[
+A_0^W=\max_{j\in W}L_{0,j}.
+\]
+
 The point estimate is
 
 \[
-\mu_{\rm point}=L_0^W+r_\theta(h^{\rm phys}).
+\mu_{\rm point}=A_0^W+r_\theta(h^{\rm phys}).
 \]
+
+`A_0^W` is called an **anchor**, not an unconditional current-friction lower
+bound. Interpreting the trailing maximum itself as a deterministic lower bound
+requires a local temporal-persistence assumption; PFR-ECR instead calibrates
+its violations on the calibration partition.
 
 A positive scale head produces `sigma`.  Calibration creates a one-sided
 statistical lower estimate
@@ -46,7 +57,11 @@ the controller-facing conservative output.  With total risk split as
 \Pr\{\mu_{\rm safe}\le\mu\}\ge1-\alpha_{\rm total}
 \]
 
-under the usual split-conformal exchangeability assumptions.
+when the relevant calibration/test units satisfy the split-conformal
+exchangeability assumption. The paper configuration uses trajectory-level
+`group_holdout` and block-max calibration to reduce overlap-induced
+pseudo-replication; this is explicitly a dependence-mitigation protocol, not a
+claim of validity under arbitrary temporal dependence.
 
 See [`SAFEGRIP_PFR_METHOD.md`](SAFEGRIP_PFR_METHOD.md) for the exact method,
 assumptions, ablations, and theorem.
@@ -61,9 +76,9 @@ pytest -q
 ## Quick LiRA run
 
 ```bash
-safegrip download --datasets lira
-safegrip prepare --dataset lira
-safegrip benchmark --dataset lira --preset quick --proposal pfr --protocol controlled
+safegrip download --datasets lira_cd
+safegrip prepare --dataset lira_cd
+safegrip benchmark --dataset lira_cd --preset quick --protocol controlled
 ```
 
 ## Paper workflow
@@ -77,17 +92,6 @@ For a separate source-setting comparator table:
 ```bash
 RUN_SOURCE_FAITHFUL=1 bash scripts/run_paper.sh
 ```
-
-## PFR tuning
-
-```bash
-safegrip tune --method pfr --dataset lira --trials 20
-```
-
-Validation-only tuning covers ordinary approximation parameters such as context
-length, GRU width, attention strength, optimization settings, and mechanics
-window length.  The total risk level, risk split, conformal quantile rule, and
-physical support are not tuned against test performance.
 
 ## Main comparison and ablations
 
@@ -103,7 +107,7 @@ The PFR component table additionally contains:
 ## Primary result files
 
 ```text
-results/lira_paper/
+results/lira_cd_paper/
   metrics.csv
   metrics_by_seed.csv
   predictions_by_seed.csv
@@ -135,14 +139,17 @@ The active benchmark uses:
 - no response inversion, friction-grid search, trust radius, or iterative
   projection solver.
 
-## Real-data-only policy
+## Closed real-data registry
 
-The CLI does not expose a simulated/synthetic benchmark dataset. The full friction benchmark accepts `lira` and `mssp2023_friction`; the latter runs only after the authors' real data payload has been supplied. KIT and KU Leuven are used for real force/physics validation, while Mendeley friction is used for external real friction-reference validation. See `DATASETS.md`.
+The public CLI exposes the four final-protocol real datasets only: `lira_cd`,
+`uc3m_tire`, `deep_dynamics_iac`, and `io_vnbd`. The legacy LiRA PFR-ECR
+end-to-end benchmark is D1 (`lira_cd`); D2--D4 are kept in their distinct
+scientific tasks and are not fabricated into the D1 friction table.
 
 ```bash
 safegrip datasets
-safegrip download --datasets lira
-safegrip benchmark --dataset lira --preset trust --proposal pfr --protocol controlled
+safegrip baselines --dataset lira_cd
+safegrip benchmark --dataset lira_cd --preset trust --protocol controlled
 ```
 
 ---

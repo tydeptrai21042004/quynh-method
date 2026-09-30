@@ -17,7 +17,7 @@ DATASET_REGISTRY = {
         "license": "CC BY 4.0",
         "download_kind": "figshare",
         "input_modalities": ("vehicle_dynamics", "imu", "can", "gps"),
-        "allowed_baselines": ("du2023_inceptiontime", "levenberg2023_stft"),
+        "allowed_baselines": ("du2023_inceptiontime", "todorovic2022_cnn", "lampe2023_gru", "levenberg2023_stft"),
     },
     "uc3m_tire": {
         "id": "D2",

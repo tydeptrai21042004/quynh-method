@@ -1,10 +1,10 @@
-> **Legacy note (v2.2):** SafeGrip-PFR is the active proposal. This file is retained only to reproduce earlier experiments.
+> **Archived research note.** The current active proposal is **SafeGrip-PFR-ECR** as defined in `SAFEGRIP_PFR_METHOD.md`. Statements below that call another method "active" describe the historical revision documented by this file only.
 
 # SafeGrip-FRC: Finite-Window Friction Resolution Certification
 
 ## 1. Scope
 
-SafeGrip-FRC is the active proposal. It intentionally replaces the large SafeGrip-CI v1.4 correction/controller stack with one causal response model and one finite-grid inverse-identification rule. The neural architecture is not claimed as novel; the research contribution is the friction-specific finite-window resolution construction and its executable recovery certificate.
+At that historical revision, SafeGrip-FRC was the proposal under study. It intentionally replaces the large SafeGrip-CI v1.4 correction/controller stack with one causal response model and one finite-grid inverse-identification rule. The neural architecture is not claimed as novel; the research contribution is the friction-specific finite-window resolution construction and its executable recovery certificate.
 
 The legacy CI-v1.4 implementation remains in the repository for reproducibility and can be selected with `safegrip benchmark --proposal legacy-ci`.
 

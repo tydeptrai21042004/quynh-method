@@ -1,21 +1,22 @@
 {
-  "release": "SafeGrip-PFR-ECR real-data-only dataset revision",
+  "release": "SafeGrip-PFR-ECR closed real-data registry revision",
   "active_proposal": "SafeGrip-PFR-ECR",
   "release_validation": {
-    "pytest": "112 passed, 2 warnings",
+    "pytest": "149 passed, 12 warnings",
     "python_compile": true,
-    "primary_real_benchmark_choices": ["lira", "mssp2023_friction"],
+    "primary_friction_benchmark": "lira_cd",
+    "paper_dataset_registry": ["lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd"],
     "generated_benchmark_dataset_exposed": false
   },
   "verified_invariants": [
-    "SafeGrip-PFR-ECR is the only active proposal exposed by the CLI",
-    "full friction benchmark accepts real measured datasets only",
-    "LiRA remains the automatically downloadable primary friction benchmark",
-    "MSSP-2023 preparation requires author-supplied real friction and dynamics channels",
-    "MSSP-2023 adapter refuses to fabricate missing friction, speed, ax or ay channels",
-    "KIT and KU Leuven remain real force/physics validation sources",
-    "Mendeley friction is handled as an external measured friction-reference validation rather than fake sensor sequences",
-    "paper-supported friction baselines remain Du2023, Todorovic2022, Lampe2023 GRU and Levenberg2023 STFT"
+    "SafeGrip-PFR-ECR is the only active proposal exposed by the current CLI",
+    "the D1 LiRA controlled comparison exposes exactly four paper-supported comparators",
+    "the primary split configuration is trajectory-level group_holdout",
+    "active PFR-ECR mechanics and statistical calibration use block-max score reduction for overlap mitigation",
+    "block-max calibration is documented as dependence mitigation only, not arbitrary-dependence validity",
+    "finite-sample conformal quantiles use the exact ceil((n+1)(1-alpha)) order statistic",
+    "the trailing mechanics maximum is described as an anchor unless a local temporal-persistence assumption is supplied",
+    "paper baseline provenance fields required by the result exporter are present for all four D1 comparators"
   ],
-  "note": "Empirical paper claims must be based on real measured datasets. The second primary MSSP-2023 benchmark requires the authors' external data payload before it can be run."
+  "note": "Population coverage claims still require exchangeability of the relevant calibration/test units (or a justified exchangeable-block formulation)."
 }

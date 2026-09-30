@@ -1,6 +1,8 @@
+> **Archived research note.** The current active proposal is **SafeGrip-PFR-ECR** as defined in `SAFEGRIP_PFR_METHOD.md`. Statements below that call another method "active" describe the historical revision documented by this file only.
+
 # SafeGrip-Open v2.2 — SafeGrip-PFR release
 
-The active proposal is **SafeGrip-PFR: Physics-Feasible Residual Estimation**.
+The proposal in that historical release was **SafeGrip-PFR: Physics-Feasible Residual Estimation**.
 
 The v2.2 redesign deliberately removes the inactive PNTR response-refinement stack and keeps the mathematically supported core:
 

@@ -4,8 +4,8 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 export PYTHONPATH="$(pwd)/src${PYTHONPATH:+:${PYTHONPATH}}"
 ${PYTHON_BIN} -m pip install -q -e .
 SG="${PYTHON_BIN} -m safegrip.cli"
-DATASET="${DATASET:-lira}"
+DATASET="${DATASET:-lira_cd}"
 $SG download --datasets "$DATASET"
 $SG prepare --dataset "$DATASET"
-$SG benchmark --dataset "$DATASET" --preset quick --proposal pfr --protocol controlled
+$SG benchmark --dataset "$DATASET" --preset quick --protocol controlled
 printf '\nDone: results/%s_quick\n' "$DATASET"

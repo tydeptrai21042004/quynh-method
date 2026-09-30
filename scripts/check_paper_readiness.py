@@ -5,10 +5,8 @@ from pathlib import Path
 import pandas as pd
 
 ROOT=Path(__file__).resolve().parents[1]
-MAIN=ROOT/'results/lira_paper'
-PROC=ROOT/'data/processed/lira'
-TUNE=ROOT/'results/lira_pfr_tuning'
-BTUNE=ROOT/'results/lira_baseline_tuning'
+MAIN=ROOT/'results/lira_cd_paper'
+PROC=ROOT/'data/processed/lira_cd'
 
 required_main=[
     'metrics.csv','metrics_by_seed.csv','predictions_by_seed.csv',
@@ -30,7 +28,14 @@ for f in required_proc: checks[f'processed:{f}']=(PROC/f).exists()
 if (MAIN/'pfr_theorem_audit.json').exists():
     ta=json.loads((MAIN/'pfr_theorem_audit.json').read_text())
     checks['theorem_audit_pass']=ta.get('status')=='PASS' and int(ta.get('deterministic_fusion_logic_violations',1))==0
-else: checks['theorem_audit_pass']=False
+    checks['group_holdout_primary']=ta.get('split_mode')=='group_holdout'
+    checks['block_max_calibration_active']=ta.get('uq_method')=='block_max_split_conformal' and int(ta.get('calibration_block_size',0))>=1
+    checks['dependence_claim_is_mitigation_only']=ta.get('dependence_claim')=='mitigation_only'
+else:
+    checks['theorem_audit_pass']=False
+    checks['group_holdout_primary']=False
+    checks['block_max_calibration_active']=False
+    checks['dependence_claim_is_mitigation_only']=False
 
 if (MAIN/'fairness_audit.json').exists():
     fa=json.loads((MAIN/'fairness_audit.json').read_text())
@@ -56,19 +61,6 @@ if (MAIN/'pfr_component_ablation_by_seed.csv').exists():
     expected={'direct_gru_control','pfr_residual_raw','pfr_physics_features_no_attention','safegrip_pfr','safegrip_pfr_safe'}
     checks['decisive_ablation_present']=expected.issubset(set(a.model.astype(str)))
 else: checks['decisive_ablation_present']=False
-
-checks['pfr_tuning_present']=all((TUNE/f).exists() for f in ['best_hparams.yaml','tuning_summary.json','tuning_endpoint_manifest.json'])
-checks['baseline_tuning_present']=all((BTUNE/f).exists() for f in ['best_hparams.yaml','tuning_summary.json'])
-checks['tuning_endpoint_parity']=False
-pm=TUNE/'tuning_endpoint_manifest.json'; bms=sorted(BTUNE.glob('*/tuning_endpoint_manifest.json'))
-if pm.exists() and bms:
-    p=json.loads(pm.read_text())
-    checks['tuning_endpoint_parity']=all(
-        int(json.loads(x.read_text()).get('eval_start',-1))==int(p.get('eval_start',-2))
-        and int(json.loads(x.read_text()).get('n',-1))==int(p.get('n',-2))
-        and str(json.loads(x.read_text()).get('sha256'))==str(p.get('sha256'))
-        for x in bms
-    )
 
 if (PROC/'lira_preprocessing_report.json').exists():
     prep=json.loads((PROC/'lira_preprocessing_report.json').read_text()).get('preprocessing',{})

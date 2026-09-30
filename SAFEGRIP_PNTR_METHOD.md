@@ -1,4 +1,4 @@
-> **Legacy note (v2.2):** SafeGrip-PFR is the active proposal. This file is retained only to reproduce earlier experiments.
+> **Archived research note.** The current active proposal is **SafeGrip-PFR-ECR** as defined in `SAFEGRIP_PFR_METHOD.md`. Statements below that call another method "active" describe the historical revision documented by this file only.
 
 # SafeGrip-PNTR: Physics-Neural Trust-Region Friction Estimation
 
@@ -6,7 +6,7 @@
 
 The previous SafeGrip-FRC estimator solved a global inverse problem over the full friction grid. On the LiRA development run, its causal response model was insufficiently discriminative in friction: the direct GRU control was accurate, while global response inversion could jump to a distant friction candidate. SafeGrip-PNTR changes the estimator so that a good neural prediction is never discarded by an unconstrained global inverse search.
 
-The active proposal is now deliberately centered on **physics + neural estimation**:
+The proposal in that historical revision was deliberately centered on **physics + neural estimation**:
 
 1. a GRU predicts the **non-negative friction slack above a mechanics lower bound**;
 2. the physical lower bound is therefore embedded directly in the neural output parameterization;

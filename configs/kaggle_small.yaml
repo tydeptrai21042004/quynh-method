@@ -396,6 +396,7 @@ split:
   calibration: 0.1
   validation: 0.1
   test: 0.2
+  mode: group_holdout
 physics:
   window_samples: 16
 health:

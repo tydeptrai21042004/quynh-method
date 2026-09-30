@@ -107,3 +107,20 @@ def test_safety_fusion_logic_holds_whenever_both_components_are_covered():
     audit = safety_fusion_audit(y, mechanics, point, scale, q_safe=2.0, mu_upper=1.3)
     assert audit.fusion_logic_holds.all()
     assert np.all(audit.fused_safe[audit.joint_component_covered] <= y[audit.joint_component_covered] + 1e-12)
+
+
+def test_finite_sample_quantile_uses_exact_split_conformal_rank():
+    from safegrip.conformal import finite_sample_higher_quantile
+    scores = np.arange(1.0, 101.0)
+    # ceil((100+1)*.95) = 96, so the exact higher order statistic is 96.
+    assert finite_sample_higher_quantile(scores, 0.05) == 96.0
+
+
+def test_block_max_conformal_uses_worst_score_per_segment_block():
+    from safegrip.conformal import block_max_scores
+    scores = np.array([1., 3., 2., 4., 7., 6.])
+    ids = np.array([
+        "segA:calibration:0", "segA:calibration:1", "segA:calibration:2", "segA:calibration:3",
+        "segB:calibration:0", "segB:calibration:1",
+    ])
+    assert np.allclose(block_max_scores(scores, ids, 2), [3., 4., 7.])

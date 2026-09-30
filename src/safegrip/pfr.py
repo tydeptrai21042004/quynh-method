@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .physics import project_numpy
+from .conformal import block_max_scores, finite_sample_higher_quantile
 
 
 @dataclass(frozen=True)
@@ -199,23 +200,9 @@ class SafetyFusionAudit:
 
 
 def _finite_sample_higher_quantile(scores: np.ndarray, alpha: float, *, min_samples: int = 1) -> float:
-    """Finite-sample split-conformal higher quantile with explicit sample validation."""
+    """Backward-compatible wrapper around the exact rank implementation."""
 
-    scores = np.asarray(scores, dtype=float)
-    scores = scores[np.isfinite(scores)]
-    min_samples = int(min_samples)
-    if min_samples < 1:
-        raise ValueError("min_samples must be >= 1")
-    if len(scores) < min_samples:
-        raise ValueError(f"insufficient finite calibration samples: {len(scores)} < {min_samples}")
-    alpha = float(alpha)
-    if not 0.0 < alpha < 1.0:
-        raise ValueError("alpha must lie in (0, 1)")
-    level = min(1.0, np.ceil((len(scores) + 1) * (1.0 - alpha)) / len(scores))
-    try:
-        return float(np.quantile(scores, level, method="higher"))
-    except TypeError:  # NumPy < 1.22
-        return float(np.quantile(scores, level, interpolation="higher"))
+    return finite_sample_higher_quantile(scores, alpha, min_samples=min_samples)
 
 
 def conformal_safe_correction(
@@ -226,6 +213,8 @@ def conformal_safe_correction(
     alpha: float = 0.025,
     scale_floor: float = 1e-6,
     min_calibration_size: int = 1,
+    endpoint_ids: np.ndarray | None = None,
+    block_size: int = 1,
 ) -> float:
     """One-sided normalized conformal correction for safe friction use.
 
@@ -245,6 +234,11 @@ def conformal_safe_correction(
         raise ValueError("point_cal, y_cal and scale_cal must be broadcast compatible") from exc
     mask = np.isfinite(point) & np.isfinite(y) & np.isfinite(scale)
     scores = (point[mask] - y[mask]) / scale[mask]
+    if endpoint_ids is not None:
+        ids = np.asarray(endpoint_ids, dtype=str)
+        if ids.shape != point.shape:
+            raise ValueError("endpoint_ids must match the calibration prediction shape")
+        scores = block_max_scores(scores, ids[mask], block_size)
     return max(0.0, _finite_sample_higher_quantile(scores, float(alpha), min_samples=int(min_calibration_size)))
 
 

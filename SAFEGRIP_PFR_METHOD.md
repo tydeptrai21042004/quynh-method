@@ -25,13 +25,13 @@ Let `L0_t` denote the instantaneous mechanics-derived lower-grip signal and let
 `W_t` be a trailing, trajectory-local evidence window.  The residual anchor is
 
 \[
-L^W_{0,t}=\max_{j\in W_t}L_{0,j}.
+A^W_{0,t}=\max_{j\in W_t}L_{0,j}.
 \]
 
 The learned signed residual target is
 
 \[
-r_t^\star=\mu_t-L^W_{0,t}.
+r_t^\star=\mu_t-A^W_{0,t}.
 \]
 
 For every recurrent input timestep, the network also receives the instantaneous
@@ -67,7 +67,7 @@ The residual head gives a standardized residual estimate, transformed back to
 physical units as `r_theta`.  The point estimate is
 
 \[
-\boxed{\mu_{\rm point,t}=L^W_{0,t}+r_\theta(h_t^{\rm phys}).}
+\boxed{\mu_{\rm point,t}=A^W_{0,t}+r_\theta(h_t^{\rm phys}).}
 \]
 
 A second scalar head returns
@@ -102,22 +102,37 @@ fixed split
 where `rho=risk_split` is a protocol parameter, not a test-tuned value.  The
 default is `rho=1/2`.
 
-## 6. Calibrated mechanics lower estimate
+## 6. Calibrated mechanics anchor and lower estimate
+
+The trailing statistic $A^W_{0,t}$ is a **mechanics-derived anchor**. Even if an
+instantaneous statement $L_{0,j}\le\mu_j$ holds, it does not by itself imply
+$A^W_{0,t}\le\mu_t$ when friction changes inside the window. Interpreting the
+trailing maximum itself as a deterministic current-friction lower bound therefore
+requires a local temporal-persistence assumption. PFR-ECR does not require that
+stronger interpretation for its calibrated safety output.
 
 On calibration points define
 
 \[
-s_i^{\rm phys}=L^W_{0,i}-\mu_i.
+s_i^{\rm phys}=A^W_{0,i}-\mu_i.
 \]
 
-Let `q_beta` be the finite-sample higher split-conformal quantile.  The mechanics
-lower estimate is
+Let `q_beta` be the exact finite-sample higher split-conformal order statistic.
+The calibrated mechanics lower estimate is
 
 \[
-\boxed{L_{\beta,t}=\max\{0,L^W_{0,t}-q_\beta\}.}
+\boxed{L_{\beta,t}=\max\{0,A^W_{0,t}-q_\beta\}.}
 \]
 
-Under the usual exchangeability assumption,
+The active paper configuration uses trajectory-level `group_holdout` and applies
+block-max score reduction inside each calibration trajectory/segment before the
+quantile is selected. With `uq.block_size: 0`, the executable block size is
+`ceil(sequence_length/stride)`. This reduces pseudo-replication from overlapping
+windows but is explicitly a **dependence-mitigation** device, not a proof of
+validity under arbitrary temporal dependence.
+
+If the resulting calibration/test units satisfy exchangeability (or a justified
+exchangeable-block formulation), then
 
 \[
 \Pr\{L_{\beta,new}\le\mu_{new}\}\ge 1-\beta.
@@ -139,7 +154,7 @@ conservative.  Define
 \boxed{C_{\alpha_s,t}=\mu_{\rm point,t}-q_s\sigma_t.}
 \]
 
-Then, under split-conformal exchangeability,
+Then, under the same required split-conformal exchangeability (or justified exchangeable-block) condition,
 
 \[
 \Pr\{C_{\alpha_s,new}\le\mu_{new}\}\ge1-\alpha_s.
@@ -188,9 +203,11 @@ Therefore, using the union bound,
 1-\alpha_{\rm total}.
 \]
 
-The probability statement requires the usual split-conformal exchangeability
-assumption.  Independence between the two component coverage events is not
-required for the union bound.
+The deterministic max/union-bound implication does not require independence
+between the two component coverage events. The population finite-sample
+coverage statement does require exchangeability of the relevant calibration/test
+units (or a justified exchangeable-block formulation); the block-max procedure
+above is dependence mitigation rather than a substitute for that assumption.
 
 ## 10. Decisive ablations
 
@@ -219,7 +236,7 @@ Three additional component controls isolate otherwise confounded choices:
 
 The safety path is decomposed without retraining:
 
-- `pfr_safe_mechanics_only`: calibrated mechanics lower estimate only;
+- `pfr_safe_mechanics_only`: calibrated mechanics calibrated lower estimate only;
 - `pfr_safe_statistical_only`: normalized conformal statistical lower estimate
   only;
 - `safegrip_pfr_safe`: fused controller-facing lower estimate.
@@ -246,6 +263,8 @@ includes:
 - unsafe-overestimation rate before and after safety correction;
 - mean point-to-safe gap;
 - predicted scale and attention diagnostics.
+
+The primary paper configuration uses trajectory-level `group_holdout`. Because adjacent temporal windows may still overlap within a trajectory, the active calibration path applies block-max score reduction, with `block_size: 0` resolved to `ceil(sequence_length/stride)`. This is a conservative dependence-mitigation step that reduces pseudo-replication; it is **not** claimed to establish split-conformal validity under arbitrary temporal dependence. The finite-sample population statement still requires exchangeability, or a justified exchangeable-block formulation, for the calibration/test units.
 
 The benchmark also writes a deterministic fusion audit.  A `PASS` there checks
 the algebraic implication "both component lower estimates covered => fused

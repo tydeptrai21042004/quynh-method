@@ -1,45 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 PYTHON_BIN="${PYTHON_BIN:-python}"
 export PYTHONPATH="$(pwd)/src${PYTHONPATH:+:${PYTHONPATH}}"
 ${PYTHON_BIN} -m pip install -q -e '.[paper,dev]'
 SG="${PYTHON_BIN} -m safegrip.cli"
-TRIALS="${TRIALS:-20}"
-BASELINE_TRIALS="${BASELINE_TRIALS:-30}"
-TUNE_EPOCHS="${TUNE_EPOCHS:-}"
 
-$SG download --datasets lira
-$SG prepare --dataset lira
+DATASET="lira_cd"
+MODELS="du2023_inceptiontime,todorovic2022_cnn,lampe2023_gru,levenberg2023_stft"
+MAIN="results/${DATASET}_paper"
 
-HP_ARGS=()
-BASELINE_HP_ARGS=()
-if [[ "${SKIP_TUNING:-0}" != "1" ]]; then
-  TUNE_EPOCH_ARGS=()
-  if [[ -n "$TUNE_EPOCHS" ]]; then TUNE_EPOCH_ARGS=(--epochs "$TUNE_EPOCHS"); fi
+# Re-prepare intentionally: the current paper protocol uses trajectory-level
+# group holdout, so stale prepared files from the older within-trajectory split
+# must not be silently reused.
+$SG download --datasets "$DATASET"
+$SG prepare --dataset "$DATASET"
+$SG benchmark --dataset "$DATASET" --preset paper --models "$MODELS" --protocol controlled
+$SG statistics --results "$MAIN" --proposal safegrip_pfr --bootstrap 5000
 
-  # Only neural approximation/optimization parameters are tuned.  The physical
-  # total risk, risk split, conformal rules, and physical support are fixed.
-  $SG tune --method pfr --dataset lira --trials "$TRIALS" "${TUNE_EPOCH_ARGS[@]}"
-  $SG tune-baselines --dataset lira --protocol controlled --trials "$BASELINE_TRIALS" "${TUNE_EPOCH_ARGS[@]}"
-  HP_ARGS=(--proposal-hparams results/lira_pfr_tuning/best_hparams.yaml)
-  BASELINE_HP_ARGS=(--baseline-hparams results/lira_baseline_tuning/best_hparams.yaml)
-fi
-
-$SG benchmark --dataset lira --preset paper --proposal pfr --protocol controlled \
-  "${HP_ARGS[@]}" "${BASELINE_HP_ARGS[@]}"
-$SG statistics --results results/lira_paper --proposal safegrip_pfr --bootstrap 5000
-
+# Only Du and Lampe expose sufficiently specified source settings in this
+# repository. The full four-model paper comparison remains the controlled run.
 if [[ "${RUN_SOURCE_FAITHFUL:-0}" == "1" ]]; then
-  $SG benchmark --dataset lira --preset paper --proposal pfr --protocol source-faithful \
-    "${HP_ARGS[@]}" "${BASELINE_HP_ARGS[@]}"
+  $SG benchmark --dataset "$DATASET" --preset paper \
+    --models du2023_inceptiontime,lampe2023_gru --protocol source-faithful
 fi
 
 ${PYTHON_BIN} scripts/check_paper_readiness.py
 ${PYTHON_BIN} scripts/package_paper_results.py
 printf '\nSafeGrip-PFR-ECR paper run complete.\n'
-printf '  main table:       results/lira_paper/metrics.csv\n'
-printf '  component table:  results/lira_paper/pfr_component_ablation.csv\n'
-printf '  safety table:     results/lira_paper/pfr_safety_metrics.csv\n'
-printf '  theorem audit:    results/lira_paper/pfr_theorem_audit.json\n'
-printf '  PFR tuning:       results/lira_pfr_tuning/\n'
-printf '  baseline tuning:  results/lira_baseline_tuning/\n'
+printf '  main table:       %s/metrics.csv\n' "$MAIN"
+printf '  component table:  %s/pfr_component_ablation.csv\n' "$MAIN"
+printf '  safety table:     %s/pfr_safety_metrics.csv\n' "$MAIN"
+printf '  theorem audit:    %s/pfr_theorem_audit.json\n' "$MAIN"
