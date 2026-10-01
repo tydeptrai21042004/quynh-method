@@ -53,6 +53,7 @@ RUN_TESTS = os.environ.get("SAFEGRIP_RUN_TESTS", "1") not in {"0", "false", "Fal
 
 DATASETS = ("lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd")
 PROPOSAL_NAME = "universal_safegrip"
+PROPOSAL_REVISION = "query_matched_physical_innovation_v1"
 D2D4_INPUT_DIMS = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 4}
 REAL_IAC_FILES = (
     "LVMS_23_01_04_A.csv",
@@ -131,8 +132,9 @@ def load_state():
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     return {
-        "version": 3,
+        "version": 4,
         "proposal": PROPOSAL_NAME,
+        "proposal_revision": PROPOSAL_REVISION,
         "real_data_only": True,
         "seed": SEED,
         "epochs": EPOCHS,
@@ -228,8 +230,49 @@ RUN_ROOT.mkdir(parents=True, exist_ok=True)
 RESULTS_ROOT.mkdir(parents=True, exist_ok=True)
 STATE = load_state()
 
-if STATE.get("version") != 3 or STATE.get("proposal") != PROPOSAL_NAME:
-    raise RuntimeError("Checkpoint belongs to a different experiment protocol; use a fresh output directory.")
+# Protocol v3 used the same datasets/baselines but trained UniversalSafeGrip as
+# an absolute predictor.  Revision v4 reinterprets the same decoder as a
+# query-matched physical innovation predictor.  Preserve real-data caches and
+# completed literature baselines, but never reuse proposal weights/metrics from
+# the incompatible semantics.
+if STATE.get("version") == 3 and STATE.get("proposal") == PROPOSAL_NAME:
+    print(f"[resume] migrating protocol v3 -> v4 ({PROPOSAL_REVISION}); proposal stages will retrain")
+    completed = []
+    for stage in STATE.get("completed", []):
+        if stage.startswith("model:") and stage.endswith(f":{PROPOSAL_NAME}"):
+            continue
+        completed.append(stage)
+    STATE["completed"] = completed
+    STATE["progress"] = {
+        k: v for k, v in STATE.get("progress", {}).items()
+        if not (k.startswith("model:") and k.endswith(f":{PROPOSAL_NAME}"))
+    }
+    for dataset in DATASETS:
+        out = RESULTS_ROOT / dataset
+        for name in (
+            f"{PROPOSAL_NAME}_metrics.csv",
+            f"{PROPOSAL_NAME}_predictions.csv",
+            f"{PROPOSAL_NAME}_model.pt",
+            f"{PROPOSAL_NAME}_train_state.pt",
+            f"{PROPOSAL_NAME}_training_log.csv",
+        ):
+            q = out / name
+            if q.exists():
+                q.unlink()
+    STATE["version"] = 4
+    STATE["proposal_revision"] = PROPOSAL_REVISION
+    STATE["migration_note"] = (
+        "v3 absolute-prediction UniversalSafeGrip outputs invalidated; "
+        "real-data caches and paper-baseline stages preserved"
+    )
+    save_state()
+
+if (
+    STATE.get("version") != 4
+    or STATE.get("proposal") != PROPOSAL_NAME
+    or STATE.get("proposal_revision") != PROPOSAL_REVISION
+):
+    raise RuntimeError("Checkpoint belongs to a different proposal revision; use a fresh output directory.")
 if STATE.get("seed") != SEED or STATE.get("epochs") != EPOCHS:
     raise RuntimeError(
         f"Checkpoint seed/epochs={STATE.get('seed')}/{STATE.get('epochs')} but requested {SEED}/{EPOCHS}."
@@ -771,8 +814,12 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
             payload = torch.load(ckpt, map_location=device, weights_only=False)
         except TypeError:
             payload = torch.load(ckpt, map_location=device)
-        model.load_state_dict(payload["model"]); opt.load_state_dict(payload["optimizer"])
-        start_epoch = int(payload.get("epoch", 0))
+        if payload.get("proposal_revision") != PROPOSAL_REVISION:
+            print(f"[{dataset}] ignoring incompatible proposal train-state checkpoint")
+            ckpt.unlink()
+        else:
+            model.load_state_dict(payload["model"]); opt.load_state_dict(payload["optimizer"])
+            start_epoch = int(payload.get("epoch", 0))
         print(f"[{dataset}] resume {PROPOSAL_NAME}: epoch {start_epoch}/{EPOCHS}")
 
     log_file = out / f"{PROPOSAL_NAME}_training_log.csv"
@@ -796,7 +843,10 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
         row = {"epoch": epoch+1, "train_loss": float(np.mean(losses)), "val_loss": val_loss}
         old_rows = [r for r in old_rows if int(r.get("epoch", -1)) != epoch+1] + [row]
         pd.DataFrame(old_rows).sort_values("epoch").to_csv(log_file, index=False)
-        torch.save({"epoch": epoch+1, "model": model.state_dict(), "optimizer": opt.state_dict()}, ckpt)
+        torch.save({
+            "epoch": epoch+1, "model": model.state_dict(), "optimizer": opt.state_dict(),
+            "proposal_revision": PROPOSAL_REVISION,
+        }, ckpt)
         STATE.setdefault("progress", {})[stage] = {"epoch": epoch+1, "of": EPOCHS}
         save_state()
         if (epoch + 1) % 2 == 0:
@@ -826,12 +876,16 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
             continue
         metrics.append({
             "dataset": dataset, "model": PROPOSAL_NAME, "proposal_method": PROPOSAL_NAME,
+            "proposal_revision": PROPOSAL_REVISION,
             "target": name, "seed": SEED, "epochs": EPOCHS, "split_policy": split_policy,
             "data_kind": "real", **metric_dict(all_y[j], all_p[j]),
         })
     pd.DataFrame(metrics).to_csv(metric_file, index=False)
     pd.DataFrame(pred_rows).to_csv(out / f"{PROPOSAL_NAME}_predictions.csv", index=False)
-    torch.save({"state_dict": model.state_dict(), "seed": SEED, "epochs": EPOCHS}, out / f"{PROPOSAL_NAME}_model.pt")
+    torch.save({
+        "state_dict": model.state_dict(), "seed": SEED, "epochs": EPOCHS,
+        "proposal_revision": PROPOSAL_REVISION,
+    }, out / f"{PROPOSAL_NAME}_model.pt")
     if ckpt.exists(): ckpt.unlink()
     mark_done(stage)
     del model, opt, train_batches, val_batches, test_batches
@@ -966,8 +1020,12 @@ def train_one_d2d4_baseline(dataset, name, train_records, test_records, split_po
     if ckpt.exists() and not is_done(stage):
         try: payload = torch.load(ckpt, map_location=device, weights_only=False)
         except TypeError: payload = torch.load(ckpt, map_location=device)
-        model.load_state_dict(payload["model"]); opt.load_state_dict(payload["optimizer"])
-        start_epoch = int(payload.get("epoch", 0))
+        if payload.get("proposal_revision") != PROPOSAL_REVISION:
+            print(f"[{dataset}] ignoring incompatible proposal train-state checkpoint")
+            ckpt.unlink()
+        else:
+            model.load_state_dict(payload["model"]); opt.load_state_dict(payload["optimizer"])
+            start_epoch = int(payload.get("epoch", 0))
 
     X, Y = torch.from_numpy(xtr), torch.from_numpy(ytr)
     n = len(X)
@@ -985,7 +1043,10 @@ def train_one_d2d4_baseline(dataset, name, train_records, test_records, split_po
             loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0); opt.step()
             losses.append(float(loss.detach().cpu()))
         print(f"[{dataset}/{name}] epoch {epoch+1:02d}/{EPOCHS} loss={np.mean(losses):.6g}")
-        torch.save({"epoch": epoch+1, "model": model.state_dict(), "optimizer": opt.state_dict()}, ckpt)
+        torch.save({
+            "epoch": epoch+1, "model": model.state_dict(), "optimizer": opt.state_dict(),
+            "proposal_revision": PROPOSAL_REVISION,
+        }, ckpt)
         STATE.setdefault("progress", {})[stage] = {"epoch": epoch+1, "of": EPOCHS}; save_state()
         if (epoch + 1) % 2 == 0: make_checkpoint_zip()
 

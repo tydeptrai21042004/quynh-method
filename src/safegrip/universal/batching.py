@@ -18,6 +18,10 @@ class UniversalSensorBatch:
     times_sec: torch.Tensor
     channel_ids: torch.Tensor
     sequence_ids: tuple[str, ...]
+    # Canonical-unit endpoint value for each token patch. Optional for backward
+    # compatibility with manually constructed batches; tokenizer-generated
+    # batches always provide it.
+    last_values: torch.Tensor | None = None
 
     def to(self, device):
         return UniversalSensorBatch(
@@ -31,6 +35,7 @@ class UniversalSensorBatch:
             times_sec=self.times_sec.to(device),
             channel_ids=self.channel_ids.to(device),
             sequence_ids=self.sequence_ids,
+            last_values=None if self.last_values is None else self.last_values.to(device),
         )
 
 
@@ -51,6 +56,7 @@ def pad_tokenized_records(records: list[TokenizedRecord] | tuple[TokenizedRecord
     fs = torch.zeros((b, nmax), dtype=torch.float32)
     tt = torch.zeros((b, nmax), dtype=torch.float32)
     ch = torch.full((b, nmax), -1, dtype=torch.long)
+    last = torch.zeros((b, nmax), dtype=torch.float32)
     for i, r in enumerate(records):
         n = r.num_tokens
         features[i, :n] = torch.from_numpy(r.features)
@@ -62,4 +68,8 @@ def pad_tokenized_records(records: list[TokenizedRecord] | tuple[TokenizedRecord
         fs[i, :n] = torch.from_numpy(r.sample_rates_hz)
         tt[i, :n] = torch.from_numpy(r.times_sec)
         ch[i, :n] = torch.from_numpy(r.channel_ids)
-    return UniversalSensorBatch(features, mask, q, a, l, u, fs, tt, ch, tuple(r.sequence_id for r in records))
+        if r.last_values is not None:
+            last[i, :n] = torch.from_numpy(r.last_values)
+    return UniversalSensorBatch(
+        features, mask, q, a, l, u, fs, tt, ch, tuple(r.sequence_id for r in records), last
+    )

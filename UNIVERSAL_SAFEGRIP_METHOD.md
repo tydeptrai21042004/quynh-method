@@ -26,13 +26,52 @@ shared latent state L
 compositional physical queries
       |-- friction
       |-- Fx/Fy/Fz
-      |-- utilization
-      `-- grip margin
+      |-- vehicle states
+      `-- localization
+      |
+query-matched physical innovation anchor (when an exact observed state exists)
       |
 partial multi-task supervision + mechanics consistency
       |
 PFR / one-sided ECR safety integration
 ```
+
+
+## Minimal physical innovation reparameterization
+
+The shared architecture is unchanged.  The only proposal-level refinement is a
+parameter-free physical anchor for queries whose quantity, axis, and location
+exactly match an observed sensor channel.  Let \(P_q(X)\) be the latest
+canonical-unit value of that matched channel, with \(P_q(X)=0\) when no exact
+match exists.  The existing decoder output is interpreted as an innovation:
+
+\[
+\widehat y_q = P_q(X) + R_\theta(X,q).
+\]
+
+This is especially natural for history-to-next-state estimation: \(P_q\) is the
+latest measured state and the neural decoder estimates only its evolution.  It
+is not a target copy.  Matching is ontology-based rather than dataset-based,
+requires exact quantity/axis/location agreement, ignores static context, and is
+permutation invariant when several equivalent sensors are present.
+
+For unobserved targets such as LiRA road friction, \(P_q(X)=0\), so the method
+reduces exactly to the original UniversalSafeGrip predictor.  Whole-channel
+dropout is also respected: when a matching state channel is dropped during
+training, the anchor is unavailable and the shared model must infer the query
+from the remaining sensor set.  No trainable parameters, dataset-specific heads,
+new losses, or dataset identifiers are introduced.
+
+### Non-interference property
+
+If no input channel has the same physical quantity, axis, and location as query
+\(q\), then \(P_q(X)=0\) and therefore
+
+\[
+\widehat y_q = R_\theta(X,q),
+\]
+
+which is exactly the pre-existing proposal.
 
 ## Physics rule
 

@@ -35,6 +35,11 @@ class TokenizedRecord:
     times_sec: np.ndarray
     channel_ids: np.ndarray
     sequence_id: str
+    # Canonical-unit value at the end of each token patch.  Kept outside the
+    # learned feature vector so semantic state anchoring does not depend on
+    # tokenizer feature layout.  Static context tokens also carry their value
+    # but are excluded from state anchoring by channel_id < 0.
+    last_values: np.ndarray | None = None
 
     @property
     def num_tokens(self) -> int:
@@ -165,6 +170,7 @@ class UniversalSensorTokenizer:
         sample_rates: list[float] = []
         token_times: list[float] = []
         channel_ids: list[int] = []
+        last_values: list[float] = []
 
         # Include the endpoint by adding a small epsilon; zero-duration records
         # still receive one patch.
@@ -191,6 +197,7 @@ class UniversalSensorTokenizer:
                 sample_rates.append(self._observed_rate(channel, pt))
                 token_times.append((start + 0.5 * width) - t0)
                 channel_ids.append(channel_idx)
+                last_values.append(float(pv[-1]))
 
         # Numeric physical context becomes a non-temporal token. Categorical
         # context is intentionally left to a future explicit categorical
@@ -213,6 +220,7 @@ class UniversalSensorTokenizer:
             sample_rates.append(0.0)
             token_times.append(0.0)
             channel_ids.append(-2)  # static context, never treated as a sensor channel
+            last_values.append(value)
 
         if not features:
             raise ValueError("record contains no finite samples to tokenize")
@@ -226,4 +234,5 @@ class UniversalSensorTokenizer:
             times_sec=np.asarray(token_times, dtype=np.float32),
             channel_ids=np.asarray(channel_ids, dtype=np.int64),
             sequence_id=record.sequence_id,
+            last_values=np.asarray(last_values, dtype=np.float32),
         )

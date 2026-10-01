@@ -19,6 +19,12 @@ class UniversalSafeGripOutput:
     scale: torch.Tensor
     latent: torch.Tensor
     token_embeddings: torch.Tensor
+    # Raw decoder output.  When a physical query is already represented by a
+    # matching observed state channel, this is interpreted as an innovation
+    # around the latest observed state rather than an absolute value.
+    innovation: torch.Tensor
+    physical_anchor: torch.Tensor
+    anchor_mask: torch.Tensor
 
 
 class UniversalSafeGrip(nn.Module):
@@ -92,6 +98,54 @@ class UniversalSafeGrip(nn.Module):
             raise ValueError(f"unknown dataset domain for conditioning: {exc.args[0]}") from exc
         return tokens + self.dataset_embedding(ids).unsqueeze(1)
 
+
+    @staticmethod
+    def _physical_query_anchor(
+        batch: UniversalSensorBatch, queries
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return a permutation-invariant latest-state anchor for each query.
+
+        Matching is deliberately strict: quantity, axis, and location must all
+        agree with the query and the token must come from a real sensor channel
+        (channel_id >= 0).  Static context cannot become an anchor.
+
+        The anchor is not a target copy.  For next-state tasks it is simply the
+        latest observed state in the history, so the decoder learns the physical
+        innovation.  Queries without a matching observed state receive zero
+        anchor and are therefore exactly the original UniversalSafeGrip model.
+        """
+        b = batch.features.shape[0]
+        qn = len(queries)
+        anchor = batch.features.new_zeros((b, qn))
+        has_anchor = torch.zeros((b, qn), dtype=torch.bool, device=batch.features.device)
+        if batch.last_values is None:
+            return anchor, has_anchor
+
+        for j, query in enumerate(queries):
+            qid, aid, lid, _ = query.ids()
+            match = (
+                batch.token_mask.bool()
+                & (batch.channel_ids >= 0)
+                & (batch.quantity_ids == int(qid))
+                & (batch.axis_ids == int(aid))
+                & (batch.location_ids == int(lid))
+            )
+            # Select the latest token time; if multiple equivalent sensors share
+            # that time, average them.  This keeps sensor-order invariance.
+            neg_inf = torch.full_like(batch.times_sec, float("-inf"))
+            latest_time = torch.where(match, batch.times_sec, neg_inf).max(dim=1).values
+            latest = match & torch.isclose(
+                batch.times_sec, latest_time.unsqueeze(1), rtol=0.0, atol=1e-7
+            )
+            count = latest.sum(dim=1)
+            ok = count > 0
+            if torch.any(ok):
+                vals = torch.where(latest, batch.last_values, torch.zeros_like(batch.last_values))
+                a = vals.sum(dim=1) / count.clamp_min(1).to(vals.dtype)
+                anchor[:, j] = torch.where(ok, a, torch.zeros_like(a))
+                has_anchor[:, j] = ok
+        return anchor, has_anchor
+
     def forward(self, batch: UniversalSensorBatch, queries, *, domains: tuple[str, ...] | None = None) -> UniversalSafeGripOutput:
         tokens = self.token_encoder(
             batch.features, batch.quantity_ids, batch.axis_ids, batch.location_ids,
@@ -101,5 +155,13 @@ class UniversalSafeGrip(nn.Module):
         latent = self.backbone(tokens, batch.token_mask)
         qids = self.query_tensor(queries, batch.features.shape[0], device=batch.features.device)
         pred: QueryPrediction = self.decoder(latent, qids)
+        physical_anchor, anchor_mask = self._physical_query_anchor(batch, queries)
+        # Minimal physical reparameterization: the existing decoder predicts an
+        # innovation whenever the queried state is directly observed in the
+        # input history.  With no exact semantic match, physical_anchor == 0 and
+        # the proposal is bit-for-bit the original absolute predictor.
+        point = pred.point + physical_anchor
         scale = pred.scale if self.ablation.learned_scale else torch.ones_like(pred.point)
-        return UniversalSafeGripOutput(pred.point, scale, latent, tokens)
+        return UniversalSafeGripOutput(
+            point, scale, latent, tokens, pred.point, physical_anchor, anchor_mask
+        )

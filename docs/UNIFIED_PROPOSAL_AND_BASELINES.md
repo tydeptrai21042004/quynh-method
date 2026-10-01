@@ -11,6 +11,7 @@ raw dataset
   -> shared physically typed token encoder
   -> shared sensor-set latent-attention backbone
   -> shared compositional physical-query decoder
+  -> exact semantic state anchor + learned innovation when available
   -> point estimate + learned scale
   -> quantity-triggered mechanics / uncertainty losses when the needed quantities exist
 ```
@@ -18,6 +19,13 @@ raw dataset
 The default/full proposal contains **no dataset-ID embedding and no dataset-specific
 backbone or output head**.  One `UniversalSafeGrip` instance can therefore process
 D1--D4 without being told which dataset produced a record.
+
+A minimal parameter-free refinement preserves that same architecture.  When a
+query exactly matches an observed sensor in physical quantity, axis and location,
+the latest canonical-unit observation is used as a state anchor and the existing
+decoder predicts only the innovation around it.  When no exact match exists the
+anchor is zero, so the original predictor is unchanged.  This rule uses the
+shared ontology only; it contains no dataset names or dataset-specific constants.
 
 What is allowed to differ is the *measurement interface*, not the method:
 
