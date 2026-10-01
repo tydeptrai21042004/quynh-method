@@ -262,3 +262,63 @@ def test_download_rejects_metadata_size_mismatch(tmp_path: Path):
 
     assert not dest.exists()
     assert not dest.with_suffix(".txt.part").exists()
+
+
+def test_git_lfs_pointer_detection(tmp_path: Path):
+    p = tmp_path / "pointer.zip"
+    p.write_text(
+        "version https://git-lfs.github.com/spec/v1\n"
+        "oid sha256:deadbeef\nsize 194000000\n",
+        encoding="utf-8",
+    )
+    assert dl._looks_like_git_lfs_pointer(p)
+
+
+def test_io_vnbd_downloader_uses_lfs_media_payload_not_pointer(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(dl, "_github_default_branch", lambda repo: "master")
+    calls = []
+
+    def fake_download(url, dest, **kwargs):
+        calls.append(url)
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # A >10 MB valid ZIP stands in for the public 194 MB LFS object.
+        with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_STORED) as z:
+            z.writestr("Synchronised V abd S datasets/V-test.csv", b"0," * 5_500_000)
+        return dest
+
+    monkeypatch.setattr(dl, "_download", fake_download)
+    dl.download_io_vnbd(tmp_path)
+
+    assert calls
+    assert calls[0].startswith("https://media.githubusercontent.com/media/onyekpeu/IO-VNBD/master/")
+    assert (tmp_path / "Synchronised V abd S datasets" / "V-test.csv").exists()
+    source = json.loads((tmp_path / "SOURCE.json").read_text(encoding="utf-8"))
+    assert source["download_route"] == "github_lfs_media"
+    assert source["lfs_pointer_rejected"] is True
+
+
+def test_io_vnbd_stale_complete_marker_is_repaired(monkeypatch, tmp_path: Path):
+    out = tmp_path / "io_vnbd"
+    out.mkdir()
+    (out / ".complete").write_text("ok\n", encoding="utf-8")
+    # Reproduce the old failure: a Git-LFS pointer was marked complete.
+    pointer_dir = out / "Synchronised V abd S datasets"
+    pointer_dir.mkdir()
+    (pointer_dir / "V-old.csv").write_text(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123456\n",
+        encoding="utf-8",
+    )
+    called = []
+
+    def fake_download(dest):
+        called.append(True)
+        p = dest / "Synchronised V abd S datasets" / "V-real.csv"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("0," * 200, encoding="utf-8")
+
+    monkeypatch.setattr(dl, "download_io_vnbd", fake_download)
+    # download_dataset constructs its registry at call time, so monkeypatch is honored.
+    dl.download_dataset("io_vnbd", root=tmp_path)
+    assert called == [True]
+    assert (out / ".complete").exists()

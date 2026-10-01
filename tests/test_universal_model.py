@@ -31,6 +31,8 @@ def _permute_batch(batch, perm):
         channel_ids=batch.channel_ids[:, perm],
         sequence_ids=batch.sequence_ids,
         last_values=None if batch.last_values is None else batch.last_values[:, perm],
+        rms_values=None if batch.rms_values is None else batch.rms_values[:, perm],
+        integral_values=None if batch.integral_values is None else batch.integral_values[:, perm],
     )
 
 
@@ -176,3 +178,41 @@ def test_next_state_anchor_uses_history_only_not_target_row():
     assert bool(mask.item())
     assert float(anchor.item()) == 11.0
     assert float(anchor.item()) != float(record.targets["velocity_x"].value)
+
+
+def test_friction_reference_is_horizontal_specific_force_and_dataset_agnostic():
+    from safegrip.universal.queries import FRICTION_QUERY
+
+    t = np.asarray([0.0, 0.25, 0.5, 0.75], dtype=float)
+    record = SensorRecord([
+        SensorChannel(
+            np.full_like(t, 3.0), t,
+            SensorMeta("acceleration", "m/s^2", "longitudinal", "vehicle_body", 4.0),
+        ),
+        SensorChannel(
+            np.full_like(t, 4.0), t,
+            SensorMeta("acceleration", "m/s^2", "lateral", "vehicle_body", 4.0),
+        ),
+    ], sequence_id="friction-physics")
+    tok = UniversalSensorTokenizer()
+    batch = pad_tokenized_records([tok.tokenize(record)])
+    ref, mask = UniversalSafeGrip._physical_query_anchor(batch, [FRICTION_QUERY])
+    assert bool(mask.item())
+    assert torch.allclose(ref, torch.tensor([[5.0 / 9.80665]]), atol=1e-6)
+
+
+def test_displacement_reference_integrates_measured_body_speed():
+    from safegrip.universal.queries import DISPLACEMENT_QUERY
+
+    t = np.linspace(0.0, 1.0, 11)
+    record = SensorRecord([
+        SensorChannel(
+            np.full_like(t, 10.0), t,
+            SensorMeta("velocity", "m/s", "scalar", "vehicle_body", 10.0),
+        ),
+    ], sequence_id="odometry")
+    tok = UniversalSensorTokenizer()
+    batch = pad_tokenized_records([tok.tokenize(record)])
+    ref, mask = UniversalSafeGrip._physical_query_anchor(batch, [DISPLACEMENT_QUERY])
+    assert bool(mask.item())
+    assert torch.allclose(ref, torch.tensor([[10.0]]), atol=1e-5)

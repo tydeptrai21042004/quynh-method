@@ -47,3 +47,12 @@ def test_whonet_is_classic_rnn_displacement_only():
     y = m(torch.randn(3, 20, 8))
     assert y.shape == (3, 1)
     assert m.target_names == ("displacement",)
+
+
+def test_uc3m_real_target_projection_keeps_only_paper_slip_output():
+    for name in ("mendoza2019_fuzzy", "yunta2018_fuzzy_lfc"):
+        built = make_paper_baseline(name, 3, debug_scale=True, target_names=("slip_angle",))
+        y = built.model(torch.randn(2, 12, 3))
+        assert built.target_names == ("slip_angle",)
+        assert y.shape == (2, 1)
+        assert torch.isfinite(y).all()

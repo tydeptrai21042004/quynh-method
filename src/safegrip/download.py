@@ -448,6 +448,61 @@ def download_github_repo(name: str, out: Path) -> None:
 
 
 
+def _looks_like_git_lfs_pointer(path: Path) -> bool:
+    try:
+        head = path.read_bytes()[:256]
+    except OSError:
+        return False
+    return b"git-lfs.github.com/spec/v1" in head
+
+
+def download_io_vnbd(out: Path) -> None:
+    """Download the real synchronized IO-VNBD payload, not Git-LFS pointers.
+
+    GitHub source archives contain only pointer stubs for the 194 MB synchronized
+    dataset.  The media.githubusercontent endpoint resolves the LFS object to the
+    actual public ZIP.
+    """
+    repo = SOURCE["io_vnbd"]["repo"]
+    branch = _github_default_branch(repo)
+    asset = "Synchronised V abd S datasets.zip"
+    encoded = asset.replace(" ", "%20")
+    mirrors = (
+        f"https://media.githubusercontent.com/media/{repo}/{branch}/{encoded}",
+        f"https://github.com/{repo}/raw/refs/heads/{branch}/{encoded}",
+    )
+    dest = out / asset
+    errors = []
+    for url in mirrors:
+        try:
+            if not dest.exists() or dest.stat().st_size < 10_000_000 or _looks_like_git_lfs_pointer(dest):
+                dest.unlink(missing_ok=True)
+                _download(url, dest, timeout=600)
+            if _looks_like_git_lfs_pointer(dest) or dest.stat().st_size < 10_000_000:
+                raise DownloadIntegrityError(
+                    f"IO-VNBD synchronized payload is not the real LFS object ({dest.stat().st_size} bytes)."
+                )
+            _extract(dest, out)
+            _write_source(
+                "io_vnbd", out,
+                {
+                    "default_branch": branch,
+                    "download_route": "github_lfs_media",
+                    "selected_asset": asset,
+                    "download_url": url,
+                    "lfs_pointer_rejected": True,
+                },
+            )
+            return
+        except (requests.RequestException, DownloadIntegrityError, OSError) as exc:
+            errors.append(f"{url} -> {type(exc).__name__}: {exc}")
+            dest.unlink(missing_ok=True)
+    raise RuntimeError(
+        "Could not retrieve the real synchronized IO-VNBD Git-LFS payload. "
+        + " | ".join(errors)
+    )
+
+
 def download_mssp2023_metadata(out: Path) -> None:
     """Download public metadata and write explicit real-data acquisition instructions.
 
@@ -542,22 +597,58 @@ def download_mendeley(out: Path) -> None:
     _write_source("mendeley_friction",out)
 
 
+
+
+def _default_ready(out: Path) -> bool:
+    return True
+
+
+def _uc3m_ready(out: Path) -> bool:
+    return len(list(out.glob("Microstrain_signals*.xlsx"))) >= 3
+
+
+def _io_vnbd_ready(out: Path) -> bool:
+    vehicle_files = [
+        p for p in out.rglob("V-*.csv")
+        if "unsynchron" not in str(p.parent).lower()
+    ]
+    return bool(vehicle_files) and all(
+        p.stat().st_size > 256 and not _looks_like_git_lfs_pointer(p)
+        for p in vehicle_files[:3]
+    )
+
+
+DOWNLOAD_READY_CHECKS = {
+    "lira_cd": _default_ready,
+    "uc3m_tire": _uc3m_ready,
+    "deep_dynamics_iac": _default_ready,
+    "io_vnbd": _io_vnbd_ready,
+}
+
 def download_dataset(name: str, root: str | Path="data/raw", force: bool=False, full: bool=False) -> Path:
     name=name.lower();
     if name not in DATASET_REGISTRY: raise ValueError(f"unknown dataset: {name}. Choices: {', '.join(DATASET_REGISTRY)}")
     out=ensure_dir(Path(root)/name); marker=out/".complete"
-    if marker.exists() and not force:
+    ready_check = DOWNLOAD_READY_CHECKS.get(name, _default_ready)
+    if marker.exists() and not force and ready_check(out):
         print(f"[download] {name}: already complete"); return out
+    if marker.exists() and not ready_check(out):
+        print(f"[download] {name}: stale/incomplete marker detected; repairing payload")
+        marker.unlink(missing_ok=True)
     if force and out.exists():
         for p in list(out.iterdir()):
             if p.is_dir(): shutil.rmtree(p)
             else: p.unlink()
-    if name == "lira_cd":
-        download_lira(out)
-    elif name == "uc3m_tire":
-        download_uc3m_tire(out)
-    elif name in ("deep_dynamics_iac", "io_vnbd"):
-        download_github_repo(name, out)
-    else:
-        raise ValueError(f"no downloader registered for paper dataset: {name}")
-    marker.write_text("ok\n"); return out
+    downloaders = {
+        "lira_cd": download_lira,
+        "uc3m_tire": download_uc3m_tire,
+        "deep_dynamics_iac": lambda dest: download_github_repo("deep_dynamics_iac", dest),
+        "io_vnbd": download_io_vnbd,
+    }
+    try:
+        downloader = downloaders[name]
+    except KeyError as exc:
+        raise ValueError(f"no downloader registered for paper dataset: {name}") from exc
+    downloader(out)
+    marker.write_text("ok\n")
+    return out

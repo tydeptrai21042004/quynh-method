@@ -11,7 +11,7 @@ raw dataset
   -> shared physically typed token encoder
   -> shared sensor-set latent-attention backbone
   -> shared compositional physical-query decoder
-  -> exact semantic state anchor + learned innovation when available
+  -> semantic physical reference + learned innovation
   -> point estimate + learned scale
   -> quantity-triggered mechanics / uncertainty losses when the needed quantities exist
 ```
@@ -20,12 +20,14 @@ The default/full proposal contains **no dataset-ID embedding and no dataset-spec
 backbone or output head**.  One `UniversalSafeGrip` instance can therefore process
 D1--D4 without being told which dataset produced a record.
 
-A minimal parameter-free refinement preserves that same architecture.  When a
-query exactly matches an observed sensor in physical quantity, axis and location,
-the latest canonical-unit observation is used as a state anchor and the existing
-decoder predicts only the innovation around it.  When no exact match exists the
-anchor is zero, so the original predictor is unchanged.  This rule uses the
-shared ontology only; it contains no dataset names or dataset-specific constants.
+A minimal parameter-free refinement preserves that same architecture and uses
+one equation, `y_hat = P_q(X) + R_theta(X,q)`.  `P_q` is resolved from a
+physical-target-type registry: exact state observations provide a latest-state
+reference, road-friction queries use horizontal specific-force demand, and
+displacement queries use integrated measured body speed.  If the available
+sensors do not support a registered construction, `P_q=0` and the original
+predictor is unchanged.  The registry uses ontology semantics only; it contains
+no dataset names, dataset-specific heads, or learned reference parameters.
 
 What is allowed to differ is the *measurement interface*, not the method:
 
@@ -47,8 +49,8 @@ bit-for-bit upstream source equivalence.
 
 | Dataset | Local comparator | Local mathematical/model mechanism | Outputs used |
 |---|---|---|---|
-| D2 UC3M | `mendoza2019_fuzzy` | hierarchical trainable TSK fuzzy blocks; paper rule counts 21/217/460/145 | Fx, Fy, Fz, slip angle |
-| D2 UC3M | `yunta2018_fuzzy_lfc` | fuzzy slip/load/lateral-friction estimator | Fy, Fz, slip angle |
+| D2 UC3M | `mendoza2019_fuzzy` | hierarchical trainable TSK fuzzy blocks; paper rule counts 21/217/460/145 | slip angle (public U6ICRX target) |
+| D2 UC3M | `yunta2018_fuzzy_lfc` | fuzzy slip/load/lateral-friction estimator | slip angle (compatible published output) |
 | D3 IAC | `chrosniak2024_ddm` | recurrent parameter estimator + bounded Physics Guard + differentiable single-track/Pacejka step | vx, vy, yaw rate |
 | D3 IAC | `fang_yu2025_fthd` | DDM physics core + learned residual + hybrid supervised/physics-anchor loss | vx, vy, yaw rate |
 | D4 IO-VNBD | `onyekpe2021_qgru` | quaternion-valued GRU recurrent wheel-odometry model | displacement |
@@ -67,13 +69,16 @@ missing, the corresponding dataset is reported as unavailable instead of being
 replaced.
 
 - D1 uses the downloaded DTU LiRA-CD measurements and the real `mu_ref` target.
-- D2 uses the downloaded UC3M/U6ICRX tire-test tables and only targets explicitly
-  present in those tables.
+- D2 uses the downloaded UC3M/U6ICRX tire-test tables.  The public deposit
+  contains three strain channels and experiment slip-angle conditions (0/6/13
+  degrees), so the benchmark supervises slip angle only; no force labels are
+  synthesized.
 - D3 uses only the five real IAC racecar CSV logs; Bayesrace simulator files are
   explicitly excluded from the experiment.
-- D4 uses synchronized real IO-VNBD vehicle logs; displacement targets are derived
-  from the recorded GPS latitude/longitude trajectory while wheel speeds remain
-  measured inputs.
+- D4 resolves the large synchronized IO-VNBD Git-LFS payload instead of the
+  pointer-only GitHub source archive.  Displacement targets come from recorded
+  GPS latitude/longitude, while wheel speeds, indicated speed, yaw rate,
+  accelerations and steering remain measured inputs.
 
 The **same `UniversalSafeGrip` proposal constructor, backbone, optimizer family,
 loss implementation, seed policy, and epoch budget** are used for D1--D4.

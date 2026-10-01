@@ -40,6 +40,10 @@ class TokenizedRecord:
     # tokenizer feature layout.  Static context tokens also carry their value
     # but are excluded from state anchoring by channel_id < 0.
     last_values: np.ndarray | None = None
+    # Parameter-free physical side-car statistics used by the semantic
+    # reference operator. They are kept outside learned token features.
+    rms_values: np.ndarray | None = None
+    integral_values: np.ndarray | None = None
 
     @property
     def num_tokens(self) -> int:
@@ -171,6 +175,8 @@ class UniversalSensorTokenizer:
         token_times: list[float] = []
         channel_ids: list[int] = []
         last_values: list[float] = []
+        rms_values: list[float] = []
+        integral_values: list[float] = []
 
         # Include the endpoint by adding a small epsilon; zero-duration records
         # still receive one patch.
@@ -198,6 +204,12 @@ class UniversalSensorTokenizer:
                 token_times.append((start + 0.5 * width) - t0)
                 channel_ids.append(channel_idx)
                 last_values.append(float(pv[-1]))
+                rms_values.append(float(np.sqrt(np.mean(np.square(pv)))))
+                # Patches are non-overlapping in physical time.  A rectangle
+                # rule using the patch mean is robust to irregular samples and
+                # sums naturally into a channel integral across the window.
+                duration = max(0.0, min(end, t1) - start)
+                integral_values.append(float(np.mean(pv)) * duration)
 
         # Numeric physical context becomes a non-temporal token. Categorical
         # context is intentionally left to a future explicit categorical
@@ -221,6 +233,8 @@ class UniversalSensorTokenizer:
             token_times.append(0.0)
             channel_ids.append(-2)  # static context, never treated as a sensor channel
             last_values.append(value)
+            rms_values.append(abs(value))
+            integral_values.append(0.0)
 
         if not features:
             raise ValueError("record contains no finite samples to tokenize")
@@ -235,4 +249,6 @@ class UniversalSensorTokenizer:
             channel_ids=np.asarray(channel_ids, dtype=np.int64),
             sequence_id=record.sequence_id,
             last_values=np.asarray(last_values, dtype=np.float32),
+            rms_values=np.asarray(rms_values, dtype=np.float32),
+            integral_values=np.asarray(integral_values, dtype=np.float32),
         )

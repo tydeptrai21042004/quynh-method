@@ -185,9 +185,21 @@ This runner has a strict real-data/paper-baseline contract:
 - it never substitutes synthetic/generated records or targets;
 - D3 consumes only the five real IAC racecar CSV logs and excludes Bayesrace
   simulator files;
-- D4 uses measured IO-VNBD wheel-speed/GPS data and evaluates real displacement;
+- D2 evaluates the real U6ICRX slip-angle condition from the three published
+  microstrain channels; it does not fabricate unavailable force labels;
+- D4 resolves the real synchronized Git-LFS payload (not pointer stubs), uses
+  measured vehicle channels, and evaluates GPS-derived real displacement;
 - every comparator must be registered with a publication DOI and
   `paper_verified: true`; dummy/placeholder baselines are rejected before
   training starts;
 - if a required real archive/target is unavailable, the dataset is marked
   `SKIPPED_REAL_DATA_UNAVAILABLE` instead of being silently replaced.
+
+For repeated-seed evidence, run:
+
+```bash
+SAFEGRIP_SEEDS=3101,3102,3103 python scripts/KAGGLE_ALL_REAL_DATASETS_MULTI_SEED.py
+```
+
+Each seed has an independent resumable checkpoint and the wrapper writes
+`safegrip_multiseed_summary.csv` with mean/std/count for MAE, RMSE and R2.

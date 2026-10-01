@@ -37,41 +37,52 @@ PFR / one-sided ECR safety integration
 ```
 
 
-## Minimal physical innovation reparameterization
+## Semantic physical-reference innovation reparameterization
 
-The shared architecture is unchanged.  The only proposal-level refinement is a
-parameter-free physical anchor for queries whose quantity, axis, and location
-exactly match an observed sensor channel.  Let \(P_q(X)\) be the latest
-canonical-unit value of that matched channel, with \(P_q(X)=0\) when no exact
-match exists.  The existing decoder output is interpreted as an innovation:
+The shared tokenizer, latent backbone and query decoder are unchanged.  The
+proposal uses one parameter-free physical reference operator before the final
+output:
 
 \[
 \widehat y_q = P_q(X) + R_\theta(X,q).
 \]
 
-This is especially natural for history-to-next-state estimation: \(P_q\) is the
-latest measured state and the neural decoder estimates only its evolution.  It
-is not a target copy.  Matching is ontology-based rather than dataset-based,
-requires exact quantity/axis/location agreement, ignores static context, and is
-permutation invariant when several equivalent sensors are present.
+The learned term `R_theta` is always the innovation.  The reference `P_q` is
+selected from a registry keyed by **physical target type**, never by dataset
+identity:
 
-For unobserved targets such as LiRA road friction, \(P_q(X)=0\), so the method
-reduces exactly to the original UniversalSafeGrip predictor.  Whole-channel
-dropout is also respected: when a matching state channel is dropped during
-training, the anchor is unavailable and the shared model must infer the query
-from the remaining sensor set.  No trainable parameters, dataset-specific heads,
-new losses, or dataset identifiers are introduced.
+- `state_component`: latest canonical-unit sensor observation having the same
+  quantity, axis and location as the query;
+- `road_friction`: horizontal specific-force demand
+  \(\sqrt{a_x^2+a_y^2}/g\), computed from measured body accelerations;
+- `localization` displacement: time integral of measured vehicle-body speed;
+- any unsupported or unobservable query: the neutral reference \(P_q=0\).
+
+The friction reference is an excitation/reference coordinate, **not** asserted
+to equal the road-friction coefficient and **not** treated as a deterministic
+lower bound.  The decoder learns the remaining road/surface innovation.  This
+adds no trainable parameters and keeps one estimator equation for D1--D4.
 
 ### Non-interference property
 
-If no input channel has the same physical quantity, axis, and location as query
-\(q\), then \(P_q(X)=0\) and therefore
+For a query with no registered physical construction from the available sensor
+set, \(P_q(X)=0\), hence
 
 \[
 \widehat y_q = R_\theta(X,q),
 \]
 
-which is exactly the pre-existing proposal.
+which is exactly the pre-existing UniversalSafeGrip prediction path.  Whole-
+channel dropout is respected because every reference is computed only from
+tokens that remain visible in the batch mask.
+
+### Unit consistency
+
+All reference operators consume values after canonical unit conversion.  Thus
+state references have the query's state unit, the acceleration reference is
+dimensionless through division by standard gravity, and integrated speed is in
+metres.  Dataset names and dataset-specific numerical calibration constants do
+not enter the reference operator.
 
 ## Physics rule
 

@@ -22,6 +22,8 @@ class UniversalSensorBatch:
     # compatibility with manually constructed batches; tokenizer-generated
     # batches always provide it.
     last_values: torch.Tensor | None = None
+    rms_values: torch.Tensor | None = None
+    integral_values: torch.Tensor | None = None
 
     def to(self, device):
         return UniversalSensorBatch(
@@ -36,6 +38,8 @@ class UniversalSensorBatch:
             channel_ids=self.channel_ids.to(device),
             sequence_ids=self.sequence_ids,
             last_values=None if self.last_values is None else self.last_values.to(device),
+            rms_values=None if self.rms_values is None else self.rms_values.to(device),
+            integral_values=None if self.integral_values is None else self.integral_values.to(device),
         )
 
 
@@ -57,6 +61,8 @@ def pad_tokenized_records(records: list[TokenizedRecord] | tuple[TokenizedRecord
     tt = torch.zeros((b, nmax), dtype=torch.float32)
     ch = torch.full((b, nmax), -1, dtype=torch.long)
     last = torch.zeros((b, nmax), dtype=torch.float32)
+    rms = torch.zeros((b, nmax), dtype=torch.float32)
+    integ = torch.zeros((b, nmax), dtype=torch.float32)
     for i, r in enumerate(records):
         n = r.num_tokens
         features[i, :n] = torch.from_numpy(r.features)
@@ -70,6 +76,11 @@ def pad_tokenized_records(records: list[TokenizedRecord] | tuple[TokenizedRecord
         ch[i, :n] = torch.from_numpy(r.channel_ids)
         if r.last_values is not None:
             last[i, :n] = torch.from_numpy(r.last_values)
+        if r.rms_values is not None:
+            rms[i, :n] = torch.from_numpy(r.rms_values)
+        if r.integral_values is not None:
+            integ[i, :n] = torch.from_numpy(r.integral_values)
     return UniversalSensorBatch(
-        features, mask, q, a, l, u, fs, tt, ch, tuple(r.sequence_id for r in records), last
+        features, mask, q, a, l, u, fs, tt, ch, tuple(r.sequence_id for r in records),
+        last, rms, integ,
     )

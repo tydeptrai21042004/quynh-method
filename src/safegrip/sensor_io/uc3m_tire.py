@@ -6,11 +6,42 @@ import pandas as pd
 from safegrip.universal.schema import SensorChannel, SensorMeta, SensorRecord, TargetValue
 from ._paper_common import find_column
 
+# Public U6ICRX sheets are documented as:
+# A description, B time [s], C e1y, D e2y, E e3x.
+# Aliases cover both descriptive Excel headers and short symbols.
 STRAIN_ALIASES = (
-    ("strain_1", "microstrain_1", "strain1", "gauge_1", "sensor_1"),
-    ("strain_2", "microstrain_2", "strain2", "gauge_2", "sensor_2"),
-    ("strain_3", "microstrain_3", "strain3", "gauge_3", "sensor_3"),
+    ("e1y", "measurement_channel_1_lateral_microstrains_e1y", "lateral_microstrains_e1y", "strain_1", "microstrain_1"),
+    ("e2y", "measurement_channel_2_lateral_microstrains_e2y", "lateral_microstrains_e2y", "strain_2", "microstrain_2"),
+    ("e3x", "measurement_channel_3_longitudinal_microstrains_e3x", "longitudinal_microstrains_e3x", "strain_3", "microstrain_3"),
 )
+TIME_ALIASES = ("time", "time_s", "time_in_seconds", "seconds")
+
+
+def _numeric_fraction(series: pd.Series) -> float:
+    if len(series) == 0:
+        return 0.0
+    return float(pd.to_numeric(series, errors="coerce").notna().mean())
+
+
+def _resolve_uc3m_columns(frame: pd.DataFrame) -> tuple[str | None, tuple[str, ...]]:
+    """Resolve the documented U6ICRX table schema without arbitrary numerics."""
+    time_col = find_column(frame, TIME_ALIASES)
+    strain_cols = tuple(c for aliases in STRAIN_ALIASES if (c := find_column(frame, aliases)) is not None)
+    if len(strain_cols) == 3:
+        return time_col, strain_cols
+
+    # The official workbooks occasionally load with generic/merged headers.
+    # The deposit documentation fixes the semantic column positions A--E, so a
+    # positional fallback is valid only when B--E are predominantly numeric.
+    cols = list(frame.columns)
+    if len(cols) >= 5:
+        positional_time = cols[1]
+        positional_strain = tuple(cols[2:5])
+        if _numeric_fraction(frame[positional_time]) >= 0.8 and all(
+            _numeric_fraction(frame[c]) >= 0.8 for c in positional_strain
+        ):
+            return time_col or positional_time, positional_strain
+    return time_col, strain_cols
 
 
 def uc3m_tire_frame_to_record(
@@ -21,61 +52,46 @@ def uc3m_tire_frame_to_record(
     strain_unit: str = "microstrain",
     slip_angle_deg: float | None = None,
 ) -> SensorRecord:
-    """Create a D2 record without synthesizing unavailable force targets."""
+    """Convert one real U6ICRX test table into the universal sensor schema.
+
+    The public deposit supplies the three strain waveforms and an experiment
+    slip-angle condition. No force label is synthesized from the strain data.
+    """
     if frame.empty:
         raise ValueError("frame cannot be empty")
-    time_col = find_column(frame, ("time", "timestamp", "time_s", "seconds"))
+
+    time_col, strain_cols = _resolve_uc3m_columns(frame)
     if time_col is not None:
         t = pd.to_numeric(frame[time_col], errors="coerce").to_numpy(float)
     elif sample_rate_hz and sample_rate_hz > 0:
         t = np.arange(len(frame), dtype=float) / float(sample_rate_hz)
     else:
-        # U6ICRX workbooks can be steady-state sequences without an explicit
-        # clock.  Index time is permitted only as ordering, with 1 Hz metadata.
         sample_rate_hz = 1.0
         t = np.arange(len(frame), dtype=float)
 
+    if len(strain_cols) != 3:
+        raise ValueError("could not resolve the documented e1y/e2y/e3x UC3M strain channels")
+
+    axes = ("lateral", "lateral", "longitudinal")
     channels = []
-    used = set()
-    for i, aliases in enumerate(STRAIN_ALIASES):
-        col = find_column(frame, aliases)
-        if col is None or col in used:
-            continue
-        used.add(col)
+    for col, axis in zip(strain_cols, axes):
         v = pd.to_numeric(frame[col], errors="coerce").to_numpy(float)
         mask = np.isfinite(t) & np.isfinite(v)
         if np.any(mask):
-            channels.append(SensorChannel(v[mask], t[mask], SensorMeta("strain", strain_unit, f"scalar", "tire", sample_rate_hz)))
-    # Fallback: accept explicitly named strain columns only; never arbitrary numerics.
-    if not channels:
-        for col in frame.columns:
-            if "strain" not in str(col).lower():
-                continue
-            v = pd.to_numeric(frame[col], errors="coerce").to_numpy(float)
-            mask = np.isfinite(t) & np.isfinite(v)
-            if np.any(mask):
-                channels.append(SensorChannel(v[mask], t[mask], SensorMeta("strain", strain_unit, "scalar", "tire", sample_rate_hz)))
-    if not channels:
-        raise ValueError("no strain channels were resolved from UC3M frame")
+            channels.append(
+                SensorChannel(v[mask], t[mask], SensorMeta("strain", strain_unit, axis, "tire", sample_rate_hz))
+            )
+    if len(channels) != 3:
+        raise ValueError("UC3M table did not contain three finite strain channels")
 
     targets: dict[str, TargetValue] = {}
-    target_aliases = {
-        "force_x": ("fx", "force_x", "longitudinal_force"),
-        "force_y": ("fy", "force_y", "lateral_force"),
-        "force_z": ("fz", "force_z", "vertical_force", "normal_force"),
-        "slip_angle": ("slip_angle", "alpha"),
-    }
-    for name, aliases in target_aliases.items():
-        col = find_column(frame, aliases)
-        if col is None:
-            continue
-        vals = pd.to_numeric(frame[col], errors="coerce").to_numpy(float)
+    slip_col = find_column(frame, ("slip_angle", "alpha", "slip_angle_deg"))
+    if slip_col is not None:
+        vals = pd.to_numeric(frame[slip_col], errors="coerce").to_numpy(float)
         vals = vals[np.isfinite(vals)]
         if len(vals):
-            value = float(np.mean(vals))
-            if name == "slip_angle":
-                value = float(np.deg2rad(value))
-            targets[name] = TargetValue(name, value)
-    if "slip_angle" not in targets and slip_angle_deg is not None:
+            targets["slip_angle"] = TargetValue("slip_angle", float(np.deg2rad(np.mean(vals))))
+    if "slip_angle" not in targets and slip_angle_deg is not None and np.isfinite(slip_angle_deg):
         targets["slip_angle"] = TargetValue("slip_angle", float(np.deg2rad(slip_angle_deg)))
+
     return SensorRecord(channels, targets, sequence_id=sequence_id, source_domain="uc3m_tire")

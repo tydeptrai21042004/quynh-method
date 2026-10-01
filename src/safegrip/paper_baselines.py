@@ -27,6 +27,33 @@ class BaselineBuild:
     implementation_kind: str = "paper_structured_local_reproduction"
 
 
+class OutputProjection(nn.Module):
+    """Select a documented target subset from a paper-structured comparator.
+
+    This does not invent missing labels or alter the comparator internals.  It
+    simply restricts evaluation to targets that are genuinely present in the
+    real benchmark deposit (for example, UC3M U6ICRX slip angle).
+    """
+
+    def __init__(self, model: nn.Module, source_names: tuple[str, ...], target_names: tuple[str, ...]):
+        super().__init__()
+        self.model = model
+        self.source_names = tuple(source_names)
+        self.target_names = tuple(target_names)
+        missing = [name for name in self.target_names if name not in self.source_names]
+        if missing:
+            raise ValueError(f"paper comparator does not expose requested targets: {missing}")
+        self.register_buffer(
+            "indices",
+            torch.tensor([self.source_names.index(name) for name in self.target_names], dtype=torch.long),
+            persistent=False,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.model(x)
+        return y.index_select(-1, self.indices.to(y.device))
+
+
 class TemporalSummary(nn.Module):
     """Differentiable strain/sequence summary approximating paper feature picking."""
 
@@ -354,7 +381,13 @@ BASELINE_TARGETS: dict[str, tuple[str, ...]] = {
 }
 
 
-def make_paper_baseline(name: str, input_dim: int, *, debug_scale: bool = False) -> BaselineBuild:
+def make_paper_baseline(
+    name: str,
+    input_dim: int,
+    *,
+    debug_scale: bool = False,
+    target_names: tuple[str, ...] | None = None,
+) -> BaselineBuild:
     key = str(name).strip().lower()
     builders = {
         "mendoza2019_fuzzy": lambda: Mendoza2019Fuzzy(input_dim, debug_scale=debug_scale),
@@ -366,4 +399,9 @@ def make_paper_baseline(name: str, input_dim: int, *, debug_scale: bool = False)
     }
     if key not in builders:
         raise ValueError(f"No D2--D4 paper-baseline implementation for {name}")
-    return BaselineBuild(builders[key](), BASELINE_TARGETS[key])
+    model = builders[key]()
+    source_targets = BASELINE_TARGETS[key]
+    selected = source_targets if target_names is None else tuple(target_names)
+    if selected != source_targets:
+        model = OutputProjection(model, source_targets, selected)
+    return BaselineBuild(model, selected)

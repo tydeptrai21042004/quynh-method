@@ -53,7 +53,7 @@ RUN_TESTS = os.environ.get("SAFEGRIP_RUN_TESTS", "1") not in {"0", "false", "Fal
 
 DATASETS = ("lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd")
 PROPOSAL_NAME = "universal_safegrip"
-PROPOSAL_REVISION = "query_matched_physical_innovation_v1"
+PROPOSAL_REVISION = "semantic_physical_reference_innovation_v2"
 D2D4_INPUT_DIMS = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 4}
 REAL_IAC_FILES = (
     "LVMS_23_01_04_A.csv",
@@ -65,12 +65,13 @@ REAL_IAC_FILES = (
 
 WORK = Path("/kaggle/working")
 REPO = WORK / "quynh-method"
-RUN_ROOT = WORK / "safegrip_one_proposal_all_real_1seed_10epochs"
+RUN_NAME = os.environ.get("SAFEGRIP_RUN_NAME", "safegrip_one_proposal_all_real_1seed_10epochs")
+RUN_ROOT = WORK / RUN_NAME
 RESULTS_ROOT = RUN_ROOT / "results"
 STATE_PATH = RUN_ROOT / "state.json"
 CONFIG_PATH = RUN_ROOT / "kaggle_one_proposal_real.yaml"
-CHECKPOINT_ZIP = WORK / "safegrip_one_proposal_all_real_checkpoint.zip"
-FINAL_ZIP = WORK / "safegrip_one_proposal_all_real_results.zip"
+CHECKPOINT_ZIP = WORK / f"{RUN_NAME}_checkpoint.zip"
+FINAL_ZIP = WORK / f"{RUN_NAME}_results.zip"
 
 START_TIME = time.time()
 HARD_DEADLINE = START_TIME + MAX_WALL_HOURS * 3600.0
@@ -132,7 +133,7 @@ def load_state():
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     return {
-        "version": 4,
+        "version": 5,
         "proposal": PROPOSAL_NAME,
         "proposal_revision": PROPOSAL_REVISION,
         "real_data_only": True,
@@ -230,18 +231,14 @@ RUN_ROOT.mkdir(parents=True, exist_ok=True)
 RESULTS_ROOT.mkdir(parents=True, exist_ok=True)
 STATE = load_state()
 
-# Protocol v3 used the same datasets/baselines but trained UniversalSafeGrip as
-# an absolute predictor.  Revision v4 reinterprets the same decoder as a
-# query-matched physical innovation predictor.  Preserve real-data caches and
-# completed literature baselines, but never reuse proposal weights/metrics from
-# the incompatible semantics.
-if STATE.get("version") == 3 and STATE.get("proposal") == PROPOSAL_NAME:
-    print(f"[resume] migrating protocol v3 -> v4 ({PROPOSAL_REVISION}); proposal stages will retrain")
-    completed = []
-    for stage in STATE.get("completed", []):
-        if stage.startswith("model:") and stage.endswith(f":{PROPOSAL_NAME}"):
-            continue
-        completed.append(stage)
+# Proposal revisions change the meaning of the shared decoder.  Real-data
+# caches and completed literature baselines remain valid, but proposal weights
+# and proposal metrics must be retrained under the current reference semantics.
+def _invalidate_incompatible_proposal_state():
+    completed = [
+        stage for stage in STATE.get("completed", [])
+        if not (stage.startswith("model:") and stage.endswith(f":{PROPOSAL_NAME}"))
+    ]
     STATE["completed"] = completed
     STATE["progress"] = {
         k: v for k, v in STATE.get("progress", {}).items()
@@ -259,20 +256,29 @@ if STATE.get("version") == 3 and STATE.get("proposal") == PROPOSAL_NAME:
             q = out / name
             if q.exists():
                 q.unlink()
-    STATE["version"] = 4
+
+
+if STATE.get("proposal") == PROPOSAL_NAME and (
+    STATE.get("version") != 5 or STATE.get("proposal_revision") != PROPOSAL_REVISION
+):
+    old_revision = STATE.get("proposal_revision", "legacy")
+    print(f"[resume] migrating {old_revision} -> {PROPOSAL_REVISION}; proposal stages will retrain")
+    _invalidate_incompatible_proposal_state()
+    STATE["version"] = 5
     STATE["proposal_revision"] = PROPOSAL_REVISION
     STATE["migration_note"] = (
-        "v3 absolute-prediction UniversalSafeGrip outputs invalidated; "
-        "real-data caches and paper-baseline stages preserved"
+        f"proposal outputs from {old_revision} invalidated; real-data caches and "
+        "publication-backed baseline stages preserved"
     )
     save_state()
 
 if (
-    STATE.get("version") != 4
+    STATE.get("version") != 5
     or STATE.get("proposal") != PROPOSAL_NAME
     or STATE.get("proposal_revision") != PROPOSAL_REVISION
 ):
-    raise RuntimeError("Checkpoint belongs to a different proposal revision; use a fresh output directory.")
+    raise RuntimeError("Checkpoint belongs to a different proposal family; use a fresh output directory.")
+
 if STATE.get("seed") != SEED or STATE.get("epochs") != EPOCHS:
     raise RuntimeError(
         f"Checkpoint seed/epochs={STATE.get('seed')}/{STATE.get('epochs')} but requested {SEED}/{EPOCHS}."
@@ -560,7 +566,7 @@ def build_uc3m_records():
         raise RealDataUnavailable("UC3M adapter found no records with explicit real tire targets")
     STATE["data_audit"]["uc3m_tire"].update({
         "source": "U6ICRX real tire-test Dataverse deposit",
-        "target_source": "explicit real test-rig force/slip columns (plus filename experiment slip metadata where applicable)",
+        "target_source": "real U6ICRX experiment slip-angle condition (0/6/13 deg); no force labels synthesized",
         "record_count": len(records),
     })
     save_state()
@@ -630,66 +636,61 @@ def haversine_m(lat1, lon1, lat2, lon2):
 
 
 def build_io_vnbd_records():
-    import numpy as np
     import pandas as pd
+    from safegrip.sensor_io.io_vnbd import (
+        io_vnbd_frame_to_record, normalize_io_vnbd_vehicle_frame,
+    )
 
     cached = load_record_cache("io_vnbd")
     if cached is not None:
         return cached
     raw = REPO / "data/raw/io_vnbd"
-    # Prefer the synchronized real vehicle branch used by the source works.
-    sync_files = [
-        p for p in raw.rglob("*.csv")
-        if p.name.startswith("V-") and "synchron" in str(p.parent).lower() and "unsynchron" not in str(p.parent).lower()
-    ]
+    sync_files = sorted(
+        p for p in raw.rglob("V-*.csv")
+        if "unsynchron" not in str(p.parent).lower()
+    )
     if not sync_files:
-        sync_files = [p for p in raw.rglob("V-*.csv") if "unsynchron" not in str(p.parent).lower()]
-    sync_files = sorted(sync_files)
-    if not sync_files:
-        raise RealDataUnavailable("No synchronized real IO-VNBD vehicle CSVs found")
+        raise RealDataUnavailable(
+            "No synchronized real IO-VNBD vehicle CSVs found after resolving the Git-LFS payload"
+        )
 
     records = []
     used_files = []
     for path in sync_files:
         time_guard("building real IO-VNBD records", 180)
         try:
-            df = pd.read_csv(path)
+            raw_frame = pd.read_csv(path, header=None, sep=None, engine="python")
+            numeric = normalize_io_vnbd_vehicle_frame(raw_frame)
         except Exception:
             continue
-        # Official Onyekpe processing uses array columns 2/3 as GPS lat/lon and
-        # 10:13 as FL/FR/RL/RR wheel speeds. Require that real schema here.
-        if df.shape[1] < 14 or len(df) < 11:
+        if len(numeric) < 11:
             continue
-        numeric = df.apply(pd.to_numeric, errors="coerce")
         used_this_file = 0
-        # 10 Hz -> one-second non-overlapping windows: 10 wheel samples and GPS
-        # displacement from row t to t+10.
+        # The public synchronized vehicle stream is nominally 10 Hz.  Each
+        # record contains one second of measured history; GPS is used only to
+        # form the real displacement target at the following endpoint.
         for st in range(0, len(numeric) - 10, 10):
-            sub = numeric.iloc[st:st+11]
-            lat1, lon1 = float(sub.iloc[0, 2]), float(sub.iloc[0, 3])
-            lat2, lon2 = float(sub.iloc[10, 2]), float(sub.iloc[10, 3])
+            sub = numeric.iloc[st:st+11].reset_index(drop=True)
+            lat1, lon1 = float(sub.loc[0, "latitude_deg"]), float(sub.loc[0, "longitude_deg"])
+            lat2, lon2 = float(sub.loc[10, "latitude_deg"]), float(sub.loc[10, "longitude_deg"])
             if not all(map(math.isfinite, (lat1, lon1, lat2, lon2))):
                 continue
             if not (-90 <= lat1 <= 90 and -90 <= lat2 <= 90 and -180 <= lon1 <= 180 and -180 <= lon2 <= 180):
                 continue
             disp = haversine_m(lat1, lon1, lat2, lon2)
-            if not math.isfinite(disp) or disp < 0 or disp > 100.0:
+            if not math.isfinite(disp) or not (0.0 <= disp <= 100.0):
                 continue
-            wheel = sub.iloc[:10, 10:14].to_numpy(float)
-            if wheel.shape != (10, 4) or not np.isfinite(wheel).all():
+            try:
+                rec = io_vnbd_frame_to_record(
+                    sub.copy(),
+                    sequence_id=f"{path.name}#{st//10}",
+                    sample_rate_hz=10.0,
+                    displacement_m=disp,
+                )
+            except Exception:
                 continue
-            t = np.arange(10, dtype=float) / 10.0
-            locs = ("front_left", "front_right", "rear_left", "rear_right")
-            channels = [
-                SensorChannel(wheel[:, j], t, SensorMeta("wheel_speed", "rad/s", "scalar", locs[j], 10.0))
-                for j in range(4)
-            ]
-            rec = SensorRecord(
-                channels,
-                {"displacement": TargetValue("displacement", float(disp))},
-                sequence_id=f"{path.name}#{st//10}",
-                source_domain="io_vnbd",
-            )
+            if "displacement" not in rec.targets:
+                continue
             records.append(rec)
             used_this_file += 1
             if MAX_RECORDS_PER_DATASET > 0 and len(records) >= MAX_RECORDS_PER_DATASET:
@@ -699,13 +700,15 @@ def build_io_vnbd_records():
         if MAX_RECORDS_PER_DATASET > 0 and len(records) >= MAX_RECORDS_PER_DATASET:
             break
     if not records:
-        raise RealDataUnavailable("IO-VNBD real GPS/wheel columns could not produce displacement records")
+        raise RealDataUnavailable(
+            "IO-VNBD synchronized real GPS/vehicle measurements produced no valid displacement windows"
+        )
     STATE["data_audit"]["io_vnbd"].update({
         "source": "synchronized IO-VNBD research-vehicle public-road CSVs",
         "selected_file_count": len(used_files),
         "selected_files_preview": used_files[:20],
-        "target_source": "GPS latitude/longitude one-second geodesic displacement from real measurements",
-        "input_source": "four real wheel-speed channels, 10 Hz",
+        "target_source": "real GPS latitude/longitude one-second geodesic displacement",
+        "input_source": "measured wheel speeds + indicated speed + yaw rate + accelerations + steering",
         "record_count": len(records),
         "synthetic_targets": False,
     })
@@ -746,21 +749,31 @@ def split_records(records):
     return tr, va, te, policy
 
 
+def _split_real_builder(builder):
+    def build():
+        return split_records(builder())
+    return build
+
+
+REAL_RECORD_BUNDLES = {
+    "lira_cd": build_lira_records,
+    "uc3m_tire": _split_real_builder(build_uc3m_records),
+    "deep_dynamics_iac": _split_real_builder(build_iac_records),
+    "io_vnbd": _split_real_builder(build_io_vnbd_records),
+}
+
+
 def real_records_for(dataset: str):
     ensure_dataset(dataset)
-    if dataset == "lira_cd":
-        return build_lira_records()
-    if dataset == "uc3m_tire":
-        recs = build_uc3m_records()
-    elif dataset == "deep_dynamics_iac":
-        recs = build_iac_records()
-    elif dataset == "io_vnbd":
-        recs = build_io_vnbd_records()
-    else:
-        raise ValueError(dataset)
-    tr, va, te, policy = split_records(recs)
+    try:
+        build = REAL_RECORD_BUNDLES[dataset]
+    except KeyError as exc:
+        raise ValueError(f"no real-record builder registered for {dataset}") from exc
+    tr, va, te, policy = build()
     STATE["data_audit"][dataset]["split_policy"] = policy
-    STATE["data_audit"][dataset]["split_counts"] = {"train": len(tr), "validation": len(va), "test": len(te)}
+    STATE["data_audit"][dataset]["split_counts"] = {
+        "train": len(tr), "validation": len(va), "test": len(te),
+    }
     save_state()
     return tr, va, te, policy
 
@@ -1003,7 +1016,10 @@ def train_one_d2d4_baseline(dataset, name, train_records, test_records, split_po
         return pd.read_csv(metric_file).to_dict("records")
 
     input_dim = D2D4_INPUT_DIMS[dataset]
-    built = make_paper_baseline(name, input_dim, debug_scale=False)
+    built = make_paper_baseline(
+        name, input_dim, debug_scale=False,
+        target_names=tuple(DATASET_REGISTRY[dataset]["targets"]),
+    )
     xtr, ytr = build_baseline_xy(train_records, built.target_names, input_dim)
     xte, yte = build_baseline_xy(test_records, built.target_names, input_dim)
     if xtr is None or xte is None or len(xtr) < 2 or len(xte) < 1:
@@ -1013,7 +1029,8 @@ def train_one_d2d4_baseline(dataset, name, train_records, test_records, split_po
     seed_all(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = built.model.to(device)
-    lr = 7e-4 if name == "onyekpe2021_whonet" else 1e-3
+    baseline_lr = {"onyekpe2021_whonet": 7e-4}.get(name, 1e-3)
+    lr = baseline_lr
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     ckpt = out / f"{name}_train_state.pt"
     start_epoch = 0
@@ -1077,6 +1094,26 @@ def train_one_d2d4_baseline(dataset, name, train_records, test_records, split_po
 
 
 # ------------------------------ MAIN ---------------------------------------
+def _run_lira_baseline_set(dataset, train_records, test_records, policy):
+    return train_lira_paper_baselines()
+
+
+def _run_registered_baseline_set(dataset, train_records, test_records, policy):
+    rows = []
+    for name in enforce_paper_baseline_contract(dataset):
+        time_guard(f"baseline {dataset}/{name}", 300)
+        rows.extend(train_one_d2d4_baseline(dataset, name, train_records, test_records, policy))
+    return rows
+
+
+BASELINE_SET_RUNNERS = {
+    "lira_cd": _run_lira_baseline_set,
+    "uc3m_tire": _run_registered_baseline_set,
+    "deep_dynamics_iac": _run_registered_baseline_set,
+    "io_vnbd": _run_registered_baseline_set,
+}
+
+
 def run_dataset(dataset: str):
     import pandas as pd
     train_records, val_records, test_records, policy = real_records_for(dataset)
@@ -1085,12 +1122,7 @@ def run_dataset(dataset: str):
     rows = []
     # SAME proposal for D1, D2, D3, D4.
     rows.extend(train_universal_proposal(dataset, train_records, val_records, test_records, policy))
-    if dataset == "lira_cd":
-        rows.extend(train_lira_paper_baselines())
-    else:
-        for name in enforce_paper_baseline_contract(dataset):
-            time_guard(f"baseline {dataset}/{name}", 300)
-            rows.extend(train_one_d2d4_baseline(dataset, name, train_records, test_records, policy))
+    rows.extend(BASELINE_SET_RUNNERS[dataset](dataset, train_records, test_records, policy))
     if rows:
         pd.DataFrame(rows).to_csv(out / "metrics.csv", index=False)
     return rows

@@ -1910,32 +1910,42 @@ def prepare_uc3m_tire(raw: str | Path, out: str | Path) -> Path:
 
 
 def prepare_io_vnbd(raw: str | Path, out: str | Path) -> Path:
-    """Collect IO-VNBD tabular files while retaining scenario/file identity."""
+    """Index the large synchronized IO-VNBD payload without duplicating it.
+
+    The real synchronized archive is hundreds of megabytes.  The experiment
+    runner streams the raw vehicle files into one-second records, so eagerly
+    concatenating every CSV during ``prepare`` only wastes memory/storage and
+    can make hosted-notebook preparation fail.  A provenance manifest is the
+    correct prepared artifact for this dataset.
+    """
     raw = Path(raw); out = Path(out); ensure_dir(out)
-    rows = []
-    for path in list(raw.rglob("*.csv")) + list(raw.rglob("*.txt")):
-        try:
-            df = read_table(path)
-        except Exception:
-            continue
-        if df.empty:
-            continue
-        z = df.copy()
-        z["source_file"] = str(path.relative_to(raw))
-        rows.append(z)
-    if not rows:
-        return _write_manifest([p for p in raw.rglob("*") if p.is_file()], out / "io_vnbd_manifest.csv", raw)
-    z = pd.concat(rows, ignore_index=True, sort=False)
-    path = out / "io_vnbd_tables.csv"
-    z.to_csv(path, index=False)
-    return path
+    files = [p for p in raw.rglob("*") if p.is_file() and p.suffix.lower() in {".csv", ".txt"}]
+    if not files:
+        raise FileNotFoundError("IO-VNBD download contains no tabular vehicle files")
+    return _write_manifest(files, out / "io_vnbd_manifest.csv", raw)
 
 
 
-def prepare_dataset(name: str, raw: str|Path, out: str|Path, cfg: dict | None = None) -> Path:
-    name = name.lower(); cfg = cfg or {}
-    if name == "lira_cd": return prepare_lira(raw, out, cfg)
-    if name == "uc3m_tire": return prepare_uc3m_tire(raw, out)
-    if name == "deep_dynamics_iac": return prepare_deep_dynamics(raw, out)
-    if name == "io_vnbd": return prepare_io_vnbd(raw, out)
-    raise ValueError(f"unsupported paper dataset: {name}")
+def _prepare_lira_entry(raw: str | Path, out: str | Path, cfg: dict) -> Path:
+    return prepare_lira(raw, out, cfg)
+
+
+def _prepare_plain_entry(fn):
+    return lambda raw, out, cfg: fn(raw, out)
+
+
+PREPARE_DATASET_REGISTRY = {
+    "lira_cd": _prepare_lira_entry,
+    "uc3m_tire": _prepare_plain_entry(prepare_uc3m_tire),
+    "deep_dynamics_iac": _prepare_plain_entry(prepare_deep_dynamics),
+    "io_vnbd": _prepare_plain_entry(prepare_io_vnbd),
+}
+
+
+def prepare_dataset(name: str, raw: str | Path, out: str | Path, cfg: dict | None = None) -> Path:
+    key = str(name).strip().lower()
+    try:
+        prepare = PREPARE_DATASET_REGISTRY[key]
+    except KeyError as exc:
+        raise ValueError(f"unsupported paper dataset: {name}") from exc
+    return prepare(raw, out, cfg or {})

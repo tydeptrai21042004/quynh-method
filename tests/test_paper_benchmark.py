@@ -16,7 +16,7 @@ from safegrip.model.safegrip_universal import UniversalSafeGrip
 
 def test_dataset_specific_queries_are_not_one_friction_task():
     assert [q.name for q in queries_for_dataset("lira_cd")] == ["friction"]
-    assert [q.name for q in queries_for_dataset("uc3m_tire")] == ["force_x", "force_y", "force_z", "slip_angle"]
+    assert [q.name for q in queries_for_dataset("uc3m_tire")] == ["slip_angle"]
     assert [q.name for q in queries_for_dataset("deep_dynamics_iac")] == ["velocity_x", "velocity_y", "yaw_rate"]
     assert [q.name for q in queries_for_dataset("io_vnbd")] == ["displacement"]
 
@@ -67,4 +67,4 @@ def test_dataset_id_ablation_requires_domain_and_runs_with_domain():
         model(batch.sensors, batch.queries)
     with torch.no_grad():
         out = model(batch.sensors, batch.queries, domains=batch.domains)
-    assert out.point.shape == (1, 4)
+    assert out.point.shape == (1, 1)

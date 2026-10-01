@@ -22,8 +22,12 @@ DATASET_REGISTRY = {
     "uc3m_tire": {
         "id": "D2",
         "title": "UC3M/Birmingham strain-based intelligent tire data",
-        "task": "tire_mechanics",
-        "targets": ("force_x", "force_y", "force_z", "slip_angle"),
+        "task": "tire_slip_angle_estimation",
+        # The public U6ICRX deposit exposes three strain channels plus the
+        # experimental slip-angle condition (0/6/13 deg). It does not expose
+        # per-row force labels, so the paper benchmark supervises only the
+        # target that is explicitly recoverable from the public deposit.
+        "targets": ("slip_angle",),
         "dataset_doi": "10.21950/U6ICRX",
         "license": "see e-cienciaDatos record",
         "download_kind": "dataverse",
