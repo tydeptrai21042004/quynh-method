@@ -397,6 +397,7 @@ split:
   validation: 0.1
   test: 0.2
   mode: group_holdout
+  insufficient_group_policy: fallback_spatial_within_trajectory
 physics:
   window_samples: 16
 health:

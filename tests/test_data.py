@@ -216,3 +216,54 @@ def test_mssp2023_adapter_never_fabricates_missing_dynamics(tmp_path):
     pd.DataFrame({"speed": np.arange(100), "mu": np.full(100, 0.7)}).to_csv(raw / "incomplete.csv", index=False)
     with pytest.raises(RuntimeError, match="No values are synthesized"):
         prepare_mssp2023_friction(raw, out, cfg)
+
+
+def test_group_holdout_can_explicitly_fallback_when_public_bundle_has_too_few_groups():
+    from safegrip.data import assign_spatial_splits
+
+    rows = []
+    for g in range(2):
+        for i in range(40):
+            rows.append({"trajectory_id": f"t{g}", "time": i, "route_s_m": i})
+    df = pd.DataFrame(rows)
+    cfg = {
+        "seed": 7,
+        "split": {
+            "mode": "group_holdout",
+            "insufficient_group_policy": "fallback_spatial_within_trajectory",
+            "train": 0.6,
+            "calibration": 0.1,
+            "validation": 0.1,
+            "test": 0.2,
+        },
+        "lira": {"split_guard_samples": 0},
+    }
+    out = assign_spatial_splits(df, cfg)
+    assert set(out["split_mode_requested"].unique()) == {"group_holdout"}
+    assert set(out["split_mode_effective"].unique()) == {"spatial_within_trajectory"}
+    assert set(out["split_group_count"].unique()) == {2}
+    assert out["split_fallback_reason"].str.contains("only 2 trajectory/trip group").all()
+    assert {"train", "calibration", "validation", "test"}.issubset(set(out["split"]))
+
+
+def test_group_holdout_still_fails_on_too_few_groups_when_fallback_is_not_explicit():
+    import pytest
+    from safegrip.data import assign_spatial_splits
+
+    df = pd.DataFrame({
+        "trajectory_id": ["t0"] * 20,
+        "time": np.arange(20),
+        "route_s_m": np.arange(20),
+    })
+    cfg = {
+        "split": {
+            "mode": "group_holdout",
+            "train": 0.6,
+            "calibration": 0.1,
+            "validation": 0.1,
+            "test": 0.2,
+        },
+        "lira": {"split_guard_samples": 0},
+    }
+    with pytest.raises(ValueError, match="at least four"):
+        assign_spatial_splits(df, cfg)

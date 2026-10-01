@@ -61,7 +61,13 @@ when the relevant calibration/test units satisfy the split-conformal
 exchangeability assumption. The paper configuration uses trajectory-level
 `group_holdout` and block-max calibration to reduce overlap-induced
 pseudo-replication; this is explicitly a dependence-mitigation protocol, not a
-claim of validity under arbitrary temporal dependence.
+claim of validity under arbitrary temporal dependence. If a downloaded public
+LiRA artifact exposes fewer than four independent trajectory/trip groups, a
+group holdout is impossible; with the explicit
+`split.insufficient_group_policy: fallback_spatial_within_trajectory` setting,
+preprocessing falls back to the purged within-trajectory split and records both
+the requested and effective protocols in its audit metadata. Such a fallback
+run must not be described as a group-holdout result.
 
 See [`SAFEGRIP_PFR_METHOD.md`](SAFEGRIP_PFR_METHOD.md) for the exact method,
 assumptions, ablations, and theorem.

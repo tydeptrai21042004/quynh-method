@@ -21,6 +21,15 @@ trajectory IDs are assigned to one partition only. Temporal windows are then
 built inside one segment and one partition; they never cross trajectory or
 split boundaries.
 
+Some public LiRA bulk downloads contain fewer than four independent
+trajectory/trip groups, in which case four-way `group_holdout` is mathematically
+impossible. The executable config may explicitly set
+`split.insufficient_group_policy: fallback_spatial_within_trajectory`; this
+uses the purged within-trajectory protocol and writes the requested mode,
+effective mode, available group count, and fallback reason into the prepared
+data/report. The resulting run is a fallback experiment and is **not** reported
+as the primary group-holdout result.
+
 Adjacent windows inside a trajectory can still overlap. Therefore the active
 PFR-ECR calibration path uses `uq.method: block_max_split_conformal`. With
 `uq.block_size: 0`, the executable block size is

@@ -1104,49 +1104,81 @@ def add_lira_trajectory_segments(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Assign leakage-safe data partitions.
 
-    ``split.mode=spatial_within_trajectory`` keeps the legacy
-    contiguous-with-purge protocol. ``split.mode=group_holdout`` assigns whole
-    trajectory IDs to a single partition and is intended for the stronger
-    unseen-trajectory generalization experiment. Splitting happens before
-    feature interpolation/resampling in either mode.
+    ``split.mode=spatial_within_trajectory`` keeps the contiguous-with-purge
+    protocol. ``split.mode=group_holdout`` assigns whole trajectory IDs to a
+    single partition and is the stronger unseen-trajectory protocol.
+
+    Public LiRA bundles do not always contain four independent trajectory/trip
+    groups.  When ``split.insufficient_group_policy`` is explicitly set to
+    ``fallback_spatial_within_trajectory``, an impossible group holdout falls
+    back to the within-trajectory protocol instead of aborting preparation.
+    The requested/effective modes and reason are written into constant metadata
+    columns so downstream audits cannot silently report the stronger protocol.
     """
     z = df.copy()
     split_cfg = cfg.get("split", {})
-    mode = str(split_cfg.get("mode", "spatial_within_trajectory"))
+    requested_mode = str(split_cfg.get("mode", "spatial_within_trajectory"))
+    mode = requested_mode
+    fallback_reason = ""
+    group_count = None
+    group_col = "trajectory_id" if "trajectory_id" in z else ("trip_id" if "trip_id" in z else None)
+
     if mode == "group_holdout":
-        group_col = "trajectory_id" if "trajectory_id" in z else ("trip_id" if "trip_id" in z else None)
         if group_col is None:
             raise ValueError("group_holdout requires trajectory_id or trip_id")
         groups = sorted(z[group_col].dropna().astype(str).unique().tolist())
-        if len(groups) < 4:
-            raise ValueError("group_holdout requires at least four trajectory/trip groups")
-        train_f = float(split_cfg.get("train", 0.60))
-        cal_f = float(split_cfg.get("calibration", 0.10))
-        val_f = float(split_cfg.get("validation", 0.10))
-        # Deterministic group ordering independent of row order. A seed changes
-        # the assignment only when explicitly changed in the config.
-        import hashlib
-        seed = int(cfg.get("seed", 0))
-        ordered = sorted(groups, key=lambda g: hashlib.sha256(f"{seed}:{g}".encode()).hexdigest())
-        n = len(ordered)
-        n_train = max(1, int(round(train_f*n)))
-        n_cal = max(1, int(round(cal_f*n)))
-        n_val = max(1, int(round(val_f*n)))
-        while n_train+n_cal+n_val >= n:
-            if n_train > 1: n_train -= 1
-            elif n_val > 1: n_val -= 1
-            elif n_cal > 1: n_cal -= 1
-            else: break
-        mapping = {}
-        for g in ordered[:n_train]: mapping[g] = "train"
-        for g in ordered[n_train:n_train+n_cal]: mapping[g] = "calibration"
-        for g in ordered[n_train+n_cal:n_train+n_cal+n_val]: mapping[g] = "validation"
-        for g in ordered[n_train+n_cal+n_val:]: mapping[g] = "test"
-        z["split"] = z[group_col].astype(str).map(mapping)
-        z["split_position"] = np.nan
-        return z
+        group_count = len(groups)
+        if group_count < 4:
+            policy = str(split_cfg.get("insufficient_group_policy", "error"))
+            if policy != "fallback_spatial_within_trajectory":
+                raise ValueError("group_holdout requires at least four trajectory/trip groups")
+            mode = "spatial_within_trajectory"
+            fallback_reason = (
+                f"requested group_holdout but only {group_count} trajectory/trip group(s) were available; "
+                "used spatial_within_trajectory with purge instead"
+            )
+        else:
+            train_f = float(split_cfg.get("train", 0.60))
+            cal_f = float(split_cfg.get("calibration", 0.10))
+            val_f = float(split_cfg.get("validation", 0.10))
+            # Deterministic group ordering independent of row order. A seed changes
+            # the assignment only when explicitly changed in the config.
+            import hashlib
+            seed = int(cfg.get("seed", 0))
+            ordered = sorted(groups, key=lambda g: hashlib.sha256(f"{seed}:{g}".encode()).hexdigest())
+            n = len(ordered)
+            n_train = max(1, int(round(train_f * n)))
+            n_cal = max(1, int(round(cal_f * n)))
+            n_val = max(1, int(round(val_f * n)))
+            while n_train + n_cal + n_val >= n:
+                if n_train > 1:
+                    n_train -= 1
+                elif n_val > 1:
+                    n_val -= 1
+                elif n_cal > 1:
+                    n_cal -= 1
+                else:
+                    break
+            mapping = {}
+            for g in ordered[:n_train]:
+                mapping[g] = "train"
+            for g in ordered[n_train:n_train + n_cal]:
+                mapping[g] = "calibration"
+            for g in ordered[n_train + n_cal:n_train + n_cal + n_val]:
+                mapping[g] = "validation"
+            for g in ordered[n_train + n_cal + n_val:]:
+                mapping[g] = "test"
+            z["split"] = z[group_col].astype(str).map(mapping)
+            z["split_position"] = np.nan
+            z["split_mode_requested"] = requested_mode
+            z["split_mode_effective"] = "group_holdout"
+            z["split_fallback_reason"] = ""
+            z["split_group_count"] = int(group_count)
+            return z
+
     if mode != "spatial_within_trajectory":
         raise ValueError(f"Unknown split.mode: {mode}")
+
     lira_cfg = cfg.get("lira", {})
     train = float(split_cfg.get("train", 0.60))
     cal = train + float(split_cfg.get("calibration", 0.10))
@@ -1154,9 +1186,8 @@ def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     guard = max(0, int(lira_cfg.get("split_guard_samples", 0)))
     z["split"] = "purged"
     z["split_position"] = np.nan
-    group_col = "trajectory_id" if "trajectory_id" in z else ("trip_id" if "trip_id" in z else None)
-    groups = z.groupby(group_col, sort=False, dropna=False) if group_col else [("all", z)]
-    for _, g in groups:
+    groups_iter = z.groupby(group_col, sort=False, dropna=False) if group_col else [("all", z)]
+    for _, g in groups_iter:
         idx = g.index.to_numpy()
         if "route_s_m" in g and g.route_s_m.notna().sum() >= 2:
             coord = g.route_s_m.to_numpy(float)
@@ -1171,7 +1202,11 @@ def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         if n == 0:
             continue
         pos = np.arange(n, dtype=float) / max(n, 1)
-        labels = np.where(pos < train, "train", np.where(pos < cal, "calibration", np.where(pos < val, "validation", "test"))).astype(object)
+        labels = np.where(
+            pos < train,
+            "train",
+            np.where(pos < cal, "calibration", np.where(pos < val, "validation", "test")),
+        ).astype(object)
         if guard > 0 and n > 4 * guard:
             for boundary in (int(round(train * n)), int(round(cal * n)), int(round(val * n))):
                 lo = max(0, boundary - guard)
@@ -1179,8 +1214,14 @@ def assign_spatial_splits(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
                 labels[lo:hi] = "purged"
         z.loc[ordered_idx, "split"] = labels
         z.loc[ordered_idx, "split_position"] = pos
-    return z
 
+    if group_count is None:
+        group_count = int(z[group_col].dropna().astype(str).nunique()) if group_col else 1
+    z["split_mode_requested"] = requested_mode
+    z["split_mode_effective"] = "spatial_within_trajectory"
+    z["split_fallback_reason"] = fallback_reason
+    z["split_group_count"] = int(group_count)
+    return z
 
 def impute_features_by_partition(df: pd.DataFrame, features: list[str], limit: int | None = 5) -> pd.DataFrame:
     """Impute features strictly within (trip, split) groups; labels are untouched."""
@@ -1474,7 +1515,9 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
     keep_meta = [
         "time", "distance", "lat", "lon", "route_s_m", "gps_heading_deg", "match_distance_m",
         "match_ref_index", "mu_ref", "physics_lower_mechanics", "physics_lower_raw", "source_file", "ref_source_file",
-        "route_id", "direction", "trip_id", "trajectory_id", "segment_id", "split", "split_position", "sample_uid", "resampled",
+        "route_id", "direction", "trip_id", "trajectory_id", "segment_id", "split", "split_position",
+        "split_mode_requested", "split_mode_effective", "split_fallback_reason", "split_group_count",
+        "sample_uid", "resampled",
     ]
     keep = feats + [c for c in keep_meta if c in df]
     df = df[keep].copy()
@@ -1497,6 +1540,12 @@ def prepare_lira(raw: str | Path, out: str | Path, cfg: dict) -> Path:
             "interpolation_limit": interp_limit,
         },
         "split_counts": {str(k): int(v) for k, v in split_counts.items()},
+        "split_protocol": {
+            "requested_mode": str(df["split_mode_requested"].iloc[0]) if "split_mode_requested" in df and len(df) else str(cfg.get("split", {}).get("mode", "spatial_within_trajectory")),
+            "effective_mode": str(df["split_mode_effective"].iloc[0]) if "split_mode_effective" in df and len(df) else str(cfg.get("split", {}).get("mode", "spatial_within_trajectory")),
+            "fallback_reason": str(df["split_fallback_reason"].iloc[0]) if "split_fallback_reason" in df and len(df) else "",
+            "available_group_count": int(df["split_group_count"].iloc[0]) if "split_group_count" in df and len(df) else None,
+        },
         "features": feats,
         "dropped_or_rejected_features": [r for r in feature_audit if not r.get("kept", False)],
         "gps_used_as_model_feature": False,

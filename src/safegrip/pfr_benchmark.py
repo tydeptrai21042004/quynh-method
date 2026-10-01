@@ -76,6 +76,39 @@ def _endpoint_hash(ids: np.ndarray) -> str:
     return hashlib.sha256("\n".join(np.asarray(ids, dtype=str).tolist()).encode()).hexdigest()
 
 
+
+
+def _prepared_split_protocol(csv_path, cfg: dict) -> dict:
+    """Read the effective split protocol persisted by preprocessing.
+
+    Falling back from an impossible group holdout must never be reported as if
+    the stronger protocol actually ran. Older prepared files without metadata
+    retain the configured mode for backward compatibility.
+    """
+    requested = str(cfg.get("split", {}).get("mode", "spatial_within_trajectory"))
+    info = {
+        "requested_mode": requested,
+        "effective_mode": requested,
+        "fallback_reason": "",
+        "available_group_count": None,
+    }
+    try:
+        row = pd.read_csv(csv_path, nrows=1)
+        if len(row):
+            if "split_mode_requested" in row:
+                info["requested_mode"] = str(row["split_mode_requested"].iloc[0])
+            if "split_mode_effective" in row:
+                info["effective_mode"] = str(row["split_mode_effective"].iloc[0])
+            if "split_fallback_reason" in row:
+                value = row["split_fallback_reason"].iloc[0]
+                info["fallback_reason"] = "" if pd.isna(value) else str(value)
+            if "split_group_count" in row:
+                value = row["split_group_count"].iloc[0]
+                info["available_group_count"] = None if pd.isna(value) else int(value)
+    except Exception:
+        pass
+    return info
+
 def _pfr_hparams(cfg: dict, overrides: dict | None = None) -> dict:
     hp = dict(cfg.get("pfr", {}))
     if overrides:
@@ -485,6 +518,7 @@ def run_pfr_benchmark(
         raise ValueError("preset must be quick, trust, or paper")
 
     out = ensure_dir(out_dir)
+    split_protocol = _prepared_split_protocol(csv_path, cfg)
     names = list(models) if models is not None else list(QUICK_BASELINES if preset == "quick" else LEGACY_EXECUTABLE_BASELINES)
     validate_paper_baselines(names)
     if protocol == "source_faithful":
@@ -914,7 +948,10 @@ def run_pfr_benchmark(
             "exchangeability (or an appropriate exchangeable-block argument) for the calibration/test units. Block-max "
             "calibration mitigates overlap-induced pseudo-replication but is not claimed to prove validity under arbitrary dependence."
         ),
-        "split_mode": str(cfg.get("split", {}).get("mode", "spatial_within_trajectory")),
+        "split_mode": split_protocol["effective_mode"],
+        "split_mode_requested": split_protocol["requested_mode"],
+        "split_fallback_reason": split_protocol["fallback_reason"],
+        "split_group_count": split_protocol["available_group_count"],
         "uq_method": uq_method,
         "calibration_block_size": int(calibration_block_size),
         "dependence_claim": str(uq_cfg.get("dependence_claim", "mitigation_only")),
@@ -1011,7 +1048,10 @@ def run_pfr_benchmark(
         "statistical_alpha": float(statistical_alpha),
         "q_physics": float(q_physics),
         "q_safe_by_seed": {str(k): float(v) for k, v in q_safe_by_seed.items()},
-        "split_mode": str(cfg.get("split", {}).get("mode", "spatial_within_trajectory")),
+        "split_mode": split_protocol["effective_mode"],
+        "split_mode_requested": split_protocol["requested_mode"],
+        "split_fallback_reason": split_protocol["fallback_reason"],
+        "split_group_count": split_protocol["available_group_count"],
         "uq_method": uq_method,
         "calibration_block_size": int(calibration_block_size),
         "dependence_claim": str(uq_cfg.get("dependence_claim", "mitigation_only")),

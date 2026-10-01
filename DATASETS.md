@@ -11,7 +11,7 @@ SafeGrip does **not** fabricate missing targets or synthesize data to merge inco
 
 ## D1: LiRA-CD
 
-D1 is the only dataset driven by the legacy end-to-end PFR-ECR benchmark command. The paper protocol prepares trajectory identities first, assigns whole trajectories to train/calibration/validation/test (`group_holdout`), then builds segment-safe temporal windows.
+D1 is the only dataset driven by the legacy end-to-end PFR-ECR benchmark command. The paper protocol prepares trajectory identities first, assigns whole trajectories to train/calibration/validation/test (`group_holdout`), then builds segment-safe temporal windows. If the particular public download contains fewer than four independent groups, preprocessing uses the explicitly configured purged `spatial_within_trajectory` fallback, records that downgrade in `lira_preprocessing_report.json` and `lira_aligned.csv`, and the run must not be labelled a group-holdout result.
 
 ```bash
 safegrip download --datasets lira_cd
