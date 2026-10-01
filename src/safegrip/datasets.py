@@ -51,12 +51,12 @@ DATASET_REGISTRY = {
         "id": "D4",
         "title": "IO-VNBD inertial and odometry vehicle navigation benchmark",
         "task": "vehicle_localization",
-        "targets": ("displacement", "orientation"),
+        "targets": ("displacement",),
         "dataset_doi": "10.1016/j.dib.2021.106885",
         "license": "open dataset; see upstream repository/article",
         "download_kind": "github",
         "input_modalities": ("ins", "wheel_odometry", "vehicle_ego_motion"),
-        "allowed_baselines": ("onyekpe2021_qgru", "wang2023_transformer"),
+        "allowed_baselines": ("onyekpe2021_qgru", "onyekpe2021_whonet"),
     },
 }
 

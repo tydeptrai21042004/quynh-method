@@ -300,7 +300,7 @@ class QuaternionGRUCell(nn.Module):
 class Onyekpe2021QGRU(nn.Module):
     """Quaternion-GRU sensor-fusion baseline for IO-VNBD."""
 
-    target_names = ("displacement", "orientation")
+    target_names = ("displacement",)
 
     def __init__(self, input_dim: int, *, hidden_size: int = 64, debug_scale: bool = False):
         super().__init__()
@@ -310,7 +310,7 @@ class Onyekpe2021QGRU(nn.Module):
         self.qin = qin
         self.hidden_size = qhidden
         self.cell = QuaternionGRUCell(qin, qhidden)
-        self.head = nn.Linear(qhidden, 2)
+        self.head = nn.Linear(qhidden, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] < self.qin:
@@ -321,37 +321,26 @@ class Onyekpe2021QGRU(nn.Module):
         return self.head(h)
 
 
-class SinusoidalPosition(nn.Module):
-    def __init__(self, dim: int, max_len: int = 4096):
+class WhONet2021(nn.Module):
+    """Paper-structured WhONet classic-RNN comparator for real IO-VNBD.
+
+    The source paper uses a classic tanh recurrent network to learn wheel-
+    odometry displacement error.  This local reproduction keeps that recurrent
+    family and the reported 72-unit hidden layer while retraining on the common
+    benchmark split.  It predicts displacement only, matching WhONet's task.
+    """
+
+    target_names = ("displacement",)
+
+    def __init__(self, input_dim: int, *, hidden_size: int = 72, dropout: float = 0.05, debug_scale: bool = False):
         super().__init__()
-        p = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
-        div = torch.exp(torch.arange(0, dim, 2, dtype=torch.float32) * (-math.log(10000.0) / dim))
-        pe = torch.zeros(max_len, dim)
-        pe[:, 0::2] = torch.sin(p * div)
-        pe[:, 1::2] = torch.cos(p * div[: pe[:, 1::2].shape[1]])
-        self.register_buffer("pe", pe, persistent=False)
+        hidden = 16 if debug_scale else int(hidden_size)
+        self.dropout = nn.Dropout(0.0 if debug_scale else float(dropout))
+        self.rnn = nn.RNN(int(input_dim), hidden, nonlinearity="tanh", batch_first=True)
+        self.head = nn.Linear(hidden, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.pe[: x.shape[1]].unsqueeze(0).to(x)
-
-
-class Wang2023Transformer(nn.Module):
-    """Transformer wheel-odometry error predictor for IO-VNBD."""
-
-    target_names = ("displacement", "orientation")
-
-    def __init__(self, input_dim: int, *, d_model: int = 96, heads: int = 4, layers: int = 3, debug_scale: bool = False):
-        super().__init__()
-        if debug_scale:
-            d_model, heads, layers = 32, 4, 1
-        self.proj = nn.Linear(input_dim, d_model)
-        self.pos = SinusoidalPosition(d_model)
-        enc = nn.TransformerEncoderLayer(d_model, heads, dim_feedforward=4*d_model, dropout=0.1, activation="gelu", batch_first=True, norm_first=True)
-        self.encoder = nn.TransformerEncoder(enc, layers)
-        self.head = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, d_model // 2), nn.GELU(), nn.Linear(d_model // 2, 2))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        z = self.encoder(self.pos(self.proj(x)))
+        z, _ = self.rnn(self.dropout(x))
         return self.head(z[:, -1])
 
 
@@ -361,7 +350,7 @@ BASELINE_TARGETS: dict[str, tuple[str, ...]] = {
     "chrosniak2024_ddm": DeepDynamics2024.target_names,
     "fang_yu2025_fthd": FTHD2025.target_names,
     "onyekpe2021_qgru": Onyekpe2021QGRU.target_names,
-    "wang2023_transformer": Wang2023Transformer.target_names,
+    "onyekpe2021_whonet": WhONet2021.target_names,
 }
 
 
@@ -373,7 +362,7 @@ def make_paper_baseline(name: str, input_dim: int, *, debug_scale: bool = False)
         "chrosniak2024_ddm": lambda: DeepDynamics2024(input_dim, debug_scale=debug_scale),
         "fang_yu2025_fthd": lambda: FTHD2025(input_dim, debug_scale=debug_scale),
         "onyekpe2021_qgru": lambda: Onyekpe2021QGRU(input_dim, debug_scale=debug_scale),
-        "wang2023_transformer": lambda: Wang2023Transformer(input_dim, debug_scale=debug_scale),
+        "onyekpe2021_whonet": lambda: WhONet2021(input_dim, debug_scale=debug_scale),
     }
     if key not in builders:
         raise ValueError(f"No D2--D4 paper-baseline implementation for {name}")

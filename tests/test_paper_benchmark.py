@@ -18,7 +18,7 @@ def test_dataset_specific_queries_are_not_one_friction_task():
     assert [q.name for q in queries_for_dataset("lira_cd")] == ["friction"]
     assert [q.name for q in queries_for_dataset("uc3m_tire")] == ["force_x", "force_y", "force_z", "slip_angle"]
     assert [q.name for q in queries_for_dataset("deep_dynamics_iac")] == ["velocity_x", "velocity_y", "yaw_rate"]
-    assert [q.name for q in queries_for_dataset("io_vnbd")] == ["displacement", "orientation"]
+    assert [q.name for q in queries_for_dataset("io_vnbd")] == ["displacement"]
 
 
 def test_uc3m_adapter_does_not_manufacture_missing_forces():

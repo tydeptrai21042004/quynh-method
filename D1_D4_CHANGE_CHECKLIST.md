@@ -15,7 +15,7 @@
 - [x] D3 adapter separates history inputs from the final next-state target.
 - [x] D4 wheel-speed channels remain angular when supplied in angular units.
 - [x] Added dataset-specific physical query sets instead of one friction query universe.
-- [x] Added displacement/orientation/state target ontology entries.
+- [x] Added displacement/state target ontology entries; the verified IO-VNBD experiment uses displacement as the common real target.
 - [x] Fixed force utilization to `sqrt(Fx^2 + Fy^2) / max(abs(Fz), eps)`.
 - [x] Added heteroscedastic Gaussian NLL so the Universal SafeGrip scale head receives gradients.
 - [x] Empty/undersized ECR calibration now fails explicitly instead of silently returning a zero correction.
@@ -40,7 +40,7 @@
 - [ ] Chrosniak2024 DDM wrapper around the official upstream evaluation workflow.
 - [ ] Fang & Yu 2025 FTHD/EKF-FTHD wrapper around the official upstream workflow.
 - [ ] Onyekpe2021 QGRU/GRU exact training/evaluation reproduction.
-- [ ] Wang2023 Transformer/WhONet/LSTM exact training/evaluation reproduction.
+- [ ] Onyekpe2021 WhONet exact training/evaluation reproduction beyond the current paper-structured local reproduction.
 - [ ] Exact paper split/group definitions must be locked after inspecting downloaded D2/D4 source tables and the upstream baseline scripts.
 - [ ] Dataset-specific published metric runners (especially D3 ADE/FDE and D4 CRSE) should be implemented from the exact paper definitions rather than approximated.
 - [ ] U3 missing-sensor sweeps, U4 held-out sensor combinations, U5 joint multi-dataset training, and U6 leave-one-dataset-out experiment runners still need the final real-data training loop.
@@ -57,4 +57,4 @@ python -m safegrip.cli baselines --dataset uc3m_tire
 python -m safegrip.cli universal-check --dataset io_vnbd --ablation channel_id_only
 ```
 
-The benchmark command deliberately refuses to substitute a generic model for an unimplemented paper baseline. This is a scientific-safety guard, not a missing silent fallback.
+The benchmark deliberately refuses synthetic/generated data, fabricated targets, dummy comparators, and generic-model substitutions for paper baselines. This is a scientific-safety guard, not a silent fallback.

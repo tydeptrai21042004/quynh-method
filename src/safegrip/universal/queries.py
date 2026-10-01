@@ -40,7 +40,7 @@ DATASET_QUERIES: dict[str, tuple[PhysicalQuery, ...]] = {
     "lira_cd": (FRICTION_QUERY,),
     "uc3m_tire": (FORCE_X_QUERY, FORCE_Y_QUERY, FORCE_Z_QUERY, SLIP_ANGLE_QUERY),
     "deep_dynamics_iac": (VELOCITY_X_QUERY, VELOCITY_Y_QUERY, YAW_RATE_QUERY),
-    "io_vnbd": (DISPLACEMENT_QUERY, ORIENTATION_QUERY),
+    "io_vnbd": (DISPLACEMENT_QUERY,),
 }
 
 

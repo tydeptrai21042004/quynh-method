@@ -1,7 +1,7 @@
 import torch
 
 from safegrip.paper_baselines import (
-    BASELINE_TARGETS, FTHD2025, Mendoza2019Fuzzy, Onyekpe2021QGRU,
+    BASELINE_TARGETS, FTHD2025, Mendoza2019Fuzzy, Onyekpe2021QGRU, WhONet2021,
     make_paper_baseline,
 )
 
@@ -12,8 +12,8 @@ def test_all_missing_d2_d4_baselines_are_locally_buildable_and_finite():
         "yunta2018_fuzzy_lfc": (3, 3),
         "chrosniak2024_ddm": (5, 3),
         "fang_yu2025_fthd": (5, 3),
-        "onyekpe2021_qgru": (8, 2),
-        "wang2023_transformer": (8, 2),
+        "onyekpe2021_qgru": (8, 1),
+        "onyekpe2021_whonet": (8, 1),
     }
     for name, (d, q) in cases.items():
         built = make_paper_baseline(name, d, debug_scale=True)
@@ -39,3 +39,11 @@ def test_fthd_exposes_hybrid_physics_loss():
 def test_qgru_uses_quaternion_packed_hidden_state():
     m = Onyekpe2021QGRU(7, debug_scale=True)
     assert m.qin % 4 == 0 and m.hidden_size % 4 == 0
+
+
+def test_whonet_is_classic_rnn_displacement_only():
+    m = WhONet2021(8, debug_scale=False)
+    assert m.rnn.hidden_size == 72
+    y = m(torch.randn(3, 20, 8))
+    assert y.shape == (3, 1)
+    assert m.target_names == ("displacement",)

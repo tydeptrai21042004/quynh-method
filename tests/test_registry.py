@@ -20,14 +20,19 @@ def test_dataset_scoped_paper_baselines_are_exactly_frozen_set():
         "lira_cd": ("du2023_inceptiontime", "todorovic2022_cnn", "lampe2023_gru", "levenberg2023_stft"),
         "uc3m_tire": ("mendoza2019_fuzzy", "yunta2018_fuzzy_lfc"),
         "deep_dynamics_iac": ("chrosniak2024_ddm", "fang_yu2025_fthd"),
-        "io_vnbd": ("onyekpe2021_qgru", "wang2023_transformer"),
+        "io_vnbd": ("onyekpe2021_qgru", "onyekpe2021_whonet"),
     }
     assert DATASET_BASELINES == expected
     assert set(PAPER_BASELINES) == {x for xs in expected.values() for x in xs}
     validate_paper_baselines(PAPER_BASELINES)
     for name in PAPER_BASELINES:
-        assert LITERATURE_BASELINES[name]["doi"]
-        assert LITERATURE_BASELINES[name]["dataset"] in expected
+        meta = LITERATURE_BASELINES[name]
+        assert meta["doi"]
+        assert meta.get("paper_verified") is True
+        assert meta["dataset"] in expected
+        assert "dummy" not in name.lower()
+        assert "synthetic" not in name.lower()
+        assert "placeholder" not in name.lower()
 
 
 def test_cross_dataset_baseline_is_rejected():

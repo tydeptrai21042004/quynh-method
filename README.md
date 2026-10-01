@@ -171,3 +171,23 @@ safegrip universal-smoke
 ```
 
 See `UNIVERSAL_SAFEGRIP_METHOD.md`, `docs/research_specification.md`, and `docs/universal_experiment_protocol.md` before extending it to additional measured datasets. The universal track must not fabricate missing targets or timing merely to pool incompatible sources.
+
+### One-proposal D1--D4 real-data Kaggle experiment
+
+For a cross-dataset comparison, use the single runner
+`scripts/KAGGLE_ALL_REAL_DATASETS_ONE_PROPOSAL_1SEED_10EPOCHS.py`.
+It trains the **same `UniversalSafeGrip` proposal architecture and training
+method on D1--D4**.  Dataset adapters and physical target queries change only
+the measurement interface; they do not select a different proposal model.
+
+This runner has a strict real-data/paper-baseline contract:
+
+- it never substitutes synthetic/generated records or targets;
+- D3 consumes only the five real IAC racecar CSV logs and excludes Bayesrace
+  simulator files;
+- D4 uses measured IO-VNBD wheel-speed/GPS data and evaluates real displacement;
+- every comparator must be registered with a publication DOI and
+  `paper_verified: true`; dummy/placeholder baselines are rejected before
+  training starts;
+- if a required real archive/target is unavailable, the dataset is marked
+  `SKIPPED_REAL_DATA_UNAVAILABLE` instead of being silently replaced.

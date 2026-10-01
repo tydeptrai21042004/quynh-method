@@ -13,7 +13,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .paper_baselines import FTHD2025
+from .paper_baselines import FTHD2025, WhONet2021
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,9 @@ def baseline_loss(model: nn.Module, x: torch.Tensor, y: torch.Tensor) -> torch.T
     pred = model(x)
     if pred.shape != y.shape:
         raise ValueError(f"prediction/target shape mismatch: {tuple(pred.shape)} vs {tuple(y.shape)}")
+    if isinstance(model, WhONet2021):
+        # WhONet source implementation optimizes absolute displacement error.
+        return F.l1_loss(pred, y)
     return F.mse_loss(pred, y)
 
 
