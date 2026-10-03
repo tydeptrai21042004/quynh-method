@@ -9,6 +9,7 @@ from safegrip.datasets import PAPER_DATASETS
 from safegrip.universal.batching import UniversalSensorBatch
 from safegrip.universal.queries import PhysicalQuery
 from safegrip.universal.reference import PhysicalReferenceOperator
+from safegrip.universal.innovation import SemanticInnovationNormalizer
 from .metadata_embedding import PhysicallyTypedTokenEncoder
 from .latent_backbone import SensorSetLatentBackbone, MeanPoolLatentBackbone
 from .query_decoder import CompositionalQueryDecoder, QueryPrediction
@@ -26,6 +27,9 @@ class UniversalSafeGripOutput:
     innovation: torch.Tensor
     physical_anchor: torch.Tensor
     anchor_mask: torch.Tensor
+    innovation_center: torch.Tensor
+    innovation_scale: torch.Tensor
+    normalized_scale: torch.Tensor
 
 
 class UniversalSafeGrip(nn.Module):
@@ -42,6 +46,7 @@ class UniversalSafeGrip(nn.Module):
         latent_layers: int = 4,
         dropout: float = 0.1,
         ablation: UniversalAblationConfig | None = None,
+        innovation_normalizer: SemanticInnovationNormalizer | None = None,
     ):
         super().__init__()
         self.ablation = ablation or UniversalAblationConfig()
@@ -63,6 +68,10 @@ class UniversalSafeGrip(nn.Module):
         else:
             raise ValueError(f"unknown aggregation mode: {self.ablation.aggregation}")
         self.decoder = CompositionalQueryDecoder(latent_dim=latent_dim, heads=latent_heads)
+        # No trainable parameters are introduced by the innovation normalizer.
+        # An identity normalizer preserves backwards compatibility for low-level
+        # model tests; paper runners fit it on training data before optimization.
+        self.innovation_normalizer = innovation_normalizer or SemanticInnovationNormalizer()
 
         # The proposal is dataset-agnostic by construction.  Dataset identity is
         # available *only* as an explicit ablation; the default/full method does
@@ -117,13 +126,19 @@ class UniversalSafeGrip(nn.Module):
         qids = self.query_tensor(queries, batch.features.shape[0], device=batch.features.device)
         pred: QueryPrediction = self.decoder(latent, qids)
         physical_anchor, anchor_mask = self._physical_query_anchor(batch, queries)
-        # One dataset-agnostic equation for every task: the decoder predicts an
-        # innovation around a parameter-free semantic physics reference.  The
-        # reference registry uses physical query types (state, road friction,
-        # localization), never dataset identity.  Unobservable queries receive
-        # zero reference and therefore reduce exactly to the original predictor.
-        point = pred.point + physical_anchor
-        scale = pred.scale if self.ablation.learned_scale else torch.ones_like(pred.point)
+
+        # Normalized Physical Innovation (NPI): the decoder always predicts a
+        # dimensionless O(1) innovation.  If a physical reference is available,
+        # training/inference operate on the residual y-P_q. If channel dropout or
+        # real sensor missingness removes the reference, the same decoder uses a
+        # training-only direct-target coordinate instead of mixing residual and
+        # absolute-state scales.
+        point, innovation_center, innovation_scale = self.innovation_normalizer.reconstruct(
+            pred.point, qids, physical_anchor, anchor_mask
+        )
+        normalized_scale = pred.scale if self.ablation.learned_scale else torch.ones_like(pred.point)
+        scale = normalized_scale * innovation_scale
         return UniversalSafeGripOutput(
-            point, scale, latent, tokens, pred.point, physical_anchor, anchor_mask
+            point, scale, latent, tokens, pred.point, physical_anchor, anchor_mask,
+            innovation_center, innovation_scale, normalized_scale,
         )

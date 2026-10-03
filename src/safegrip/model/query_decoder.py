@@ -38,6 +38,12 @@ class CompositionalQueryDecoder(nn.Module):
         )
         self.point_head = nn.Linear(latent_dim, 1)
         self.scale_head = nn.Linear(latent_dim, 1)
+        # Reference-preserving initialization: at initialization the learned
+        # normalized innovation is exactly zero, so the model starts from the
+        # training-only semantic reference coordinate rather than perturbing it
+        # with an arbitrary random offset. This adds no parameters.
+        nn.init.zeros_(self.point_head.weight)
+        nn.init.zeros_(self.point_head.bias)
         self.scale_floor = float(scale_floor)
 
     def forward(self, latent: torch.Tensor, query_ids: torch.Tensor) -> QueryPrediction:

@@ -53,7 +53,7 @@ RUN_TESTS = os.environ.get("SAFEGRIP_RUN_TESTS", "1") not in {"0", "false", "Fal
 
 DATASETS = ("lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd")
 PROPOSAL_NAME = "universal_safegrip"
-PROPOSAL_REVISION = "semantic_physical_reference_innovation_v2"
+PROPOSAL_REVISION = "normalized_physical_innovation_v3"
 D2D4_INPUT_DIMS = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 4}
 REAL_IAC_FILES = (
     "LVMS_23_01_04_A.csv",
@@ -793,7 +793,10 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
     import torch
     from safegrip.ablations import get_ablation
     from safegrip.model.safegrip_universal import UniversalSafeGrip
-    from safegrip.training.trainer import ResearchLossConfig, estimate_target_scales, train_step, research_losses
+    from safegrip.training.trainer import (
+        ResearchLossConfig, estimate_target_scales, estimate_innovation_normalizer,
+        train_step, research_losses,
+    )
     from safegrip.universal.tokenizer import UniversalSensorTokenizer, TokenizerConfig
     from safegrip.universal.queries import queries_for_dataset
 
@@ -814,14 +817,24 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
     train_batches = make_research_batches(train_records, tokenizer, dataset, UNIVERSAL_BATCH)
     val_batches = make_research_batches(val_records, tokenizer, dataset, UNIVERSAL_BATCH) if val_records else []
     test_batches = make_research_batches(test_records, tokenizer, dataset, UNIVERSAL_BATCH)
+    # Fit query-semantic Normalized Physical Innovation statistics on TRAINING
+    # data only.  These are deterministic buffers, not learned heads and not
+    # dataset-ID parameters.  target_scales is retained only for compatibility
+    # with the trainer call signature; NPI optimizes the dimensionless target.
+    innovation_normalizer = estimate_innovation_normalizer(train_batches)
     scales = estimate_target_scales(train_batches)
 
     # SAME constructor and optimizer on every dataset.
-    model = UniversalSafeGrip(tokenizer.feature_dim, ablation=ab).to(device)
+    model = UniversalSafeGrip(
+        tokenizer.feature_dim, ablation=ab, innovation_normalizer=innovation_normalizer
+    ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     loss_cfg = ResearchLossConfig(sensor_dropout=ab.sensor_dropout)
     ckpt = out / f"{PROPOSAL_NAME}_train_state.pt"
     start_epoch = 0
+    best_epoch = 0
+    best_selection_loss = float("inf")
+    best_model_state = None
     if ckpt.exists() and not is_done(stage):
         try:
             payload = torch.load(ckpt, map_location=device, weights_only=False)
@@ -833,7 +846,10 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
         else:
             model.load_state_dict(payload["model"]); opt.load_state_dict(payload["optimizer"])
             start_epoch = int(payload.get("epoch", 0))
-        print(f"[{dataset}] resume {PROPOSAL_NAME}: epoch {start_epoch}/{EPOCHS}")
+            best_epoch = int(payload.get("best_epoch", 0))
+            best_selection_loss = float(payload.get("best_selection_loss", float("inf")))
+            best_model_state = payload.get("best_model_state")
+        print(f"[{dataset}] resume {PROPOSAL_NAME}: epoch {start_epoch}/{EPOCHS}, best={best_epoch}")
 
     log_file = out / f"{PROPOSAL_NAME}_training_log.csv"
     old_rows = pd.read_csv(log_file).to_dict("records") if log_file.exists() else []
@@ -853,11 +869,24 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
                 for b in val_batches:
                     vals.append(float(research_losses(model, b.to(device), scales, loss_cfg, training=False).total.detach().cpu()))
             val_loss = float(np.mean(vals)) if vals else float("nan")
-        row = {"epoch": epoch+1, "train_loss": float(np.mean(losses)), "val_loss": val_loss}
+        train_loss = float(np.mean(losses))
+        selection_loss = val_loss if np.isfinite(val_loss) else train_loss
+        if selection_loss < best_selection_loss:
+            best_selection_loss = float(selection_loss)
+            best_epoch = epoch + 1
+            # Clone to CPU so later optimizer steps cannot mutate the selected
+            # state through shared tensor storage.
+            best_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        row = {
+            "epoch": epoch+1, "train_loss": train_loss, "val_loss": val_loss,
+            "selection_loss": selection_loss, "is_best": int(best_epoch == epoch + 1),
+        }
         old_rows = [r for r in old_rows if int(r.get("epoch", -1)) != epoch+1] + [row]
         pd.DataFrame(old_rows).sort_values("epoch").to_csv(log_file, index=False)
         torch.save({
             "epoch": epoch+1, "model": model.state_dict(), "optimizer": opt.state_dict(),
+            "best_epoch": best_epoch, "best_selection_loss": best_selection_loss,
+            "best_model_state": best_model_state,
             "proposal_revision": PROPOSAL_REVISION,
         }, ckpt)
         STATE.setdefault("progress", {})[stage] = {"epoch": epoch+1, "of": EPOCHS}
@@ -865,6 +894,11 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
         if (epoch + 1) % 2 == 0:
             make_checkpoint_zip()
 
+    # Evaluate the validation-selected checkpoint, never an arbitrary final
+    # epoch. This is particularly important for the seed-sensitive LiRA run.
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print(f"[{dataset}] restored best validation checkpoint: epoch {best_epoch}, loss={best_selection_loss:.6g}")
     model.eval()
     queries = queries_for_dataset(dataset)
     names = [q.name or q.quantity for q in queries]
@@ -890,13 +924,15 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
         metrics.append({
             "dataset": dataset, "model": PROPOSAL_NAME, "proposal_method": PROPOSAL_NAME,
             "proposal_revision": PROPOSAL_REVISION,
-            "target": name, "seed": SEED, "epochs": EPOCHS, "split_policy": split_policy,
+            "target": name, "seed": SEED, "epochs": EPOCHS, "best_epoch": best_epoch,
+            "split_policy": split_policy,
             "data_kind": "real", **metric_dict(all_y[j], all_p[j]),
         })
     pd.DataFrame(metrics).to_csv(metric_file, index=False)
     pd.DataFrame(pred_rows).to_csv(out / f"{PROPOSAL_NAME}_predictions.csv", index=False)
     torch.save({
         "state_dict": model.state_dict(), "seed": SEED, "epochs": EPOCHS,
+        "best_epoch": best_epoch, "best_selection_loss": best_selection_loss,
         "proposal_revision": PROPOSAL_REVISION,
     }, out / f"{PROPOSAL_NAME}_model.pt")
     if ckpt.exists(): ckpt.unlink()

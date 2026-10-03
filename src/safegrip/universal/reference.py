@@ -30,7 +30,7 @@ class PhysicalReferenceOperator:
 
     * state_component -> latest matching observed state;
     * road_friction   -> horizontal specific-force demand ||a_xy|| / g;
-    * localization    -> integrated measured body speed for displacement.
+    * localization    -> planar dead-reckoned endpoint displacement from measured body speed and yaw rate (straight-line fallback).
 
     Unsupported/unobservable queries receive the neutral reference zero, so the
     original UniversalSafeGrip decoder remains unchanged for those queries.
@@ -112,37 +112,91 @@ class PhysicalReferenceOperator:
         return torch.where(any_observed, ref, torch.zeros_like(ref)), any_observed
 
     def _localization_reference(self, batch: UniversalSensorBatch, query):
+        """Planar endpoint displacement from measured speed and yaw rate.
+
+        The previous reference ``sum(v dt)`` is travelled path length, not
+        endpoint displacement on curved trajectories.  Here each speed patch
+        supplies an arc length ``ds`` and each aligned yaw-rate patch supplies
+        ``dpsi``.  Constant-curvature arc integration is exact within a patch
+        for constant speed/rate and reduces to straight-line integration as
+        dpsi -> 0.  If yaw rate is unavailable, the physically conservative
+        straight-line/path-length fallback is retained.
+        """
         if canonical_name(query.quantity) != "displacement" or batch.integral_values is None:
             return self._zero(batch, query)
+
         vel_id = ontology_id("velocity", QUANTITY_TO_ID)
         scalar_id = ontology_id("scalar", AXIS_TO_ID)
         body_id = ontology_id("vehicle_body", LOCATION_TO_ID)
-        match = (
+        yaw_rate_id = ontology_id("angular_rate", QUANTITY_TO_ID)
+        yaw_axis_id = ontology_id("yaw", AXIS_TO_ID)
+
+        speed_match = (
             batch.token_mask.bool()
             & (batch.channel_ids >= 0)
             & (batch.quantity_ids == vel_id)
             & (batch.axis_ids == scalar_id)
             & (batch.location_ids == body_id)
         )
+        yaw_match = (
+            batch.token_mask.bool()
+            & (batch.channel_ids >= 0)
+            & (batch.quantity_ids == yaw_rate_id)
+            & (batch.axis_ids == yaw_axis_id)
+            & (batch.location_ids == body_id)
+        )
 
-        # Integrate each matching physical channel independently across its
-        # non-overlapping token patches, then average equivalent sensors.  This
-        # keeps sensor-order invariance and avoids multiplying displacement when
-        # redundant speed channels are present.
         b = batch.features.shape[0]
         ref = batch.features.new_zeros((b,))
         ok = torch.zeros((b,), dtype=torch.bool, device=batch.features.device)
+
         for row in range(b):
-            ids = torch.unique(batch.channel_ids[row][match[row]])
-            ids = ids[ids >= 0]
-            if len(ids) == 0:
+            sm = speed_match[row]
+            if not torch.any(sm):
                 continue
-            per_channel = []
-            for channel_id in ids:
-                cm = match[row] & (batch.channel_ids[row] == channel_id)
-                per_channel.append(batch.integral_values[row][cm].sum())
-            ref[row] = torch.stack(per_channel).mean()
+
+            # All tokenizer patches share a physical-time grid. Aggregate
+            # equivalent/redundant speed sensors at each patch time by mean so
+            # sensor duplication cannot multiply the travelled distance.
+            times = torch.unique(batch.times_sec[row][sm], sorted=True)
+            x = batch.features.new_tensor(0.0)
+            y = batch.features.new_tensor(0.0)
+            heading = batch.features.new_tensor(0.0)
+
+            for t in times:
+                at_t_speed = sm & torch.isclose(
+                    batch.times_sec[row], t, rtol=0.0, atol=1e-7
+                )
+                ds = batch.integral_values[row][at_t_speed].mean()
+
+                ym = yaw_match[row] & torch.isclose(
+                    batch.times_sec[row], t, rtol=0.0, atol=1e-7
+                )
+                dpsi = (
+                    batch.integral_values[row][ym].mean()
+                    if torch.any(ym)
+                    else batch.features.new_tensor(0.0)
+                )
+
+                # Exact local displacement for a constant-curvature arc with
+                # arc length ds and heading change dpsi. Use the analytic
+                # straight-line limit near zero to avoid numerical cancellation.
+                if float(torch.abs(dpsi)) < 1e-6:
+                    local_x = ds
+                    local_y = ds * 0.0
+                else:
+                    local_x = ds * torch.sin(dpsi) / dpsi
+                    local_y = ds * (1.0 - torch.cos(dpsi)) / dpsi
+
+                c = torch.cos(heading)
+                sn = torch.sin(heading)
+                x = x + c * local_x - sn * local_y
+                y = y + sn * local_x + c * local_y
+                heading = heading + dpsi
+
+            ref[row] = torch.sqrt(x.square() + y.square())
             ok[row] = True
+
         return ref, ok
 
     def __call__(self, batch: UniversalSensorBatch, queries):

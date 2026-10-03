@@ -1,0 +1,31 @@
+Normalized Physical Innovation v3 — changed/new files
+
+src/safegrip/universal/innovation.py
+  NEW: training-only robust semantic innovation normalizer with reference-conditional fallback.
+
+src/safegrip/universal/reference.py
+  CHANGED: displacement reference now uses planar constant-curvature speed+yaw integration; straight-line fallback retained.
+
+src/safegrip/model/query_decoder.py
+  CHANGED: point/innovation head is zero initialized to preserve the reference coordinate at startup.
+
+src/safegrip/model/safegrip_universal.py
+  CHANGED: reconstructs physical outputs as reference + robust center + robust scale * normalized innovation; uncertainty converted back to physical units.
+
+src/safegrip/training/trainer.py
+  CHANGED: optimizes normalized innovation directly and uses reference-conditional target coordinates after sensor dropout.
+
+src/safegrip/training/__init__.py
+  CHANGED: exports estimate_innovation_normalizer.
+
+scripts/KAGGLE_ALL_REAL_DATASETS_ONE_PROPOSAL_1SEED_10EPOCHS.py
+  CHANGED: fits NPI statistics on train only; proposal revision v3; restores best validation checkpoint for final evaluation.
+
+tests/test_normalized_physical_innovation.py
+  NEW: regression tests for NPI, missing-reference dropout, zero initialization, and curved displacement.
+
+NPI_CHANGE_PLAN.md
+  NEW: concise method/design rationale.
+
+NPI_VALIDATION.md
+  NEW: full-test result and controlled synthetic sanity-check evidence.
