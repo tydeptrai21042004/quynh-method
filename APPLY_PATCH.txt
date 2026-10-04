@@ -1,11 +1,10 @@
-CSI-v4 changed-files-only patch
-===============================
+Apply over your CURRENT CSI-v4 GitHub working tree.
 
-Apply to the root of your current quynh-method repository, preserving paths.
-These files are intentionally the only scientific/code changes relative to the
-latest supplied repository ZIP. The Kaggle helper is included at the patch root
-for convenience and does not replace repository source code.
+1. Copy the contents of this folder into the repository root.
+2. Preserve the folder paths and overwrite the five matching files.
+3. Commit/push to GitHub.
+4. Run the repository tests or Kaggle one-proposal runner fresh.
 
-After copying the files, commit and push to GitHub. Then run:
-    KAGGLE_CSI_V4_AFTER_GITHUB_UPLOAD.py
-as one Kaggle notebook cell (or `%run` it after uploading it).
+No file deletion is required.
+Do NOT reuse a CSI-v4 proposal checkpoint as RA-NPI v5; the runner revision/state
+version was bumped so proposal training is invalidated automatically.

@@ -53,7 +53,7 @@ RUN_TESTS = os.environ.get("SAFEGRIP_RUN_TESTS", "1") not in {"0", "false", "Fal
 
 DATASETS = ("lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd")
 PROPOSAL_NAME = "universal_safegrip"
-PROPOSAL_REVISION = "calibrated_semantic_innovation_v4"
+PROPOSAL_REVISION = "relationally_anchored_npi_v5"
 D2D4_INPUT_DIMS = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 4}
 REAL_IAC_FILES = (
     "LVMS_23_01_04_A.csv",
@@ -133,7 +133,7 @@ def load_state():
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     return {
-        "version": 5,
+        "version": 6,
         "proposal": PROPOSAL_NAME,
         "proposal_revision": PROPOSAL_REVISION,
         "real_data_only": True,
@@ -259,12 +259,12 @@ def _invalidate_incompatible_proposal_state():
 
 
 if STATE.get("proposal") == PROPOSAL_NAME and (
-    STATE.get("version") != 5 or STATE.get("proposal_revision") != PROPOSAL_REVISION
+    STATE.get("version") != 6 or STATE.get("proposal_revision") != PROPOSAL_REVISION
 ):
     old_revision = STATE.get("proposal_revision", "legacy")
     print(f"[resume] migrating {old_revision} -> {PROPOSAL_REVISION}; proposal stages will retrain")
     _invalidate_incompatible_proposal_state()
-    STATE["version"] = 5
+    STATE["version"] = 6
     STATE["proposal_revision"] = PROPOSAL_REVISION
     STATE["migration_note"] = (
         f"proposal outputs from {old_revision} invalidated; real-data caches and "
@@ -273,7 +273,7 @@ if STATE.get("proposal") == PROPOSAL_NAME and (
     save_state()
 
 if (
-    STATE.get("version") != 5
+    STATE.get("version") != 6
     or STATE.get("proposal") != PROPOSAL_NAME
     or STATE.get("proposal_revision") != PROPOSAL_REVISION
 ):
@@ -818,8 +818,8 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
     train_batches = make_research_batches(train_records, tokenizer, dataset, UNIVERSAL_BATCH)
     val_batches = make_research_batches(val_records, tokenizer, dataset, UNIVERSAL_BATCH) if val_records else []
     test_batches = make_research_batches(test_records, tokenizer, dataset, UNIVERSAL_BATCH)
-    # Fit both universal coordinates on TRAINING data only. They are
-    # deterministic semantic buffers, not learned heads or dataset-ID parameters.
+    # Fit the universal RA-NPI coordinates on TRAINING data only. They are
+    # deterministic semantic buffers/transforms, not learned heads or dataset-ID parameters.
     feature_normalizer = estimate_semantic_feature_normalizer(
         train_batches, tokenizer.feature_dim
     )

@@ -1,0 +1,83 @@
+Universal SafeGrip — RA-NPI v5 CHANGE-ONLY patch
+================================================
+
+BASE
+----
+Apply this patch ON TOP OF the current CSI-v4 repository version.
+It intentionally contains only files that differ from CSI-v4.
+
+FINAL PROPOSAL
+--------------
+Relationally Anchored Normalized Physical Innovation (RA-NPI)
+proposal_revision = relationally_anchored_npi_v5
+
+One proposal method is still used across every dataset.  There is no dataset-name
+branch, dataset-specific prediction head, mixture-of-experts, extra backbone, or
+arbitrary channel-ID conditioning.
+
+WHY THESE TWO CHANGES
+---------------------
+Evidence from the same seed/10-epoch real-data runs:
+
+                         NPI-v3 MAE    CSI-v4 MAE
+LiRA friction              0.064988      0.070643   -> free v4 calibration hurt
+UC3M slip angle            0.117406      0.117387   -> essentially unchanged
+IAC velocity_x             0.032431      0.032410   -> essentially unchanged
+IAC velocity_y             0.013281      0.013293   -> essentially unchanged
+IAC yaw rate               0.002180      0.002174   -> essentially unchanged
+IO-VNBD displacement       0.337153      0.331496   -> small (~1.7%) v4 gain
+
+Therefore the final patch makes only evidence-supported changes:
+
+1) Replace v4 free affine physical-reference calibration with ONE robust scalar
+   semantic gain alpha_q anchored to the successful v3 identity value 1:
+
+       y_hat = alpha_q P_q(X) + c_q + s_q R_theta(X*, q)
+
+   alpha_q is fitted from TRAINING data only with one global identity-anchor
+   strength.  There is no free physical-reference bias; offset remains in the
+   existing robust innovation center c_q.  This is intended to preserve v3 where
+   its physical reference was already strong while still allowing conservative
+   scale correction when the training evidence supports it.
+
+2) Add a parameter-free semantic relational contrast BEFORE the unchanged token
+   encoder:
+
+       d* = d + (d - mean_group(d))
+
+   group = same (quantity, axis, location, unit class) at the same patch time.
+   Singleton groups are EXACTLY unchanged.  Repeated same-semantic sensors expose
+   their relative evidence without arbitrary channel IDs.  This specifically
+   addresses the information bottleneck seen in UC3M: e1y/e2y currently have the
+   same physical metadata, while v3->v4 coordinate changes left UC3M MAE almost
+   unchanged.
+
+UNCHANGED
+---------
+- UniversalSafeGrip Transformer / latent backbone / query decoder dimensions
+- physical-reference definitions P_q(X)
+- semantic feature standardization already present in CSI-v4
+- optimizer, LR, weight decay, batch size, epochs
+- sensor dropout
+- dataset adapters and split policy
+- literature baselines
+- dataset-ID conditioning remains disabled in the full proposal
+
+CHANGED REPOSITORY FILES (ONLY 5)
+---------------------------------
+src/safegrip/universal/innovation.py
+src/safegrip/universal/feature_normalization.py
+src/safegrip/model/safegrip_universal.py
+scripts/KAGGLE_ALL_REAL_DATASETS_ONE_PROPOSAL_1SEED_10EPOCHS.py
+tests/test_calibrated_semantic_innovation.py
+
+VALIDATION
+----------
+Relevant RA-NPI/NPI/universal tests: 21 passed, 0 failed.
+Full repository suite after the patch: 173 passed, 0 failed.
+
+IMPORTANT
+---------
+The code change is evidence-motivated, but a new real-data RA-NPI run is still
+required before claiming that v5 numerically outperforms v3/v4.  The patch does
+not fabricate or pre-assume improved metrics.

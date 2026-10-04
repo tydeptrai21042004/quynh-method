@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-"""Training-only semantic standardization for universal sensor tokens.
+"""Training-only semantic standardization and relational sensor contrast.
 
-The transform is deliberately parameter-free.  Token features are standardized
-using statistics indexed only by physical sensor semantics
-(quantity, axis, location, unit class), never by dataset identity or channel
-position.  The raw canonical values retained in ``UniversalSensorBatch`` remain
-untouched, so the physical-reference operator continues to work in physical
+Two parameter-free transforms are used before the unchanged token encoder:
+
+1) ``SemanticFeatureNormalizer`` standardizes patch descriptors with TRAINING
+   statistics indexed only by physical sensor semantics
+   (quantity, axis, location, unit class).
+2) ``SemanticRelationalContrast`` preserves each descriptor's semantic-group
+   mean while exposing its deviation from same-semantic sensors at the same
+   physical patch time:
+
+       d* = d + (d - mean_group(d)).
+
+For singleton groups the transform is exactly the identity.  Both transforms are
+permutation equivariant and never use dataset identity or arbitrary channel
+position.  Raw canonical endpoint/RMS/integral values in ``UniversalSensorBatch``
+remain untouched, so the physical-reference operator still works in physical
 units.
 """
 
@@ -40,7 +50,7 @@ class SemanticFeatureNormalizer(nn.Module):
         location_ids: torch.Tensor,
         unit_class_ids: torch.Tensor,
     ) -> torch.Tensor:
-        nq, na, nl, nu = self._sizes
+        _, na, nl, nu = self._sizes
         q = quantity_ids.long()
         a = axis_ids.long()
         l = location_ids.long()
@@ -111,3 +121,74 @@ class SemanticFeatureNormalizer(nn.Module):
         fitted = self.fitted[keys].to(features.device).unsqueeze(-1)
         normalized = (features - center) / scale
         return torch.where(fitted, normalized, features)
+
+
+class SemanticRelationalContrast(nn.Module):
+    """Expose same-semantic sensor differences without channel IDs or parameters.
+
+    Tokens are grouped by physical semantics AND patch time.  Static context
+    tokens and padded/dropped tokens are left unchanged.  Within each visible
+    sensor group, ``d* = 2d - mean(d)`` preserves the group mean and makes the
+    relative sensor evidence explicit.  A one-token group maps exactly to itself.
+    """
+
+    _TIME_QUANTIZATION = 1_000_000.0  # microsecond key; only groups equal patch times
+
+    def __init__(self):
+        super().__init__()
+        sizes = OntologySizes()
+        self._sizes = (sizes.quantities, sizes.axes, sizes.locations, sizes.unit_classes)
+
+    def _semantic_index(
+        self,
+        quantity_ids: torch.Tensor,
+        axis_ids: torch.Tensor,
+        location_ids: torch.Tensor,
+        unit_class_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        _, na, nl, nu = self._sizes
+        return (
+            ((quantity_ids.long() * na + axis_ids.long()) * nl + location_ids.long()) * nu
+            + unit_class_ids.long()
+        )
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        token_mask: torch.Tensor,
+        quantity_ids: torch.Tensor,
+        axis_ids: torch.Tensor,
+        location_ids: torch.Tensor,
+        unit_class_ids: torch.Tensor,
+        times_sec: torch.Tensor,
+        channel_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        if features.ndim != 3:
+            raise ValueError("features must have shape [batch, tokens, feature_dim]")
+        if token_mask.shape != features.shape[:2]:
+            raise ValueError("token_mask shape must match features[:2]")
+
+        semantic = self._semantic_index(quantity_ids, axis_ids, location_ids, unit_class_ids)
+        time_key = torch.round(times_sec * self._TIME_QUANTIZATION).long()
+        out = features.clone()
+
+        # Batch-local grouping keeps memory linear in token count and avoids a
+        # dense O(N^2) pairwise relation matrix.
+        for b in range(features.shape[0]):
+            visible_sensor = token_mask[b].bool() & (channel_ids[b].long() >= 0)
+            idx = torch.where(visible_sensor)[0]
+            if idx.numel() == 0:
+                continue
+
+            pair_keys = torch.stack((semantic[b, idx], time_key[b, idx]), dim=1)
+            _, inverse = torch.unique(pair_keys, dim=0, return_inverse=True)
+            n_groups = int(inverse.max().item()) + 1
+
+            x = features[b, idx]
+            sums = torch.zeros((n_groups, x.shape[-1]), dtype=x.dtype, device=x.device)
+            sums.index_add_(0, inverse, x)
+            counts = torch.bincount(inverse, minlength=n_groups).to(x).unsqueeze(1).clamp_min(1.0)
+            group_mean = sums / counts
+            out[b, idx] = x + (x - group_mean[inverse])
+
+        return out

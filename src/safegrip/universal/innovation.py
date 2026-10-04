@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-"""Semantic normalization for calibrated physical-reference innovation learning.
+"""Relationally Anchored Normalized Physical Innovation (RA-NPI).
 
-For each semantic query, training data define one affine calibration of the
-existing physical reference, ``a_q P_q(X) + b_q``, followed by robust residual
-location/scale normalization.  When the physical reference is unavailable, the
-same decoder falls back to a robust direct-target coordinate.
+The neural decoder always predicts a dimensionless innovation.  When a semantic
+physical reference is observable, RA-NPI keeps the successful v3 identity
+coordinate as the prior and estimates only one deterministic query-semantic gain
+``alpha_q`` from TRAINING data:
 
-All stored quantities are deterministic buffers estimated from training data;
-there are no learned dataset-specific parameters or branches.
+    y_hat = alpha_q P_q(X) + c_q + s_q R_theta(X, q)
+
+The gain is robustly fitted with an identity anchor ``(alpha_q - 1)^2``.  Thus
+v3 is the preferred coordinate unless the training evidence consistently
+supports a scale correction.  No dataset identity, dataset-specific branch, or
+trainable calibration parameter is introduced.
+
+When a reference is not observable (including sensor dropout), the same decoder
+uses the training-only robust direct-target coordinate.  This is mask algebra,
+not a dataset/task architecture branch.
 """
 
 from dataclasses import dataclass
@@ -46,73 +54,91 @@ def _robust_center_scale(values: torch.Tensor, floor: float) -> tuple[float, flo
     return float(center), float(scale)
 
 
-def _robust_affine(reference: torch.Tensor, target: torch.Tensor, floor: float) -> tuple[float, float]:
-    """Small deterministic Huber-IRLS fit for ``target ~= a*reference + b``.
+def _anchored_robust_gain(
+    reference: torch.Tensor,
+    target: torch.Tensor,
+    target_scale: float,
+    *,
+    anchor_strength: float,
+    floor: float,
+) -> float:
+    """Fit one robust gain anchored to the v3 identity value ``alpha=1``.
 
-    The identity reference is the safe fallback when the reference does not vary
-    enough to identify a slope.  No external fitting package is required.
+    The fit is performed on centered reference/target variation, while the
+    residual location is handled later by ``center_ref``.  Both variables are
+    divided by the target scale so one global anchor strength has comparable
+    meaning across physical targets.  A small Huber-IRLS loop solves the scalar
+    anchored problem without adding a learned model component.
     """
     x = reference.detach().double().reshape(-1)
     y = target.detach().double().reshape(-1)
     finite = torch.isfinite(x) & torch.isfinite(y)
     x, y = x[finite], y[finite]
     if x.numel() < 2:
-        bias = torch.median(y - x) if x.numel() else y.new_tensor(0.0)
-        return 1.0, float(bias)
+        return 1.0
 
-    x_med = torch.median(x)
-    y_med = torch.median(y)
-    dx = x - x_med
-    denom = torch.sum(dx * dx)
-    if not torch.isfinite(denom) or float(denom) <= floor * floor:
-        return 1.0, float(torch.median(y - x))
+    # Centering makes the scalar gain describe variation rather than absorbing
+    # an offset.  The offset remains part of the robust innovation center c_q.
+    x0 = x - torch.median(x)
+    y0 = y - torch.median(y)
+    scale = max(float(target_scale), floor)
+    xs = x0 / scale
+    ys = y0 / scale
 
-    a = torch.sum(dx * (y - y_med)) / denom
-    b = y_med - a * x_med
-    if not torch.isfinite(a) or not torch.isfinite(b):
-        return 1.0, float(torch.median(y - x))
+    energy = torch.mean(xs * xs)
+    if not torch.isfinite(energy) or float(energy) <= floor * floor:
+        return 1.0
 
-    # A few IRLS iterations make the calibration resistant to isolated target or
-    # reference outliers without introducing a tunable model component.
-    for _ in range(6):
-        residual = y - (a * x + b)
-        _, scale = _robust_center_scale(residual.float(), max(floor, 1e-8))
-        c = max(1.345 * scale, floor)
+    lam = max(float(anchor_strength), 0.0)
+    alpha = x.new_tensor(1.0)
+    huber_delta = 1.345
+
+    for _ in range(8):
+        residual = ys - alpha * xs
         abs_r = torch.abs(residual)
-        w = torch.where(abs_r <= c, torch.ones_like(abs_r), c / abs_r.clamp_min(floor))
-        sw = torch.sum(w)
-        if not torch.isfinite(sw) or float(sw) <= floor:
+        weights = torch.where(
+            abs_r <= huber_delta,
+            torch.ones_like(abs_r),
+            huber_delta / abs_r.clamp_min(floor),
+        )
+        numerator = torch.mean(weights * xs * ys) + lam
+        denominator = torch.mean(weights * xs * xs) + lam
+        if not torch.isfinite(numerator) or not torch.isfinite(denominator):
+            return 1.0
+        if float(denominator) <= floor:
+            return 1.0
+        new_alpha = numerator / denominator
+        if not torch.isfinite(new_alpha):
+            return 1.0
+        if float(torch.abs(new_alpha - alpha)) < 1e-8:
+            alpha = new_alpha
             break
-        mx = torch.sum(w * x) / sw
-        my = torch.sum(w * y) / sw
-        xc = x - mx
-        var = torch.sum(w * xc * xc)
-        if not torch.isfinite(var) or float(var) <= floor * floor:
-            break
-        new_a = torch.sum(w * xc * (y - my)) / var
-        new_b = my - new_a * mx
-        if not torch.isfinite(new_a) or not torch.isfinite(new_b):
-            break
-        a, b = new_a, new_b
+        alpha = new_alpha
 
-    return float(a), float(b)
+    return float(alpha)
 
 
 class SemanticInnovationNormalizer(nn.Module):
-    """Query-semantic calibrated physical innovation coordinate."""
+    """Query-semantic RA-NPI coordinate fitted on training data only."""
 
-    def __init__(self, *, floor: float = 1e-3):
+    def __init__(self, *, floor: float = 1e-3, anchor_strength: float = 10.0):
         super().__init__()
         sizes = OntologySizes()
         self._sizes = (sizes.quantities, sizes.axes, sizes.locations, sizes.target_types)
         n = math.prod(self._sizes)
         self.floor = float(floor)
+        self.anchor_strength = float(anchor_strength)
+        if self.anchor_strength < 0:
+            raise ValueError("anchor_strength must be non-negative")
+
         self.register_buffer("center_ref", torch.zeros(n, dtype=torch.float32))
         self.register_buffer("scale_ref", torch.ones(n, dtype=torch.float32))
         self.register_buffer("center_direct", torch.zeros(n, dtype=torch.float32))
         self.register_buffer("scale_direct", torch.ones(n, dtype=torch.float32))
-        # Identity initialization preserves the exact v3 behavior before fit().
+        # alpha=1 is exactly the v3 physical-reference coordinate before fit().
         self.register_buffer("reference_gain", torch.ones(n, dtype=torch.float32))
+        # Retained as a zero buffer for API/checkpoint audit compatibility.  The
+        # final RA-NPI base has no free affine bias; offset belongs to center_ref.
         self.register_buffer("reference_bias", torch.zeros(n, dtype=torch.float32))
         self.register_buffer("fitted_ref", torch.zeros(n, dtype=torch.bool))
         self.register_buffer("fitted_direct", torch.zeros(n, dtype=torch.bool))
@@ -120,7 +146,7 @@ class SemanticInnovationNormalizer(nn.Module):
     def _flat_index(self, query_ids: torch.Tensor) -> torch.Tensor:
         if query_ids.shape[-1] != 4:
             raise ValueError("query_ids must end in four ontology IDs")
-        nq, na, nl, nt = self._sizes
+        _, na, nl, nt = self._sizes
         q, a, l, t = [query_ids[..., k].long() for k in range(4)]
         return (((q * na + a) * nl + l) * nt + t).long()
 
@@ -150,6 +176,8 @@ class SemanticInnovationNormalizer(nn.Module):
                     by_key_ref_x.setdefault(key, []).append(reference[obs_valid, j].detach().cpu().float())
                     by_key_ref_y.setdefault(key, []).append(batch.target_values[obs_valid, j].detach().cpu().float())
 
+        # Direct target statistics are also the universal scale used by the
+        # anchored gain objective, so they are fitted first.
         for key, chunks in by_key_direct.items():
             c, s = _robust_center_scale(torch.cat(chunks), self.floor)
             self.center_direct[key] = c
@@ -159,11 +187,18 @@ class SemanticInnovationNormalizer(nn.Module):
         for key, x_chunks in by_key_ref_x.items():
             x = torch.cat(x_chunks)
             y = torch.cat(by_key_ref_y[key])
-            gain, bias = _robust_affine(x, y, max(self.floor * 1e-3, 1e-8))
-            residual = y - (gain * x + bias)
+            target_scale = float(self.scale_direct[key]) if bool(self.fitted_direct[key]) else 1.0
+            gain = _anchored_robust_gain(
+                x,
+                y,
+                target_scale,
+                anchor_strength=self.anchor_strength,
+                floor=max(self.floor * 1e-3, 1e-8),
+            )
+            residual = y - gain * x
             c, s = _robust_center_scale(residual, self.floor)
             self.reference_gain[key] = gain
-            self.reference_bias[key] = bias
+            self.reference_bias[key] = 0.0
             self.center_ref[key] = c
             self.scale_ref[key] = s
             self.fitted_ref[key] = True
@@ -196,12 +231,11 @@ class SemanticInnovationNormalizer(nn.Module):
     ) -> torch.Tensor:
         keys = self._flat_index(query_ids)
         gain = self.reference_gain[keys]
-        bias = self.reference_bias[keys]
-        base = gain * physical_reference + bias
+        base = gain * physical_reference
         return torch.where(reference_mask.bool(), base, torch.zeros_like(base))
 
     def reference_parameters_for(self, query_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Expose deterministic calibration coefficients for audits/tests."""
+        """Expose deterministic RA-NPI gain and zero bias for audits/tests."""
         keys = self._flat_index(query_ids)
         return self.reference_gain[keys], self.reference_bias[keys]
 
