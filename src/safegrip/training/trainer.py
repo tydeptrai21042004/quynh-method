@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from safegrip.model.safegrip_universal import UniversalSafeGrip
 from safegrip.universal.innovation import SemanticInnovationNormalizer
-from safegrip.universal.feature_normalization import SemanticFeatureNormalizer
 from safegrip.universal.dataset import UniversalResearchBatch
 from safegrip.training.dropout import sensor_channel_dropout_mask
 from safegrip.training.objectives import masked_gaussian_nll, utilization_consistency_loss, friction_inequality_loss
@@ -46,18 +45,11 @@ def estimate_target_scales(batches, floor: float = 1e-3) -> torch.Tensor:
 
 
 
-def estimate_semantic_feature_normalizer(
-    batches, feature_dim: int, floor: float = 1e-8
-) -> SemanticFeatureNormalizer:
-    """Fit dataset-ID-free token standardization on training batches only."""
-    return SemanticFeatureNormalizer(feature_dim, floor=floor).fit(batches)
-
-
 def estimate_innovation_normalizer(batches, floor: float = 1e-3) -> SemanticInnovationNormalizer:
-    """Fit training-only calibrated-reference residual/direct statistics.
+    """Fit training-only NPI residual/direct statistics.
 
-    This is the preferred normalization for UniversalSafeGrip. It contains no
-    trainable parameters and never uses dataset identity.
+    The returned semantic buffers contain no trainable parameters and never use
+    dataset identity.
     """
     return SemanticInnovationNormalizer(floor=floor).fit(batches)
 

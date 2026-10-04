@@ -1,6 +1,6 @@
-# Primary paper-supported baselines for SafeGrip-PFR-ECR
+# Publication-backed comparators for Universal SafeGrip-NPI
 
-SafeGrip-PFR-ECR is the **only active proposal** in this repository. Its main prediction table compares `safegrip_pfr` only with the four friction-estimation methods below. `direct_gru_control` is retained strictly as an internal ablation/control and is written only to `pfr_component_ablation*.csv`.
+Universal SafeGrip-NPI is the only active proposal in this repository. The LiRA comparison uses the four publication-backed friction/grip comparators below; D2--D4 comparators are registered in `src/safegrip/literature.py`. Historical proposal-specific controls are not part of the NPI primary result table.
 
 | Benchmark key | Paper-supported method | Why it is comparable | Implementation status |
 |---|---|---|---|
@@ -11,7 +11,7 @@ SafeGrip-PFR-ECR is the **only active proposal** in this repository. Its main pr
 
 ## Fair-comparison rules
 
-All primary rows use the same continuous benchmark target, locked validation/test endpoint IDs, train-only preprocessing, and the same available vehicle-signal input policy. SafeGrip `mu_point` is used in the accuracy table; `mu_safe` is evaluated separately in the safety table.
+Comparator implementations are evaluated within the controlled local pipeline using train-only preprocessing and measured targets. They should be described as local paper-structured reproductions/adaptations unless exact source equivalence is independently established.
 
 Du et al.'s vision branch is intentionally not used because SafeGrip-PFR-ECR is sensor-only. The Todorovic source output is adapted to the common scalar friction target. Lampe is retrained on the common LiRA split rather than mixing the paper's original reported metrics with this benchmark.
 

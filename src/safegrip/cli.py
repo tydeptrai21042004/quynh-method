@@ -4,7 +4,6 @@ import argparse
 import json
 from pathlib import Path
 import numpy as np
-import yaml
 
 from .ablations import ABLATIONS, get_ablation
 from .config import load_config
@@ -12,33 +11,8 @@ from .datasets import DATASET_REGISTRY, PAPER_DATASETS
 from .literature import LITERATURE_BASELINES, baselines_for_dataset, validate_paper_baselines
 from .download import download_dataset
 from .data import prepare_dataset
-from .pfr_benchmark import run_pfr_benchmark
 from .plots import make_plots
 from .experiments import run_statistical_comparison
-
-
-def _primary_csv(name: str) -> str:
-    if name != "lira_cd":
-        raise ValueError("legacy PFR benchmark is retained only for D1/lira_cd")
-    return "lira_aligned.csv"
-
-
-def _ensure_primary(name, cfg):
-    proc = Path("data/processed") / name
-    csv = proc / _primary_csv(name)
-    if not csv.exists():
-        prepare_dataset(name, Path("data/raw") / name, proc, cfg)
-    return csv
-
-
-def _load_mapping(path, label):
-    if not path:
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{label} file must contain a YAML mapping")
-    return data
 
 
 def _universal_check(dataset: str, ablation_name: str) -> dict:
@@ -68,6 +42,8 @@ def _universal_check(dataset: str, ablation_name: str) -> dict:
     with torch.no_grad():
         out = model(batch.sensors, queries, domains=batch.domains)
     return {
+        "proposal": "Universal SafeGrip-NPI",
+        "proposal_revision": "normalized_physical_innovation_v3",
         "dataset": dataset,
         "ablation": ablation_name,
         "queries": [q.name or q.quantity for q in queries],
@@ -84,15 +60,16 @@ def _baseline_check(dataset: str, *, train_step: bool = False) -> dict:
     from .paper_baselines import make_paper_baseline
     from .baseline_training import train_baseline
 
-    # Smoke dimensions reflect the canonical adapter contracts; real benchmark
-    # runs obtain dimensionality from prepared data rather than these constants.
     input_dims = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 8}
     if dataset == "lira_cd":
-        return {"dataset": dataset, "note": "D1 uses the legacy end-to-end benchmark engine", "passed": True}
+        return {
+            "dataset": dataset,
+            "note": "D1 publication-backed comparators are exercised by the all-real-data paper runner.",
+            "passed": True,
+        }
     d = input_dims[dataset]
     torch.manual_seed(7)
     x = 0.1 * torch.randn(2, 12, d)
-    # Keep the state channels physically non-degenerate for D3.
     if dataset == "deep_dynamics_iac":
         x[..., 0] += 8.0
     rows = []
@@ -118,17 +95,20 @@ def _baseline_check(dataset: str, *, train_step: bool = False) -> dict:
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="safegrip", description="Universal SafeGrip D1--D4 paper benchmark")
+    ap = argparse.ArgumentParser(
+        prog="safegrip",
+        description="Universal SafeGrip-NPI real-data research utilities",
+    )
     ap.add_argument("--config", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ds = sub.add_parser("datasets", help="list the closed D1--D4 paper datasets")
     ds.add_argument("action", nargs="?", choices=["list"], default="list")
 
-    bl = sub.add_parser("baselines", help="show the only paper comparators allowed for a dataset")
+    bl = sub.add_parser("baselines", help="show publication-backed comparators for a dataset")
     bl.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
 
-    bc = sub.add_parser("baseline-check", help="instantiate and smoke-test the local D2--D4 baseline reproductions")
+    bc = sub.add_parser("baseline-check", help="instantiate and smoke-test local D2--D4 comparator reproductions")
     bc.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
     bc.add_argument("--train-step", action="store_true")
 
@@ -140,21 +120,13 @@ def main():
     p = sub.add_parser("prepare")
     p.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
 
-    b = sub.add_parser("benchmark", help="run locally implemented paper benchmark paths")
-    b.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
-    b.add_argument("--preset", choices=["quick", "trust", "paper"], default="quick")
-    b.add_argument("--models", default=None)
-    b.add_argument("--protocol", choices=["controlled", "source-faithful"], default="controlled")
-    b.add_argument("--proposal-hparams", default=None)
-    b.add_argument("--baseline-hparams", default=None)
-
-    uc = sub.add_parser("universal-check", help="architecture/query/ablation sanity check without dataset labels")
+    uc = sub.add_parser("universal-check", help="NPI architecture/query/ablation sanity check")
     uc.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
     uc.add_argument("--ablation", choices=tuple(ABLATIONS), default="full")
 
     st = sub.add_parser("statistics")
     st.add_argument("--results", required=True)
-    st.add_argument("--proposal", default="safegrip_pfr")
+    st.add_argument("--proposal", default="universal_safegrip")
     st.add_argument("--bootstrap", type=int, default=2000)
 
     pl = sub.add_parser("plots")
@@ -185,27 +157,11 @@ def main():
     if args.cmd == "universal-smoke":
         from .universal.smoke import run_universal_smoke
         print(json.dumps(run_universal_smoke(), indent=2)); return
-    if args.cmd == "benchmark":
-        names = args.models.split(",") if args.models else list(baselines_for_dataset(args.dataset))
-        validate_paper_baselines(names, dataset=args.dataset)
-        if args.dataset != "lira_cd":
-            validate_paper_baselines(names, dataset=args.dataset, require_runnable=True)
-            raise RuntimeError(
-                "The D2--D4 comparator models are locally runnable, but this legacy `benchmark` command still expects the "
-                "D1 LiRA table layout. Use `safegrip baseline-check --dataset " + args.dataset + " --train-step` to verify the "
-                "reproductions; D2--D4 end-to-end evaluation should be driven by the universal prepared-record pipeline so targets "
-                "are never fabricated."
-            )
-        validate_paper_baselines(names, dataset="lira_cd", require_runnable=True)
-        csv = _ensure_primary(args.dataset, cfg)
-        proposal_hp = _load_mapping(args.proposal_hparams, "proposal hyperparameter")
-        baseline_hp = _load_mapping(args.baseline_hparams, "baseline hyperparameter")
-        suffix = "" if args.protocol == "controlled" else "_source_faithful"
-        out = Path("results") / f"{args.dataset}_{args.preset}{suffix}"
-        run_pfr_benchmark(csv, out, cfg, args.preset, names, proposal_hp, baseline_hp, args.protocol)
-        return
     if args.cmd == "statistics":
-        print(run_statistical_comparison(Path(args.results), Path(args.results) / "statistics", proposal=args.proposal, bootstrap=args.bootstrap).to_string(index=False)); return
+        print(run_statistical_comparison(
+            Path(args.results), Path(args.results) / "statistics",
+            proposal=args.proposal, bootstrap=args.bootstrap,
+        ).to_string(index=False)); return
     if args.cmd == "plots":
         r = Path(args.results)
         if (r / "metrics.csv").exists():

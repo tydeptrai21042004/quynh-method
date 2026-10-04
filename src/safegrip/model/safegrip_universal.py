@@ -10,7 +10,6 @@ from safegrip.universal.batching import UniversalSensorBatch
 from safegrip.universal.queries import PhysicalQuery
 from safegrip.universal.reference import PhysicalReferenceOperator
 from safegrip.universal.innovation import SemanticInnovationNormalizer
-from safegrip.universal.feature_normalization import SemanticFeatureNormalizer, SemanticRelationalContrast
 from .metadata_embedding import PhysicallyTypedTokenEncoder
 from .latent_backbone import SensorSetLatentBackbone, MeanPoolLatentBackbone
 from .query_decoder import CompositionalQueryDecoder, QueryPrediction
@@ -48,8 +47,6 @@ class UniversalSafeGrip(nn.Module):
         dropout: float = 0.1,
         ablation: UniversalAblationConfig | None = None,
         innovation_normalizer: SemanticInnovationNormalizer | None = None,
-        feature_normalizer: SemanticFeatureNormalizer | None = None,
-        relational_transform: SemanticRelationalContrast | None = None,
     ):
         super().__init__()
         self.ablation = ablation or UniversalAblationConfig()
@@ -75,9 +72,6 @@ class UniversalSafeGrip(nn.Module):
         # An identity normalizer preserves backwards compatibility for low-level
         # model tests; paper runners fit it on training data before optimization.
         self.innovation_normalizer = innovation_normalizer or SemanticInnovationNormalizer()
-        self.feature_normalizer = feature_normalizer or SemanticFeatureNormalizer(patch_feature_dim)
-        # RA-NPI relational evidence is a fixed, parameter-free transform.
-        self.relational_transform = relational_transform or SemanticRelationalContrast()
 
         # The proposal is dataset-agnostic by construction.  Dataset identity is
         # available *only* as an explicit ablation; the default/full method does
@@ -123,15 +117,8 @@ class UniversalSafeGrip(nn.Module):
         return PhysicalReferenceOperator()(batch, queries)
 
     def forward(self, batch: UniversalSensorBatch, queries, *, domains: tuple[str, ...] | None = None) -> UniversalSafeGripOutput:
-        normalized_features = self.feature_normalizer(
-            batch.features, batch.quantity_ids, batch.axis_ids, batch.location_ids, batch.unit_class_ids,
-        )
-        relational_features = self.relational_transform(
-            normalized_features, batch.token_mask, batch.quantity_ids, batch.axis_ids,
-            batch.location_ids, batch.unit_class_ids, batch.times_sec, batch.channel_ids,
-        )
         tokens = self.token_encoder(
-            relational_features, batch.quantity_ids, batch.axis_ids, batch.location_ids,
+            batch.features, batch.quantity_ids, batch.axis_ids, batch.location_ids,
             batch.unit_class_ids, batch.sample_rates_hz, batch.times_sec, batch.channel_ids,
         )
         tokens = self._dataset_condition(tokens, domains)
@@ -140,12 +127,11 @@ class UniversalSafeGrip(nn.Module):
         pred: QueryPrediction = self.decoder(latent, qids)
         physical_anchor, anchor_mask = self._physical_query_anchor(batch, queries)
 
-        # Relationally Anchored NPI (RA-NPI): the decoder always predicts a
-        # dimensionless O(1) innovation.  The physical reference uses one
-        # training-only semantic gain anchored to the v3 identity coordinate;
-        # residual offset/scale remain robust innovation statistics.  If sensor
-        # dropout removes the reference, the same decoder uses the direct-target
-        # coordinate rather than a dataset/task-specific branch.
+        # NPI-v3: the decoder predicts a dimensionless O(1) innovation.
+        # When a semantic physical reference exists it is used exactly; robust
+        # training-only residual center/scale reconstruct physical units. If
+        # dropout removes the reference, the same decoder switches algebraically
+        # to the robust direct-target coordinate without a second network.
         point, innovation_center, innovation_scale = self.innovation_normalizer.reconstruct(
             pred.point, qids, physical_anchor, anchor_mask
         )

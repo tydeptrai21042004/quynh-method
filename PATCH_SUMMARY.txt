@@ -1,0 +1,7 @@
+Universal SafeGrip-NPI v3 final patch
+
+Changed/added files: 15
+Deleted files: 55
+
+Apply changed files preserving paths, then delete every path listed in _DELETE_FILES.txt.
+Final proposal revision: normalized_physical_innovation_v3

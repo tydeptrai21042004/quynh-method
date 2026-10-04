@@ -34,13 +34,10 @@ def test_npi_uses_small_residual_coordinate_when_reference_exists():
     anchor = torch.tensor([[20.0], [30.0], [40.0]])
     mask = torch.ones_like(anchor, dtype=torch.bool)
     center, scale = normalizer.parameters_for(qids, mask)
-    gain, bias = normalizer.reference_parameters_for(qids)
 
-    # v4 first calibrates the physical coordinate, then normalizes only the
-    # unexplained innovation.  This synthetic relation is almost exactly affine.
-    assert torch.all(gain > 0.9)
-    assert torch.all(gain < 1.1)
-    assert torch.all(torch.isfinite(bias))
+    # Residuals are [0.2, 0.4, 0.6], so NPI learns a small residual coordinate
+    # rather than the absolute 20--40 m/s target scale.
+    assert torch.allclose(center, torch.full_like(center, 0.4), atol=1e-5)
     assert torch.all(scale > 0)
     assert float(scale.max()) < 1.0
 
@@ -70,7 +67,26 @@ def test_npi_switches_to_direct_coordinate_if_reference_channel_is_missing():
     assert float(torch.max(torch.abs(z_direct))) < 3.0
 
 
-def test_zero_initialized_decoder_preserves_reference_coordinate():
+def test_npi_reconstructs_exact_reference_plus_center_plus_scaled_innovation():
+    tok = UniversalSensorTokenizer()
+    records = [
+        _vx_record("a", 20.0, 20.2),
+        _vx_record("b", 30.0, 30.4),
+        _vx_record("c", 40.0, 40.6),
+    ]
+    batch = collate_sensor_records(records, tok, (VELOCITY_X_QUERY,))
+    normalizer = estimate_innovation_normalizer([batch], floor=1e-4)
+    qids = torch.tensor([[VELOCITY_X_QUERY.ids()]] * len(records), dtype=torch.long)
+    anchor = torch.tensor([[20.0], [30.0], [40.0]])
+    mask = torch.ones_like(anchor, dtype=torch.bool)
+    z = torch.tensor([[-1.0], [0.0], [1.0]])
+
+    point, center, scale = normalizer.reconstruct(z, qids, anchor, mask)
+    expected = anchor + center + scale * z
+    assert torch.allclose(point, expected, atol=1e-7)
+
+
+def test_zero_initialized_decoder_preserves_npi_reference_coordinate():
     tok = UniversalSensorTokenizer()
     records = [
         _vx_record("a", 20.0, 20.2),
@@ -96,12 +112,7 @@ def test_zero_initialized_decoder_preserves_reference_coordinate():
     model.eval()
     with torch.no_grad():
         out = model(batch.sensors, batch.queries)
-    # At initialization the model equals the calibrated physical coordinate
-    # plus the robust residual center.
-    qids = model.query_tensor(batch.queries, len(records), device=out.point.device)
-    expected = normalizer.calibrated_reference(
-        qids, out.physical_anchor, out.anchor_mask
-    ) + out.innovation_center
+    expected = torch.where(out.anchor_mask, out.physical_anchor, torch.zeros_like(out.physical_anchor)) + out.innovation_center
     assert torch.allclose(out.innovation, torch.zeros_like(out.innovation), atol=0, rtol=0)
     assert torch.allclose(out.point, expected, atol=1e-6)
 
@@ -130,4 +141,4 @@ def test_curved_displacement_reference_is_endpoint_chord_not_path_length():
     expected_chord = 2.0 * radius * math.sin((yaw_rate * 1.0) / 2.0)
     assert bool(mask.item())
     assert abs(float(ref.item()) - expected_chord) < 1e-4
-    assert float(ref.item()) < speed * 1.0  # path length would be exactly 10 m
+    assert float(ref.item()) < speed * 1.0

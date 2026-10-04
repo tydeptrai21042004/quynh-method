@@ -25,4 +25,4 @@ settings cannot be reproduced honestly (`todorovic2022_cnn`, `levenberg2023_stft
 - `chen2025_svdkl` partial adaptation and its `svdkl.py` implementation
 - generic Transformer / spatio-temporal CNN baseline classes
 
-Internal ablations are not baselines and remain separated in `pfr_component_ablation.csv`.
+Internal ablations are not publication baselines and must remain separate from the primary comparison table.

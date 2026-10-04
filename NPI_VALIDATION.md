@@ -1,33 +1,39 @@
-# NPI validation note
+# NPI-v3 validation note
 
-## Repository regression tests
+## Final active formulation
 
-After the Normalized Physical Innovation (NPI) revision, the complete repository test suite passes:
+The active proposal is **Normalized Physical Innovation v3**:
 
-- `169 passed`
-- no test failures
-- warnings are pre-existing numerical/library warnings (pandas parsing, PyTorch padding/nested-tensor notices)
+```text
+reference present: y_hat = P_q(X) + c_q,ref + s_q,ref R_theta(X,q)
+reference absent:  y_hat =          c_q,direct + s_q,direct R_theta(X,q)
+```
 
-Targeted NPI tests verify:
+All robust statistics are fitted on training data only. No RA-NPI gain, CSI affine calibration, semantic relational contrast, or feature-standardization proposal module is present in the final active path.
 
-1. observed state targets are normalized in residual coordinates rather than full-state scale;
-2. if channel dropout removes the physical reference, normalization switches to a direct-target coordinate instead of mixing absolute and residual scales;
-3. the zero-initialized point head starts from the physical/reference coordinate;
-4. curved-motion displacement uses planar endpoint geometry and remains below travelled path length for a quarter-circle test.
+## Software validation
 
-## Controlled synthetic state-prediction sanity check
+After reverting the later CSI/RA additions and removing their tests, the complete repository suite passes:
 
-A small synthetic next-state experiment was run with 20% whole-channel dropout. The target was a next-step longitudinal velocity whose physical innovation was small relative to the absolute speed. The legacy formulation was emulated with physical-output target-scale Huber training; the revised formulation used NPI with the same small UniversalSafeGrip backbone.
+```text
+170 passed, 0 failed
+```
 
-| Seed | NPI MAE | Legacy-emulated MAE |
-|---:|---:|---:|
-| 1 | 0.1516 | 0.1376 |
-| 2 | 0.1365 | 0.2614 |
-| 3 | 0.1034 | 0.1551 |
-| Mean | 0.1305 | 0.1847 |
+The targeted NPI/universal subset passes:
 
-Mean synthetic MAE decreased by approximately 29%. One seed was slightly worse, so this is evidence of improved conditioning rather than a guarantee of real-data superiority.
+```text
+24 passed, 0 failed
+```
 
-## Required real-data confirmation
+Targeted tests verify:
 
-The real D1-D4 datasets are not bundled in this uploaded repository. Therefore the new code does **not** fabricate replacement results. The supplied Kaggle real-data runner has been updated to fit NPI statistics on training data only and restore the best validation checkpoint; rerunning that script is the required confirmation for LiRA, UC3M, Deep Dynamics IAC, and IO-VNBD.
+- small residual coordinates when a physical reference exists;
+- robust direct-target coordinates when dropout removes the reference;
+- exact NPI reconstruction `P + c + s z`;
+- zero initialization of the innovation head;
+- curvature-aware endpoint-displacement reference;
+- universal model/training/collation behavior.
+
+## Empirical status
+
+The repository contains prior real-data evidence showing that NPI-v3 produced the main performance jump relative to the original physical-reference formulation. The final manuscript should nevertheless rerun the frozen NPI-v3 code on the declared three seeds before replacing the published aggregate table.
