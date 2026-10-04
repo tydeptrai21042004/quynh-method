@@ -1,0 +1,11 @@
+CSI-v4 changed-files-only patch
+===============================
+
+Apply to the root of your current quynh-method repository, preserving paths.
+These files are intentionally the only scientific/code changes relative to the
+latest supplied repository ZIP. The Kaggle helper is included at the patch root
+for convenience and does not replace repository source code.
+
+After copying the files, commit and push to GitHub. Then run:
+    KAGGLE_CSI_V4_AFTER_GITHUB_UPLOAD.py
+as one Kaggle notebook cell (or `%run` it after uploading it).

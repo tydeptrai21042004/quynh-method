@@ -53,7 +53,7 @@ RUN_TESTS = os.environ.get("SAFEGRIP_RUN_TESTS", "1") not in {"0", "false", "Fal
 
 DATASETS = ("lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd")
 PROPOSAL_NAME = "universal_safegrip"
-PROPOSAL_REVISION = "normalized_physical_innovation_v3"
+PROPOSAL_REVISION = "calibrated_semantic_innovation_v4"
 D2D4_INPUT_DIMS = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 4}
 REAL_IAC_FILES = (
     "LVMS_23_01_04_A.csv",
@@ -795,6 +795,7 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
     from safegrip.model.safegrip_universal import UniversalSafeGrip
     from safegrip.training.trainer import (
         ResearchLossConfig, estimate_target_scales, estimate_innovation_normalizer,
+        estimate_semantic_feature_normalizer,
         train_step, research_losses,
     )
     from safegrip.universal.tokenizer import UniversalSensorTokenizer, TokenizerConfig
@@ -817,16 +818,18 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
     train_batches = make_research_batches(train_records, tokenizer, dataset, UNIVERSAL_BATCH)
     val_batches = make_research_batches(val_records, tokenizer, dataset, UNIVERSAL_BATCH) if val_records else []
     test_batches = make_research_batches(test_records, tokenizer, dataset, UNIVERSAL_BATCH)
-    # Fit query-semantic Normalized Physical Innovation statistics on TRAINING
-    # data only.  These are deterministic buffers, not learned heads and not
-    # dataset-ID parameters.  target_scales is retained only for compatibility
-    # with the trainer call signature; NPI optimizes the dimensionless target.
+    # Fit both universal coordinates on TRAINING data only. They are
+    # deterministic semantic buffers, not learned heads or dataset-ID parameters.
+    feature_normalizer = estimate_semantic_feature_normalizer(
+        train_batches, tokenizer.feature_dim
+    )
     innovation_normalizer = estimate_innovation_normalizer(train_batches)
     scales = estimate_target_scales(train_batches)
 
     # SAME constructor and optimizer on every dataset.
     model = UniversalSafeGrip(
-        tokenizer.feature_dim, ablation=ab, innovation_normalizer=innovation_normalizer
+        tokenizer.feature_dim, ablation=ab, innovation_normalizer=innovation_normalizer,
+        feature_normalizer=feature_normalizer
     ).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
     loss_cfg = ResearchLossConfig(sensor_dropout=ab.sensor_dropout)

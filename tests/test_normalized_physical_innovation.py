@@ -34,9 +34,13 @@ def test_npi_uses_small_residual_coordinate_when_reference_exists():
     anchor = torch.tensor([[20.0], [30.0], [40.0]])
     mask = torch.ones_like(anchor, dtype=torch.bool)
     center, scale = normalizer.parameters_for(qids, mask)
+    gain, bias = normalizer.reference_parameters_for(qids)
 
-    # Median physical innovation is 0.4 m/s, not the ~30 m/s target level.
-    assert torch.allclose(center, torch.full_like(center, 0.4), atol=1e-5)
+    # v4 first calibrates the physical coordinate, then normalizes only the
+    # unexplained innovation.  This synthetic relation is almost exactly affine.
+    assert torch.all(gain > 0.9)
+    assert torch.all(gain < 1.1)
+    assert torch.all(torch.isfinite(bias))
     assert torch.all(scale > 0)
     assert float(scale.max()) < 1.0
 
@@ -92,8 +96,12 @@ def test_zero_initialized_decoder_preserves_reference_coordinate():
     model.eval()
     with torch.no_grad():
         out = model(batch.sensors, batch.queries)
-    # At initialization the model equals reference + robust residual center.
-    expected = out.physical_anchor + out.innovation_center
+    # At initialization the model equals the calibrated physical coordinate
+    # plus the robust residual center.
+    qids = model.query_tensor(batch.queries, len(records), device=out.point.device)
+    expected = normalizer.calibrated_reference(
+        qids, out.physical_anchor, out.anchor_mask
+    ) + out.innovation_center
     assert torch.allclose(out.innovation, torch.zeros_like(out.innovation), atol=0, rtol=0)
     assert torch.allclose(out.point, expected, atol=1e-6)
 

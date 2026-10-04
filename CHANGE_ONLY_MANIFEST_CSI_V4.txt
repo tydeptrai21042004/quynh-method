@@ -1,0 +1,52 @@
+Universal SafeGrip — minimal Calibrated Semantic Innovation v4 patch
+===================================================================
+
+Base comparison
+---------------
+The two supplied repository ZIPs from 2026-10-04 were compared recursively and
+contain the same code tree. This patch is therefore applied to that common base.
+
+Design constraint
+-----------------
+ONE proposal method remains in use across all datasets. No dataset-name branch,
+dataset-specific neural head, mixture-of-experts, extra backbone, or learned
+physics gate is introduced.
+
+Minimal scientific changes
+--------------------------
+1) Calibrate the existing semantic physical reference from TRAINING data only:
+       y_hat = a_q P_q(X) + b_q + c_q + s_q R_theta(X,q)
+   where (a_q,b_q) are deterministic robust affine coefficients indexed only by
+   the physical query semantics. Identity initialization exactly preserves v3
+   behavior before fitting.
+
+2) Standardize token descriptors from TRAINING data only using statistics
+   indexed by (quantity, axis, location, unit class). Raw canonical endpoint,
+   RMS and integral values are not changed, so the physics reference remains in
+   physical units.
+
+Unchanged
+---------
+- UniversalSafeGrip token encoder/backbone/query decoder architecture
+- no dataset-ID conditioning in the full proposal
+- physical reference definitions
+- optimizer, learning rate, weight decay, batch size and epoch count
+- sensor-channel dropout and existing loss configuration
+- dataset adapters and split logic
+
+Changed files
+-------------
+src/safegrip/universal/feature_normalization.py   [new]
+src/safegrip/universal/innovation.py
+src/safegrip/model/safegrip_universal.py
+src/safegrip/training/trainer.py
+src/safegrip/training/__init__.py
+scripts/KAGGLE_ALL_REAL_DATASETS_ONE_PROPOSAL_1SEED_10EPOCHS.py
+tests/test_calibrated_semantic_innovation.py       [new]
+tests/test_normalized_physical_innovation.py
+
+Checkpoint compatibility
+------------------------
+proposal_revision is bumped from normalized_physical_innovation_v3 to
+calibrated_semantic_innovation_v4 so stale v3 training states cannot be resumed
+as if they were v4.

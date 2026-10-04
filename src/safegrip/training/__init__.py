@@ -10,6 +10,6 @@ __all__ = [
     "friction_inequality_loss", "TargetNormalizer",
     "multidataset_sample_weights", "make_multidataset_sampler",
     "sensor_channel_dropout_mask",
-    "ResearchLossConfig", "ResearchLosses", "estimate_target_scales", "estimate_innovation_normalizer", "research_losses", "train_step",
+    "ResearchLossConfig", "ResearchLosses", "estimate_target_scales", "estimate_innovation_normalizer", "estimate_semantic_feature_normalizer", "research_losses", "train_step",
 ]
-from .trainer import ResearchLossConfig, ResearchLosses, estimate_target_scales, estimate_innovation_normalizer, research_losses, train_step
+from .trainer import ResearchLossConfig, ResearchLosses, estimate_target_scales, estimate_innovation_normalizer, estimate_semantic_feature_normalizer, research_losses, train_step

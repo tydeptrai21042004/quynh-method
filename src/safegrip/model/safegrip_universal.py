@@ -10,6 +10,7 @@ from safegrip.universal.batching import UniversalSensorBatch
 from safegrip.universal.queries import PhysicalQuery
 from safegrip.universal.reference import PhysicalReferenceOperator
 from safegrip.universal.innovation import SemanticInnovationNormalizer
+from safegrip.universal.feature_normalization import SemanticFeatureNormalizer
 from .metadata_embedding import PhysicallyTypedTokenEncoder
 from .latent_backbone import SensorSetLatentBackbone, MeanPoolLatentBackbone
 from .query_decoder import CompositionalQueryDecoder, QueryPrediction
@@ -47,6 +48,7 @@ class UniversalSafeGrip(nn.Module):
         dropout: float = 0.1,
         ablation: UniversalAblationConfig | None = None,
         innovation_normalizer: SemanticInnovationNormalizer | None = None,
+        feature_normalizer: SemanticFeatureNormalizer | None = None,
     ):
         super().__init__()
         self.ablation = ablation or UniversalAblationConfig()
@@ -72,6 +74,7 @@ class UniversalSafeGrip(nn.Module):
         # An identity normalizer preserves backwards compatibility for low-level
         # model tests; paper runners fit it on training data before optimization.
         self.innovation_normalizer = innovation_normalizer or SemanticInnovationNormalizer()
+        self.feature_normalizer = feature_normalizer or SemanticFeatureNormalizer(patch_feature_dim)
 
         # The proposal is dataset-agnostic by construction.  Dataset identity is
         # available *only* as an explicit ablation; the default/full method does
@@ -117,8 +120,11 @@ class UniversalSafeGrip(nn.Module):
         return PhysicalReferenceOperator()(batch, queries)
 
     def forward(self, batch: UniversalSensorBatch, queries, *, domains: tuple[str, ...] | None = None) -> UniversalSafeGripOutput:
+        normalized_features = self.feature_normalizer(
+            batch.features, batch.quantity_ids, batch.axis_ids, batch.location_ids, batch.unit_class_ids,
+        )
         tokens = self.token_encoder(
-            batch.features, batch.quantity_ids, batch.axis_ids, batch.location_ids,
+            normalized_features, batch.quantity_ids, batch.axis_ids, batch.location_ids,
             batch.unit_class_ids, batch.sample_rates_hz, batch.times_sec, batch.channel_ids,
         )
         tokens = self._dataset_condition(tokens, domains)
@@ -127,9 +133,9 @@ class UniversalSafeGrip(nn.Module):
         pred: QueryPrediction = self.decoder(latent, qids)
         physical_anchor, anchor_mask = self._physical_query_anchor(batch, queries)
 
-        # Normalized Physical Innovation (NPI): the decoder always predicts a
+        # Calibrated Semantic Innovation (CSI): the decoder always predicts a
         # dimensionless O(1) innovation.  If a physical reference is available,
-        # training/inference operate on the residual y-P_q. If channel dropout or
+        # training/inference operate on the residual around a_q P_q + b_q. If channel dropout or
         # real sensor missingness removes the reference, the same decoder uses a
         # training-only direct-target coordinate instead of mixing residual and
         # absolute-state scales.
