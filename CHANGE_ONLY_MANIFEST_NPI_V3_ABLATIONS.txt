@@ -1,0 +1,27 @@
+NPI-v3-only proposal + strengthened ablations — changed files
+
+REPLACE / ADD:
+- src/safegrip/ablations.py
+- src/safegrip/universal/innovation.py
+- src/safegrip/universal/reference.py
+- src/safegrip/model/safegrip_universal.py
+- src/safegrip/training/trainer.py
+- src/safegrip/cli.py
+- scripts/KAGGLE_ALL_REAL_DATASETS_ONE_PROPOSAL_1SEED_10EPOCHS.py
+- scripts/KAGGLE_NPI_V3_ABLATIONS.py
+- tests/test_paper_benchmark.py
+- tests/test_normalized_physical_innovation.py
+- NPI_V3_ABLATION_PROTOCOL.md
+- README.md
+- NPI_VALIDATION.md
+- CHANGE_ONLY_MANIFEST_NPI_V3_ABLATIONS.txt
+- _DELETE_FILES_NPI_V3_ONLY.txt
+
+DELETE FROM REPOSITORY:
+- tests/test_calibrated_semantic_innovation.py
+
+Scientific intent:
+- NPI-v3 remains the ONLY proposal.
+- Prior P+R is retained only as the `old_physical_innovation` ablation.
+- Prior path-length displacement is retained only as the D4 `path_length_reference` ablation.
+- Inactive mechanics ablations are removed from the paper ablation registry.

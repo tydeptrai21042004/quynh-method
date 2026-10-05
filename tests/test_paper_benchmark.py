@@ -47,10 +47,14 @@ def test_io_vnbd_wheel_speed_remains_angular():
 
 def test_all_ablation_configs_build_and_change_declared_switch():
     assert set(ABLATIONS) == {
-        "full", "no_physical_metadata", "no_unit_metadata", "no_sampling_rate_metadata", "no_time_metadata",
-        "no_spectrum", "mean_pool", "no_sensor_dropout", "no_mechanics_queries", "no_physics_consistency",
-        "no_friction_inequality", "no_learned_scale", "dataset_id_conditioning", "channel_id_only",
+        "npi_v3", "direct_normalized", "reference_only", "old_physical_innovation",
+        "npi_no_center", "npi_no_scale", "mean_pool", "channel_id_only",
+        "no_physical_metadata", "no_spectrum", "no_sensor_dropout",
+        "dataset_id_conditioning", "path_length_reference", "no_learned_scale",
     }
+    assert get_ablation("npi_v3").innovation_mode == "npi_v3"
+    assert get_ablation("old_physical_innovation").innovation_mode == "old_physical_innovation"
+    assert get_ablation("path_length_reference").localization_reference == "path_length"
     assert get_ablation("mean_pool").aggregation == "mean_pool"
     assert get_ablation("channel_id_only").channel_id_embedding is True
     assert get_ablation("dataset_id_conditioning").dataset_id_conditioning is True

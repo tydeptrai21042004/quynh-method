@@ -71,7 +71,17 @@ class UniversalSafeGrip(nn.Module):
         # No trainable parameters are introduced by the innovation normalizer.
         # An identity normalizer preserves backwards compatibility for low-level
         # model tests; paper runners fit it on training data before optimization.
-        self.innovation_normalizer = innovation_normalizer or SemanticInnovationNormalizer()
+        self.innovation_normalizer = innovation_normalizer or SemanticInnovationNormalizer(
+            mode=self.ablation.innovation_mode,
+            localization_reference=self.ablation.localization_reference,
+        )
+        if self.innovation_normalizer.mode != self.ablation.innovation_mode:
+            raise ValueError("innovation normalizer mode must match the ablation configuration")
+        if self.innovation_normalizer.localization_reference != self.ablation.localization_reference:
+            raise ValueError("innovation normalizer reference mode must match the ablation configuration")
+        self.reference_operator = PhysicalReferenceOperator(
+            localization_mode=self.ablation.localization_reference
+        )
 
         # The proposal is dataset-agnostic by construction.  Dataset identity is
         # available *only* as an explicit ablation; the default/full method does
@@ -125,9 +135,11 @@ class UniversalSafeGrip(nn.Module):
         latent = self.backbone(tokens, batch.token_mask)
         qids = self.query_tensor(queries, batch.features.shape[0], device=batch.features.device)
         pred: QueryPrediction = self.decoder(latent, qids)
-        physical_anchor, anchor_mask = self._physical_query_anchor(batch, queries)
+        physical_anchor, anchor_mask = self.reference_operator(batch, queries)
 
-        # NPI-v3: the decoder predicts a dimensionless O(1) innovation.
+        # NPI-v3 is the only proposal. ``innovation_mode`` exists solely for
+        # controlled ablations that isolate the contribution of its reference,
+        # robust centering and robust scaling.
         # When a semantic physical reference exists it is used exactly; robust
         # training-only residual center/scale reconstruct physical units. If
         # dropout removes the reference, the same decoder switches algebraically

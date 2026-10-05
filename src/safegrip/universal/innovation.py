@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-"""Normalized Physical Innovation (NPI-v3).
+"""Normalized Physical Innovation (NPI-v3) and controlled ablation coordinates.
 
-The universal decoder predicts a dimensionless innovation rather than an
-absolute physical target.  For query q, when the semantic physical reference
-P_q(X) is observable,
+NPI-v3 is the only active proposal:
 
-    y_hat = P_q(X) + c_q,ref + s_q,ref * R_theta(X, q).
+    y_hat = P_q(X) + c_q,ref + s_q,ref * R_theta(X, q),
 
-If the reference is unavailable (including after whole-channel dropout), the
-same decoder uses a direct-target coordinate,
+when the semantic physical reference is observable, and
 
-    y_hat = c_q,direct + s_q,direct * R_theta(X, q).
+    y_hat = c_q,direct + s_q,direct * R_theta(X, q),
 
-All centers/scales are robust statistics fitted on TRAINING data only and are
-indexed by semantic query IDs, never by dataset identity.  They are buffers,
-not trainable parameters.
+when it is not. Centers/scales are robust TRAINING-only statistics indexed by
+semantic query IDs, never dataset identity, and are buffers rather than
+trainable parameters.
+
+The alternate ``mode`` values in this module exist only to provide controlled
+paper ablations of NPI-v3. They do not define additional proposal methods.
 """
 
 import math
@@ -24,6 +24,16 @@ from torch import nn
 
 from .ontology import OntologySizes
 from .reference import PhysicalReferenceOperator
+
+
+NPI_MODES = {
+    "npi_v3",
+    "direct_normalized",
+    "reference_only",
+    "old_physical_innovation",
+    "npi_no_center",
+    "npi_no_scale",
+}
 
 
 def _robust_center_scale(values: torch.Tensor, floor: float) -> tuple[float, float]:
@@ -45,10 +55,24 @@ def _robust_center_scale(values: torch.Tensor, floor: float) -> tuple[float, flo
 
 
 class SemanticInnovationNormalizer(nn.Module):
-    """Training-only robust NPI coordinate indexed by physical query semantics."""
+    """Training-only semantic coordinate used by NPI-v3 and its ablations."""
 
-    def __init__(self, *, floor: float = 1e-3):
+    def __init__(
+        self,
+        *,
+        floor: float = 1e-3,
+        mode: str = "npi_v3",
+        localization_reference: str = "curvature",
+    ):
         super().__init__()
+        mode = str(mode).strip().lower()
+        if mode not in NPI_MODES:
+            raise ValueError(f"unknown NPI mode: {mode}. Choices: {', '.join(sorted(NPI_MODES))}")
+        self.mode = mode
+        self.localization_reference = str(localization_reference).strip().lower()
+        # Validate the reference mode at construction time.
+        PhysicalReferenceOperator(localization_mode=self.localization_reference)
+
         sizes = OntologySizes()
         self._sizes = (sizes.quantities, sizes.axes, sizes.locations, sizes.target_types)
         n = math.prod(self._sizes)
@@ -72,7 +96,7 @@ class SemanticInnovationNormalizer(nn.Module):
     def fit(self, batches) -> "SemanticInnovationNormalizer":
         if not batches:
             raise ValueError("batches cannot be empty")
-        reference_op = PhysicalReferenceOperator()
+        reference_op = PhysicalReferenceOperator(localization_mode=self.localization_reference)
         by_key_ref: dict[int, list[torch.Tensor]] = {}
         by_key_direct: dict[int, list[torch.Tensor]] = {}
 
@@ -110,12 +134,17 @@ class SemanticInnovationNormalizer(nn.Module):
 
         return self
 
+    def _effective_reference_mask(self, reference_mask: torch.Tensor) -> torch.Tensor:
+        if self.mode == "direct_normalized":
+            return torch.zeros_like(reference_mask, dtype=torch.bool)
+        return reference_mask.bool()
+
     def parameters_for(
         self,
         query_ids: torch.Tensor,
         reference_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return residual/direct center and scale for each sample/query."""
+        """Return the center/scale selected by the controlled coordinate."""
         keys = self._flat_index(query_ids)
         c_ref = self.center_ref[keys]
         s_ref = self.scale_ref[keys]
@@ -123,19 +152,30 @@ class SemanticInnovationNormalizer(nn.Module):
         s_dir = self.scale_direct[keys]
         fit_ref = self.fitted_ref[keys]
 
-        use_ref_stats = reference_mask.bool() & fit_ref
+        effective_ref = self._effective_reference_mask(reference_mask)
+        use_ref_stats = effective_ref & fit_ref
         center = torch.where(use_ref_stats, c_ref, c_dir)
         scale = torch.where(use_ref_stats, s_ref, s_dir).clamp_min(self.floor)
+
+        if self.mode in {"old_physical_innovation", "reference_only"}:
+            center = torch.zeros_like(center)
+            scale = torch.ones_like(scale)
+        elif self.mode == "npi_no_center":
+            center = torch.zeros_like(center)
+        elif self.mode == "npi_no_scale":
+            scale = torch.ones_like(scale)
+
         return center, scale
 
-    @staticmethod
     def reference_base(
+        self,
         physical_reference: torch.Tensor,
         reference_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Use the semantic physical reference exactly when it is observable."""
+        """Return the physical base term selected by this ablation coordinate."""
+        effective_ref = self._effective_reference_mask(reference_mask)
         return torch.where(
-            reference_mask.bool(), physical_reference, torch.zeros_like(physical_reference)
+            effective_ref, physical_reference, torch.zeros_like(physical_reference)
         )
 
     def normalize_target(
@@ -158,5 +198,8 @@ class SemanticInnovationNormalizer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         center, scale = self.parameters_for(query_ids, reference_mask)
         base = self.reference_base(physical_reference, reference_mask)
-        point = base + center + scale * normalized_innovation
+        if self.mode == "reference_only":
+            point = base
+        else:
+            point = base + center + scale * normalized_innovation
         return point, center, scale

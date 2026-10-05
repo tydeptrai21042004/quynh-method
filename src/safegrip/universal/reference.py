@@ -36,7 +36,11 @@ class PhysicalReferenceOperator:
     original UniversalSafeGrip decoder remains unchanged for those queries.
     """
 
-    def __init__(self):
+    def __init__(self, *, localization_mode: str = "curvature"):
+        mode = str(localization_mode).strip().lower()
+        if mode not in {"curvature", "path_length"}:
+            raise ValueError("localization_mode must be 'curvature' or 'path_length'")
+        self.localization_mode = mode
         self._rules = {
             "state_component": self._state_reference,
             "road_friction": self._friction_reference,
@@ -112,7 +116,14 @@ class PhysicalReferenceOperator:
         return torch.where(any_observed, ref, torch.zeros_like(ref)), any_observed
 
     def _localization_reference(self, batch: UniversalSensorBatch, query):
-        """Planar endpoint displacement from measured speed and yaw rate.
+        """Planar displacement reference from measured body speed.
+
+        ``curvature`` is the NPI-v3 proposal and estimates endpoint displacement
+        by integrating speed jointly with yaw rate.  ``path_length`` is retained
+        only as a controlled D4 ablation corresponding to the earlier sum(v dt)
+        reference.
+
+        Planar endpoint displacement from measured speed and yaw rate.
 
         The previous reference ``sum(v dt)`` is travelled path length, not
         endpoint displacement on curved trajectories.  Here each speed patch
@@ -145,6 +156,28 @@ class PhysicalReferenceOperator:
             & (batch.axis_ids == yaw_axis_id)
             & (batch.location_ids == body_id)
         )
+
+        if self.localization_mode == "path_length":
+            b = batch.features.shape[0]
+            ref = batch.features.new_zeros((b,))
+            ok = torch.zeros((b,), dtype=torch.bool, device=batch.features.device)
+            for row in range(b):
+                sm = speed_match[row]
+                if not torch.any(sm):
+                    continue
+                # Average redundant speed sensors at each physical patch time,
+                # then sum their per-patch integrals. This is travelled path
+                # length and is intentionally kept only as an ablation.
+                times = torch.unique(batch.times_sec[row][sm], sorted=True)
+                total = batch.features.new_tensor(0.0)
+                for t in times:
+                    at_t = sm & torch.isclose(
+                        batch.times_sec[row], t, rtol=0.0, atol=1e-7
+                    )
+                    total = total + batch.integral_values[row][at_t].mean()
+                ref[row] = torch.abs(total)
+                ok[row] = True
+            return ref, ok
 
         b = batch.features.shape[0]
         ref = batch.features.new_zeros((b,))

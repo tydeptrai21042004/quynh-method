@@ -52,8 +52,20 @@ BASELINE_BATCH = int(os.environ.get("SAFEGRIP_BASELINE_BATCH", "128"))
 RUN_TESTS = os.environ.get("SAFEGRIP_RUN_TESTS", "1") not in {"0", "false", "False"}
 
 DATASETS = ("lira_cd", "uc3m_tire", "deep_dynamics_iac", "io_vnbd")
-PROPOSAL_NAME = "universal_safegrip"
+_requested_datasets = tuple(
+    x.strip().lower() for x in os.environ.get("SAFEGRIP_DATASETS", ",".join(DATASETS)).split(",") if x.strip()
+)
+if not _requested_datasets or any(x not in DATASETS for x in _requested_datasets):
+    raise ValueError(f"SAFEGRIP_DATASETS must be a non-empty subset of {DATASETS}")
+RUN_DATASETS = _requested_datasets
+PROPOSAL_ABLATION = os.environ.get("SAFEGRIP_ABLATION", "npi_v3").strip().lower()
+PROPOSAL_BASE_NAME = "universal_safegrip"
+PROPOSAL_NAME = (
+    PROPOSAL_BASE_NAME if PROPOSAL_ABLATION == "npi_v3"
+    else f"{PROPOSAL_BASE_NAME}__ablation_{PROPOSAL_ABLATION}"
+)
 PROPOSAL_REVISION = "normalized_physical_innovation_v3"
+RUN_BASELINES = os.environ.get("SAFEGRIP_RUN_BASELINES", "1") not in {"0", "false", "False"}
 D2D4_INPUT_DIMS = {"uc3m_tire": 3, "deep_dynamics_iac": 5, "io_vnbd": 4}
 REAL_IAC_FILES = (
     "LVMS_23_01_04_A.csv",
@@ -244,7 +256,7 @@ def _invalidate_incompatible_proposal_state():
         k: v for k, v in STATE.get("progress", {}).items()
         if not (k.startswith("model:") and k.endswith(f":{PROPOSAL_NAME}"))
     }
-    for dataset in DATASETS:
+    for dataset in RUN_DATASETS:
         out = RESULTS_ROOT / dataset
         for name in (
             f"{PROPOSAL_NAME}_metrics.csv",
@@ -809,9 +821,9 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
 
     seed_all(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ab = get_ablation("full")
-    if getattr(ab, "dataset_id", False):
-        raise RuntimeError("Full UniversalSafeGrip unexpectedly enables dataset-ID conditioning")
+    ab = get_ablation(PROPOSAL_ABLATION)
+    if PROPOSAL_ABLATION == "npi_v3" and ab.dataset_id_conditioning:
+        raise RuntimeError("NPI-v3 proposal unexpectedly enables dataset-ID conditioning")
     tokenizer = UniversalSensorTokenizer(TokenizerConfig(use_spectrum=ab.spectrum))
     print(f"[{dataset}] tokenizing REAL records for the shared proposal ...")
     train_batches = make_research_batches(train_records, tokenizer, dataset, UNIVERSAL_BATCH)
@@ -819,7 +831,11 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
     test_batches = make_research_batches(test_records, tokenizer, dataset, UNIVERSAL_BATCH)
     # Fit NPI residual/direct coordinates on TRAINING data only. These are
     # deterministic semantic buffers, not learned heads or dataset-ID parameters.
-    innovation_normalizer = estimate_innovation_normalizer(train_batches)
+    innovation_normalizer = estimate_innovation_normalizer(
+        train_batches,
+        mode=ab.innovation_mode,
+        localization_reference=ab.localization_reference,
+    )
     scales = estimate_target_scales(train_batches)
 
     # SAME constructor and optimizer on every dataset.
@@ -851,46 +867,54 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
 
     log_file = out / f"{PROPOSAL_NAME}_training_log.csv"
     old_rows = pd.read_csv(log_file).to_dict("records") if log_file.exists() else []
-    for epoch in range(start_epoch, EPOCHS):
-        time_guard(f"{stage} epoch {epoch+1}", 180)
-        model.train()
-        order = list(range(len(train_batches)))
-        random.Random(SEED + epoch).shuffle(order)
-        losses = []
-        for bi in order:
-            ls = train_step(model, train_batches[bi].to(device), opt, scales, loss_cfg)
-            losses.append(float(ls.total.detach().cpu()))
-        val_loss = float("nan")
-        if val_batches:
-            model.eval(); vals = []
-            with torch.no_grad():
-                for b in val_batches:
-                    vals.append(float(research_losses(model, b.to(device), scales, loss_cfg, training=False).total.detach().cpu()))
-            val_loss = float(np.mean(vals)) if vals else float("nan")
-        train_loss = float(np.mean(losses))
-        selection_loss = val_loss if np.isfinite(val_loss) else train_loss
-        if selection_loss < best_selection_loss:
-            best_selection_loss = float(selection_loss)
-            best_epoch = epoch + 1
-            # Clone to CPU so later optimizer steps cannot mutate the selected
-            # state through shared tensor storage.
-            best_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        row = {
-            "epoch": epoch+1, "train_loss": train_loss, "val_loss": val_loss,
-            "selection_loss": selection_loss, "is_best": int(best_epoch == epoch + 1),
-        }
-        old_rows = [r for r in old_rows if int(r.get("epoch", -1)) != epoch+1] + [row]
-        pd.DataFrame(old_rows).sort_values("epoch").to_csv(log_file, index=False)
-        torch.save({
-            "epoch": epoch+1, "model": model.state_dict(), "optimizer": opt.state_dict(),
-            "best_epoch": best_epoch, "best_selection_loss": best_selection_loss,
-            "best_model_state": best_model_state,
-            "proposal_revision": PROPOSAL_REVISION,
-        }, ckpt)
-        STATE.setdefault("progress", {})[stage] = {"epoch": epoch+1, "of": EPOCHS}
-        save_state()
-        if (epoch + 1) % 2 == 0:
-            make_checkpoint_zip()
+    if ab.innovation_mode == "reference_only":
+        # This control contains no learned correction by definition; evaluating
+        # it directly avoids wasting epochs while keeping exactly the same split.
+        print(f"[{dataset}] reference-only ablation: no optimization required")
+        best_epoch = 0
+        best_selection_loss = float("nan")
+    else:
+        for epoch in range(start_epoch, EPOCHS):
+            time_guard(f"{stage} epoch {epoch+1}", 180)
+            model.train()
+            order = list(range(len(train_batches)))
+            random.Random(SEED + epoch).shuffle(order)
+            losses = []
+            for bi in order:
+                ls = train_step(model, train_batches[bi].to(device), opt, scales, loss_cfg)
+                losses.append(float(ls.total.detach().cpu()))
+            val_loss = float("nan")
+            if val_batches:
+                model.eval(); vals = []
+                with torch.no_grad():
+                    for b in val_batches:
+                        vals.append(float(research_losses(model, b.to(device), scales, loss_cfg, training=False).total.detach().cpu()))
+                val_loss = float(np.mean(vals)) if vals else float("nan")
+            train_loss = float(np.mean(losses))
+            selection_loss = val_loss if np.isfinite(val_loss) else train_loss
+            if selection_loss < best_selection_loss:
+                best_selection_loss = float(selection_loss)
+                best_epoch = epoch + 1
+                # Clone to CPU so later optimizer steps cannot mutate the selected
+                # state through shared tensor storage.
+                best_model_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            row = {
+                "epoch": epoch+1, "train_loss": train_loss, "val_loss": val_loss,
+                "selection_loss": selection_loss, "is_best": int(best_epoch == epoch + 1),
+            }
+            old_rows = [r for r in old_rows if int(r.get("epoch", -1)) != epoch+1] + [row]
+            pd.DataFrame(old_rows).sort_values("epoch").to_csv(log_file, index=False)
+            torch.save({
+                "epoch": epoch+1, "model": model.state_dict(), "optimizer": opt.state_dict(),
+                "best_epoch": best_epoch, "best_selection_loss": best_selection_loss,
+                "best_model_state": best_model_state,
+                "proposal_revision": PROPOSAL_REVISION,
+                "ablation": PROPOSAL_ABLATION,
+            }, ckpt)
+            STATE.setdefault("progress", {})[stage] = {"epoch": epoch+1, "of": EPOCHS}
+            save_state()
+            if (epoch + 1) % 2 == 0:
+                make_checkpoint_zip()
 
     # Evaluate the validation-selected checkpoint, never an arbitrary final
     # epoch. This is particularly important for the seed-sensitive LiRA run.
@@ -922,6 +946,9 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
         metrics.append({
             "dataset": dataset, "model": PROPOSAL_NAME, "proposal_method": PROPOSAL_NAME,
             "proposal_revision": PROPOSAL_REVISION,
+            "ablation": PROPOSAL_ABLATION,
+            "innovation_mode": ab.innovation_mode,
+            "localization_reference": ab.localization_reference,
             "target": name, "seed": SEED, "epochs": EPOCHS, "best_epoch": best_epoch,
             "split_policy": split_policy,
             "data_kind": "real", **metric_dict(all_y[j], all_p[j]),
@@ -932,6 +959,7 @@ def train_universal_proposal(dataset, train_records, val_records, test_records, 
         "state_dict": model.state_dict(), "seed": SEED, "epochs": EPOCHS,
         "best_epoch": best_epoch, "best_selection_loss": best_selection_loss,
         "proposal_revision": PROPOSAL_REVISION,
+        "ablation": PROPOSAL_ABLATION,
     }, out / f"{PROPOSAL_NAME}_model.pt")
     if ckpt.exists(): ckpt.unlink()
     mark_done(stage)
@@ -1156,7 +1184,8 @@ def run_dataset(dataset: str):
     rows = []
     # SAME proposal for D1, D2, D3, D4.
     rows.extend(train_universal_proposal(dataset, train_records, val_records, test_records, policy))
-    rows.extend(BASELINE_SET_RUNNERS[dataset](dataset, train_records, test_records, policy))
+    if RUN_BASELINES:
+        rows.extend(BASELINE_SET_RUNNERS[dataset](dataset, train_records, test_records, policy))
     if rows:
         pd.DataFrame(rows).to_csv(out / "metrics.csv", index=False)
     return rows
@@ -1166,9 +1195,10 @@ ALL_ROWS = []
 try:
     seed_all(SEED)
     print("\nSafeGrip: ONE proposal across ALL REAL datasets")
-    print("proposal:", PROPOSAL_NAME, "commit:", STATE.get("git_commit"))
+    print("proposal:", PROPOSAL_BASE_NAME, "revision:", PROPOSAL_REVISION, "ablation:", PROPOSAL_ABLATION)
+    print("run model label:", PROPOSAL_NAME, "commit:", STATE.get("git_commit"))
     print("seed:", SEED, "epochs:", EPOCHS, "max_records:", MAX_RECORDS_PER_DATASET or "ALL")
-    for dataset in DATASETS:
+    for dataset in RUN_DATASETS:
         time_guard(f"dataset {dataset}", 300)
         try:
             ALL_ROWS.extend(run_dataset(dataset))
@@ -1215,7 +1245,9 @@ finally:
 
     print("\n" + "=" * 100)
     print("RUN FINISHED / CHECKPOINTED")
-    print("One proposal    :", PROPOSAL_NAME, "on", ", ".join(DATASETS))
+    print("One proposal    :", PROPOSAL_BASE_NAME, "NPI-v3")
+    print("Ablation        :", PROPOSAL_ABLATION)
+    print("Datasets        :", ", ".join(RUN_DATASETS))
     print("Synthetic data  : DISALLOWED")
     print("Results folder  :", RUN_ROOT)
     print("Checkpoint ZIP :", CHECKPOINT_ZIP)

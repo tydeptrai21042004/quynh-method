@@ -45,13 +45,22 @@ def estimate_target_scales(batches, floor: float = 1e-3) -> torch.Tensor:
 
 
 
-def estimate_innovation_normalizer(batches, floor: float = 1e-3) -> SemanticInnovationNormalizer:
+def estimate_innovation_normalizer(
+    batches,
+    floor: float = 1e-3,
+    *,
+    mode: str = "npi_v3",
+    localization_reference: str = "curvature",
+) -> SemanticInnovationNormalizer:
     """Fit training-only NPI residual/direct statistics.
 
-    The returned semantic buffers contain no trainable parameters and never use
-    dataset identity.
+    NPI-v3 is the only proposal. ``mode`` and ``localization_reference`` are
+    exposed so controlled ablations use exactly the same training split while
+    changing one coordinate/reference choice at a time.
     """
-    return SemanticInnovationNormalizer(floor=floor).fit(batches)
+    return SemanticInnovationNormalizer(
+        floor=floor, mode=mode, localization_reference=localization_reference
+    ).fit(batches)
 
 def _scaled_huber(pred, target, mask, scales, beta):
     scaled = (pred - target) / scales.to(pred).unsqueeze(0).clamp_min(1e-8)

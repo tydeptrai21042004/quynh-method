@@ -16,13 +16,13 @@ All robust statistics are fitted on training data only. No RA-NPI gain, CSI affi
 After reverting the later CSI/RA additions and removing their tests, the complete repository suite passes:
 
 ```text
-170 passed, 0 failed
+173 passed, 0 failed
 ```
 
 The targeted NPI/universal subset passes:
 
 ```text
-24 passed, 0 failed
+29 passed, 0 failed
 ```
 
 Targeted tests verify:
@@ -32,8 +32,15 @@ Targeted tests verify:
 - exact NPI reconstruction `P + c + s z`;
 - zero initialization of the innovation head;
 - curvature-aware endpoint-displacement reference;
+- algebraic separation of direct/reference/old-innovation/no-center/no-scale/full NPI-v3 controls;
+- D4 path-length versus curvature-aware reference control;
 - universal model/training/collation behavior.
 
 ## Empirical status
 
 The repository contains prior real-data evidence showing that NPI-v3 produced the main performance jump relative to the original physical-reference formulation. The final manuscript should nevertheless rerun the frozen NPI-v3 code on the declared three seeds before replacing the published aggregate table.
+
+
+## Ablation status
+
+NPI-v3 is the only proposal registered by default. The paper ablation registry now contains controlled variants for direct normalized prediction, reference-only prediction, the previous unnormalized `P+R` coordinate, removal of robust centering, removal of robust scaling, sensor-set mean pooling, channel-ID-only typing, and supplementary representation/reference controls. The obsolete calibrated-semantic-innovation test from the abandoned CSI/RA-NPI path has been removed.

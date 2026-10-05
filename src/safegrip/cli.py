@@ -122,7 +122,7 @@ def main():
 
     uc = sub.add_parser("universal-check", help="NPI architecture/query/ablation sanity check")
     uc.add_argument("--dataset", choices=PAPER_DATASETS, required=True)
-    uc.add_argument("--ablation", choices=tuple(ABLATIONS), default="full")
+    uc.add_argument("--ablation", choices=tuple(ABLATIONS), default="npi_v3")
 
     st = sub.add_parser("statistics")
     st.add_argument("--results", required=True)

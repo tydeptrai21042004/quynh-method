@@ -72,6 +72,14 @@ SAFEGRIP_SEEDS=3101,3102,3103 \
 python scripts/KAGGLE_ALL_REAL_DATASETS_MULTI_SEED.py
 ```
 
+Controlled NPI-v3 ablations:
+
+```bash
+python scripts/KAGGLE_NPI_V3_ABLATIONS.py
+```
+
+The primary ablation table isolates the reference, old unnormalized innovation, robust centering, robust scaling, latent set fusion, and physical-semantic typing. Prior formulations are available only as controlled ablations; they are not alternative proposal revisions. See `NPI_V3_ABLATION_PROTOCOL.md`.
+
 The Kaggle runner rejects synthetic scientific fallback data. If required real data cannot be resolved, the stage is marked unavailable rather than replaced with generated targets.
 
 ## Validation
@@ -91,4 +99,4 @@ The final NPI-only revision passes the repository test suite locally. See `NPI_V
 - `src/safegrip/training/trainer.py` — normalized-innovation optimization after sensor dropout;
 - `scripts/KAGGLE_ALL_REAL_DATASETS_ONE_PROPOSAL_1SEED_10EPOCHS.py` — one-proposal real-data benchmark.
 
-Historical proposal documents and launchers are intentionally removed from the active release to avoid ambiguity about which method is being evaluated.
+Historical files may remain in the repository for provenance, but they are not registered as active proposal configurations. The active proposal/runner defaults to `npi_v3`; older physical-innovation/reference forms are exposed only as named controlled ablations.
